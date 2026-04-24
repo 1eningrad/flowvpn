@@ -928,11 +928,18 @@ cmd_healthcheck() {
         case "$code" in 200|301|302) _hc "$site" "ok" "HTTP $code напрямую" ;; *) _hc "$site" "warn" "HTTP $code" ;; esac
     done
 
-    # 9. Geosite
-    grep -q "updated rule-set geosite-ru" /tmp/flowvpn/singbox.log 2>/dev/null \
-        && _hc "geosite-ru" "ok" "Загружен" || _hc "geosite-ru" "error" "Не загружен"
-    grep -q "updated rule-set geoip-ru" /tmp/flowvpn/singbox.log 2>/dev/null \
-        && _hc "geoip-ru" "ok" "Загружен" || _hc "geoip-ru" "error" "Не загружен"
+    # 9. Rule-sets: query live clash API (reliable after log rotation)
+    local rules_json=$(curl -s --max-time 3 -H 'Authorization: Bearer flowvpn' http://127.0.0.1:9090/rules 2>/dev/null)
+    if echo "$rules_json" | grep -q "geosite-ru"; then
+        _hc "geosite-ru" "ok" "Активен"
+    else
+        _hc "geosite-ru" "error" "Не загружен"
+    fi
+    if echo "$rules_json" | grep -q "geoip-ru"; then
+        _hc "geoip-ru" "ok" "Активен"
+    else
+        _hc "geoip-ru" "error" "Не загружен"
+    fi
 
     # 10. Errors
     local sb_err=$(grep -c "ERROR" /tmp/flowvpn/singbox.log 2>/dev/null)
