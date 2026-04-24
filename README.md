@@ -1,100 +1,155 @@
 # FlowVPN
 
-Lightweight VPN manager for OpenWrt routers. Routes all traffic through VPN (VLESS+XHTTP+Reality), Russian sites go direct.
+Легковесный VPN-менеджер для роутеров на OpenWrt. Направляет весь трафик через VPN (VLESS+XHTTP+Reality), российские сайты идут напрямую.
 
-## Features
+[English](#english) | **Русский**
 
-- **Two routing modes**: All VPN (except RU) / Blocklist only
-- **VLESS+XHTTP+Reality** via xray-core 26.4.17+
-- **sing-box** tproxy routing with geosite-ru/geoip-ru
-- **DNS protection**: hijacks DNS, blocks DoT/QUIC to prevent ISP poisoning
-- **Web UI**: dark/light theme, Russian interface
-- **Server management**: subscription import, ping, manual selection
-- **Per-device routing**: VPN or Direct per device
-- **Real-time speed**: via Clash API WebSocket
-- **Auto-failover**: watchdog switches server on failure
-- **Diagnostics**: 25 automated health checks
-- **Logs**: three sources (FlowVPN/sing-box/xray), filters, export
-- **Schedule**: cron-based on/off
-- **Backup/restore**: JSON export/import
+## Возможности
 
-## Requirements
+- **Два режима маршрутизации**: Всё через VPN (кроме RU) / Только заблокированные
+- **VLESS+XHTTP+Reality** через xray-core 26.4.17+
+- **sing-box** tproxy маршрутизация с geosite-ru/geoip-ru
+- **Защита DNS**: перехват DNS, блокировка DoT/QUIC для предотвращения подмены провайдером
+- **Веб-интерфейс**: тёмная/светлая тема, русский язык
+- **Управление серверами**: импорт подписки, пинг, ручной выбор
+- **Маршрутизация по устройствам**: VPN или Direct для каждого устройства
+- **Скорость в реальном времени**: через Clash API WebSocket
+- **Авто-переключение**: watchdog переключает сервер при сбое
+- **Диагностика**: 25 автоматических проверок
+- **Журнал**: три источника (FlowVPN/sing-box/xray), фильтры, экспорт
+- **Расписание**: включение/выключение по времени
+- **Бэкап**: экспорт/импорт настроек
 
-- OpenWrt router (tested on Routerich AX3000, aarch64)
-- 256MB+ RAM, 40MB+ free flash
-- Internet access for downloading xray and rule sets
+## Требования
 
-## Quick Install
+- Роутер с OpenWrt (протестировано на Routerich AX3000, aarch64)
+- 256MB+ RAM, 40MB+ свободной flash-памяти
+- Доступ в интернет для загрузки xray и списков доменов
+
+## Быстрая установка
 
 ```bash
-ssh root@your-router
+ssh root@ваш-роутер
 curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
 ```
 
-## Manual Install
+## Ручная установка
 
 ```bash
-# 1. Install dependencies
+# 1. Установить зависимости
 opkg update
 opkg install jq coreutils-base64 kmod-nft-tproxy sing-box
 
-# 2. Install xray 26.4.17+ (NOT from opkg — too old)
-# Download from https://github.com/XTLS/Xray-core/releases
-# Upload to /usr/bin/xray
+# 2. Установить xray 26.4.17+ (НЕ из opkg — там старая версия)
+# Скачайте с https://github.com/XTLS/Xray-core/releases
+# Загрузите на роутер в /usr/bin/xray
 
-# 3. Copy FlowVPN files
+# 3. Скопировать файлы FlowVPN
 # usr/bin/flowvpn           → /usr/bin/flowvpn
 # usr/lib/flowvpn/          → /usr/lib/flowvpn/
 # www/cgi-bin/flowvpn       → /www/cgi-bin/flowvpn
 # www/flowvpn/index.html    → /www/flowvpn/index.html
 # etc/init.d/flowvpn        → /etc/init.d/flowvpn
 
-# 4. Set permissions
+# 4. Установить права
 chmod +x /usr/bin/flowvpn /www/cgi-bin/flowvpn /etc/init.d/flowvpn /usr/lib/flowvpn/*.sh
 
-# 5. Configure
-flowvpn set-config subscription_url "https://your-subscription-url"
+# 5. Настроить
+flowvpn set-config subscription_url "https://ваша-подписка"
 flowvpn update
 flowvpn start
 
-# 6. Enable autostart
+# 6. Включить автозапуск
 /etc/init.d/flowvpn enable
 ```
 
-## Web UI
+## Веб-интерфейс
 
-Open `http://router-ip/flowvpn/` in browser.
+Откройте `http://ip-роутера/flowvpn/` в браузере.
 
-## CLI Usage
+### Вкладки
+
+| Вкладка | Описание |
+|---------|----------|
+| **Маршрутизация** | Режим работы, списки доменов (direct/VPN), DNS настройки |
+| **Устройства** | Подключённые устройства, переключение VPN/Direct для каждого |
+| **Журнал** | Соединения в реальном времени с фильтрами (VPN/Direct/DNS/Ошибки) |
+| **Диагностика** | Полная проверка системы (25 тестов) и быстрая диагностика |
+| **Настройки** | Подписка, расписание, автообновление, бэкап |
+
+## Команды CLI
 
 ```bash
 flowvpn start|stop|restart|status
-flowvpn set-server N              # Select server by index
-flowvpn set-mode all_vpn|blocklist
-flowvpn update                    # Update subscription + rules
-flowvpn ping                      # Ping all servers
-flowvpn diagnose                  # Quick diagnostics
-flowvpn healthcheck               # Full 25-point health check
-flowvpn add-domain DOMAIN vpn     # Force domain through VPN
-flowvpn add-domain DOMAIN direct  # Force domain direct
-flowvpn get-log 50 all            # View logs
-flowvpn backup                    # Export settings
+flowvpn set-server N              # Выбрать сервер по индексу
+flowvpn set-mode all_vpn|blocklist # Режим маршрутизации
+flowvpn update                    # Обновить подписку и правила
+flowvpn ping                      # Пинг всех серверов
+flowvpn diagnose                  # Быстрая диагностика
+flowvpn healthcheck               # Полная проверка (25 тестов)
+flowvpn add-domain DOMAIN vpn     # Принудительно через VPN
+flowvpn add-domain DOMAIN direct  # Принудительно напрямую
+flowvpn get-log 50 all            # Просмотр логов
+flowvpn backup                    # Экспорт настроек
 ```
 
-## Architecture
+## Архитектура
 
 ```
-Client → dnsmasq(:53) → sing-box DNS(:5354) → dns-proxy(VPN) / dns-direct
-       → nftables tproxy → sing-box(:2154) → xray SOCKS(:1080) → VPN server
-                                            → direct (RU sites)
+Клиент → dnsmasq(:53) → sing-box DNS(:5354) → dns-proxy(VPN) / dns-direct
+       → nftables tproxy → sing-box(:2154) → xray SOCKS(:1080) → VPN сервер
+                                            → direct (RU сайты)
 ```
 
-## Important Notes
+### Как работает маршрутизация
 
-- **xray must be 26.4.17+** — opkg version (25.1.30) has critical XHTTP bugs
-- **Mark 0x8000 (32768)** — required for fw4 firewall bypass
-- **geosite-ru includes google.com** — Google AI services (Gemini) need to be added to force-VPN list
-- **QUIC (UDP 443) is blocked** in all_vpn mode — apps fall back to TCP
+**Режим "Всё через VPN":**
+- Все DNS-запросы идут через VPN (защита от подмены провайдером)
+- DNS для RU-доменов — напрямую (быстрее)
+- geosite-ru + geoip-ru — тысячи российских доменов и IP → напрямую
+- Всё остальное → через VPN-сервер
+- DoT (порт 853) и QUIC (UDP 443) блокируются → приложения используют обычный DNS
+
+**Режим "По списку":**
+- Только домены из списка Shadowrocket → через VPN
+- Всё остальное → напрямую
+
+## Важно
+
+- **xray должен быть 26.4.17+** — версия из opkg (25.1.30) имеет критические баги с XHTTP
+- **mark 0x8000 (32768)** — обязателен для обхода fw4 firewall
+- **geosite-ru включает google.com** — сервисы Google AI (Gemini) нужно добавить в принудительный VPN
+- **QUIC (UDP 443) блокируется** в режиме "Всё через VPN" — приложения переключаются на TCP
+
+## Решение проблем
+
+1. **Сайт не открывается** → Журнал → проверьте идёт ли трафик через VPN или Direct
+2. **Приложение пишет "нет сети"** → Авиарежим вкл/выкл на телефоне
+3. **AI-сервис пишет "не поддерживается в вашей стране"** → Добавьте домен в "Принудительно через VPN"
+4. **Всё сломалось** → Диагностика → Запустить проверку
+5. **Нет интернета** → `ssh root@роутер` → `flowvpn stop`
+
+## Ресурсы
+
+- **RAM**: ~112 MB (xray 64MB + sing-box 46MB)
+- **Flash**: ~33 MB (xray 32.5MB + скрипты 112KB)
+- **CPU**: ~0% (шифрование Reality на aarch64 очень лёгкое)
+
+---
+
+<a name="english"></a>
+## English
+
+Lightweight VPN manager for OpenWrt routers. Routes all traffic through VPN (VLESS+XHTTP+Reality), Russian sites go direct.
+
+### Quick Install
+
+```bash
+ssh root@your-router
+curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
+```
+
+See Russian section above for full documentation.
 
 ## License
 
