@@ -1,0 +1,37 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+start() {
+    local auto_start
+    auto_start=$(jq -r '.auto_start // true' /etc/flowvpn/config.json 2>/dev/null)
+    [ "$auto_start" != "true" ] && return 0
+
+    local tries=0
+    while [ "$tries" -lt 30 ]; do
+        if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then break; fi
+        sleep 1; tries=$((tries + 1))
+    done
+
+    if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        /usr/bin/flowvpn start >/dev/null 2>&1 &
+        # Start watchdog in background (non-blocking)
+        (sleep 10; /usr/bin/flowvpn watchdog 60 >/dev/null 2>&1 & echo $! > /tmp/flowvpn/watchdog.pid) &
+    else
+        logger -t flowvpn "Network not ready, skipping autostart"
+    fi
+}
+
+stop() {
+    # Stop watchdog
+    [ -f /tmp/flowvpn/watchdog.pid ] && {
+        kill $(cat /tmp/flowvpn/watchdog.pid) 2>/dev/null
+        rm -f /tmp/flowvpn/watchdog.pid
+    }
+    /usr/bin/flowvpn stop >/dev/null 2>&1
+}
+
+restart() {
+    stop; sleep 1; start
+}

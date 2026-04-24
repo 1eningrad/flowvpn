@@ -1,0 +1,15 @@
+*.pid
+*.log
+*.tmp
+*.db
+cache.db
+config.json
+direct_domains.txt
+vpn_domains.txt
+dnsmasq_backup
+servers.json
+sub_raw.txt
+singbox.json
+xray.json
+rules/
+combined.tmp

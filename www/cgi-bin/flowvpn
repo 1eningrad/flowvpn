@@ -1,0 +1,79 @@
+#!/bin/ash
+# FlowVPN v4 — CGI API
+
+echo "Content-Type: application/json"
+echo "Access-Control-Allow-Origin: http://$SERVER_NAME"
+echo "Access-Control-Allow-Methods: GET, POST, OPTIONS"
+echo "Access-Control-Allow-Headers: Content-Type"
+echo ""
+
+[ "$REQUEST_METHOD" = "OPTIONS" ] && exit 0
+
+# Parse query string
+action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
+on_time="" off_time="" ip_addr="" route=""
+IFS='&'
+for pair in $QUERY_STRING; do
+    k="${pair%%=*}"; v="${pair#*=}"
+    v=$(echo "$v" | sed 's/%2[Ff]/\//g; s/%3[Aa]/:/g; s/+/ /g; s/%20/ /g')
+    case "$k" in
+        action) action="$v" ;; index) index="$v" ;; mode) mode="$v" ;;
+        domain) domain="$v" ;; list) list="$v" ;; key) key="$v" ;; value) value="$v" ;;
+        lines) lines="$v" ;; filter) filter="$v" ;;
+        on) on_time="$v" ;; off) off_time="$v" ;;
+        ip) ip_addr="$v" ;; route) route="$v" ;;
+    esac
+done
+unset IFS
+
+# Read POST body
+body=""
+[ "$REQUEST_METHOD" = "POST" ] && body=$(cat 2>/dev/null)
+
+case "$action" in
+    status)         /usr/bin/flowvpn status ;;
+    start)          /usr/bin/flowvpn start ;;
+    stop)           /usr/bin/flowvpn stop ;;
+    restart)        /usr/bin/flowvpn restart ;;
+    update)         /usr/bin/flowvpn update ;;
+    set-server)     /usr/bin/flowvpn set-server "$index" ;;
+    ping)           /usr/bin/flowvpn ping ;;
+    set-mode)       /usr/bin/flowvpn set-mode "$mode" ;;
+    add-domain)     /usr/bin/flowvpn add-domain "$domain" "$list" ;;
+    remove-domain)  /usr/bin/flowvpn remove-domain "$domain" "$list" ;;
+    get-domains)    /usr/bin/flowvpn get-domains ;;
+    get-devices)    /usr/bin/flowvpn get-devices ;;
+    get-log)        /usr/bin/flowvpn get-log "${lines:-100}" "${filter:-all}" ;;
+    clear-log)      /usr/bin/flowvpn clear-log ;;
+    diagnose)       /usr/bin/flowvpn diagnose ;;
+    healthcheck)    /usr/bin/flowvpn healthcheck ;;
+    get-traffic)    /usr/bin/flowvpn get-traffic ;;
+    set-config)
+        if [ -n "$key" ]; then
+            /usr/bin/flowvpn set-config "$key" "$value"
+        elif [ -n "$body" ]; then
+            local_key=$(echo "$body" | jq -r '.key // empty' 2>/dev/null)
+            local_val=$(echo "$body" | jq -r '.value // empty' 2>/dev/null)
+            /usr/bin/flowvpn set-config "$local_key" "$local_val"
+        else
+            echo '{"error":"missing key/value"}'
+        fi
+        ;;
+    schedule)
+        if [ -n "$on_time" ]; then
+            /usr/bin/flowvpn schedule set "$on_time" "$off_time"
+        elif [ "$mode" = "disable" ]; then
+            /usr/bin/flowvpn schedule disable
+        else
+            /usr/bin/flowvpn schedule get
+        fi
+        ;;
+    auto-update)    /usr/bin/flowvpn auto-update "$mode" ;;
+    backup)         /usr/bin/flowvpn backup ;;
+    restore)
+        [ -n "$body" ] && /usr/bin/flowvpn restore "$body" || echo '{"error":"no data"}'
+        ;;
+    set-device)     /usr/bin/flowvpn set-device "$ip_addr" "$route" ;;
+    remove-device-route) /usr/bin/flowvpn remove-device "$ip_addr" ;;
+    *)              echo '{"error":"unknown action"}' ;;
+esac
