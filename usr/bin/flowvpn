@@ -1,0 +1,946 @@
+#!/bin/ash
+# FlowVPN v3 — xray (SOCKS/XHTTP) + sing-box (tproxy/routing)
+# Modes: all_vpn (everything VPN, RU direct) | blocklist (only blocked through VPN)
+
+FLOWVPN_LIB="/usr/lib/flowvpn"
+FLOWVPN_CONFIG="/etc/flowvpn/config.json"
+FLOWVPN_TMP="/tmp/flowvpn"
+
+. "$FLOWVPN_LIB/parse.sh"
+. "$FLOWVPN_LIB/xray.sh"
+. "$FLOWVPN_LIB/singbox.sh"
+. "$FLOWVPN_LIB/network.sh"
+
+get_config_val() { jq -r ".$1 // \"$2\"" "$FLOWVPN_CONFIG"; }
+flog() { logger -t flowvpn "$*"; }
+# Atomic config write — validates JSON before overwriting
+save_config() {
+    local data="$1"
+    echo "$data" > "${FLOWVPN_CONFIG}.tmp"
+    if jq '.' "${FLOWVPN_CONFIG}.tmp" >/dev/null 2>&1; then
+        mv "${FLOWVPN_CONFIG}.tmp" "$FLOWVPN_CONFIG"
+    else
+        rm -f "${FLOWVPN_CONFIG}.tmp"
+        flog "ERROR: invalid JSON, config not saved"
+        return 1
+    fi
+}
+
+# ============================================================
+# Core commands
+# ============================================================
+
+_rotate_log() {
+    for logfile in "$FLOWVPN_TMP/singbox.log" "$FLOWVPN_TMP/xray.log"; do
+        [ -f "$logfile" ] || continue
+        local lines=$(wc -l < "$logfile")
+        [ "$lines" -gt 2000 ] && {
+            tail -500 "$logfile" > "${logfile}.tmp"
+            mv "${logfile}.tmp" "$logfile"
+            flog "Rotated log: $logfile ($lines → 500 lines)"
+        }
+    done
+}
+
+cmd_start() {
+    if is_xray_running && is_singbox_running; then
+        echo '{"error":"already running"}'
+        return 1
+    fi
+    mkdir -p "$FLOWVPN_TMP"
+    _rotate_log
+
+    local sub_url iface mode
+    sub_url=$(get_config_val subscription_url "")
+    iface=$(get_config_val interface "br-lan")
+    mode=$(get_config_val mode "all_vpn")
+
+    [ -z "$sub_url" ] && { flog "ERROR: no subscription_url"; echo '{"error":"no subscription_url"}'; return 1; }
+    flog "Starting FlowVPN (mode=$mode)"
+
+    # Step 1: Fetch servers
+    if [ ! -f "$FLOWVPN_TMP/servers.json" ]; then
+        local count
+        count=$(update_subscription "$FLOWVPN_CONFIG")
+        [ "$count" -gt 0 ] 2>/dev/null || { echo '{"error":"subscription failed"}'; return 1; }
+    fi
+
+    # Step 2: Fetch routing rules
+    if [ ! -f "$FLOWVPN_TMP/rules/ru_domains.list" ] && [ ! -f "$FLOWVPN_TMP/rules/domains.list" ]; then
+        fetch_rules "$mode"
+    fi
+
+    local selected
+    selected=$(get_config_val selected_server 0)
+    local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    [ "$selected" -ge "$total" ] && selected=0
+
+    # Step 3: Start xray
+    flog "Starting xray (server index=$selected)"
+    generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray.json"
+    start_xray "$FLOWVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
+
+    # Step 4: Verify xray
+    local vpn_ip
+    vpn_ip=$(test_xray)
+    if [ -z "$vpn_ip" ]; then
+        flog "ERROR: VPN connection test failed"
+        stop_xray
+        echo '{"error":"VPN connection failed"}'
+        return 1
+    fi
+    flog "xray connected, VPN IP: $vpn_ip"
+
+    # Step 5: Start sing-box
+    flog "Starting sing-box (mode=$mode)"
+    generate_singbox_config "$FLOWVPN_TMP/singbox.json" 1080 "$mode"
+    start_singbox "$FLOWVPN_TMP/singbox.json"
+    if [ $? -ne 0 ]; then
+        flog "ERROR: sing-box failed to start"
+        stop_xray
+        echo '{"error":"sing-box failed"}'
+        return 1
+    fi
+    flog "sing-box started"
+
+    # Step 6: nftables + DNS (LAST)
+    flog "Setting up nftables and DNS redirect"
+    setup_network 2154 32768 "$iface"
+
+    date +%s > "$FLOWVPN_TMP/start_time"
+    echo "$vpn_ip" > "$FLOWVPN_TMP/vpn_ip"
+
+    local server_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
+    flog "FlowVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
+    echo "{\"status\":\"started\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
+}
+
+cmd_stop() {
+    flog "Stopping FlowVPN"
+    teardown_network
+    stop_singbox
+    stop_xray
+    rm -f "$FLOWVPN_TMP/start_time" "$FLOWVPN_TMP/vpn_ip"
+    flog "FlowVPN stopped"
+    echo '{"status":"stopped"}'
+}
+
+cmd_restart() {
+    cmd_stop >/dev/null 2>&1
+    sleep 1
+    cmd_start
+}
+
+cmd_status() {
+    local running="false" server_name="" uptime=0 selected=0 vpn_ip="" mode=""
+    mode=$(get_config_val mode "all_vpn")
+
+    if is_xray_running && is_singbox_running; then
+        running="true"
+        selected=$(get_config_val selected_server 0)
+        [ -f "$FLOWVPN_TMP/servers.json" ] && \
+            server_name=$(jq -r ".[$selected].name // \"unknown\"" "$FLOWVPN_TMP/servers.json")
+        [ -f "$FLOWVPN_TMP/start_time" ] && {
+            local st=$(cat "$FLOWVPN_TMP/start_time")
+            uptime=$(($(date +%s) - st))
+        }
+        [ -f "$FLOWVPN_TMP/vpn_ip" ] && vpn_ip=$(cat "$FLOWVPN_TMP/vpn_ip")
+    fi
+
+    local servers="[]"
+    [ -f "$FLOWVPN_TMP/servers.json" ] && servers=$(jq '[.[] | {name, host, port}]' "$FLOWVPN_TMP/servers.json")
+
+    local device_count=0
+    [ -f /tmp/dhcp.leases ] && device_count=$(wc -l < /tmp/dhcp.leases)
+
+    local device_rules='{}'
+    device_rules=$(jq '.device_rules // {}' "$FLOWVPN_CONFIG")
+
+    jq -n \
+        --argjson running "$running" \
+        --arg server "$server_name" \
+        --argjson uptime "$uptime" \
+        --argjson selected "$selected" \
+        --argjson servers "$servers" \
+        --arg sub_url "$(get_config_val subscription_url '')" \
+        --arg vpn_ip "$vpn_ip" \
+        --arg mode "$mode" \
+        --argjson devices "$device_count" \
+        --argjson auto_start "$([ "$(get_config_val auto_start true)" = "true" ] && echo true || echo false)" \
+        --argjson device_rules "$device_rules" \
+        '{running:$running, server:$server, uptime:$uptime, selected:$selected,
+          servers:$servers, subscription_url:$sub_url, vpn_ip:$vpn_ip, mode:$mode,
+          devices:$devices, auto_start:$auto_start, device_rules:$device_rules}'
+}
+
+# ============================================================
+# Server management
+# ============================================================
+
+cmd_set_server() {
+    local idx="$1"
+    [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    flog "Setting server to index $idx"
+    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    is_xray_running && cmd_restart || {
+        local name=$(jq -r ".[$idx].name" "$FLOWVPN_TMP/servers.json")
+        echo "{\"status\":\"server set\",\"server\":\"$name\"}"
+    }
+}
+
+cmd_update() {
+    local count
+    count=$(update_subscription "$FLOWVPN_CONFIG")
+    local mode=$(get_config_val mode "all_vpn")
+    rm -rf "$FLOWVPN_TMP/rules"
+    fetch_rules "$mode"
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+        echo "{\"status\":\"updated\",\"servers\":$count}"
+        is_xray_running && cmd_restart >/dev/null
+    else
+        echo '{"error":"update failed"}'
+        return 1
+    fi
+}
+
+cmd_ping() {
+    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local results="[]" total=$(jq 'length' "$FLOWVPN_TMP/servers.json") i=0
+    while [ "$i" -lt "$total" ]; do
+        local host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+        local name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
+        local ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+        [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+        results=$(echo "$results" | jq --arg n "$name" --argjson ms "$ms" --argjson i "$i" '. + [{name:$n, ping:$ms, index:$i}]')
+        i=$((i + 1))
+    done
+    echo "$results" | jq '.'
+}
+
+# ============================================================
+# Mode & domain management
+# ============================================================
+
+cmd_set_mode() {
+    local new_mode="$1"
+    case "$new_mode" in
+        all_vpn|blocklist) ;;
+        *) echo '{"error":"invalid mode, use all_vpn or blocklist"}'; return 1 ;;
+    esac
+    flog "Switching mode to $new_mode"
+    local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    rm -rf "$FLOWVPN_TMP/rules" "$FLOWVPN_TMP/singbox.json"
+    is_xray_running && cmd_restart || echo "{\"status\":\"mode set\",\"mode\":\"$new_mode\"}"
+}
+
+cmd_add_domain() {
+    local domain="$1" list="$2"
+    [ -z "$domain" ] && { echo '{"error":"missing domain"}'; return 1; }
+    local file
+    case "$list" in
+        direct) file="$CUSTOM_DIRECT" ;;
+        vpn)    file="$CUSTOM_VPN" ;;
+        *)      echo '{"error":"invalid list, use direct or vpn"}'; return 1 ;;
+    esac
+    mkdir -p /etc/flowvpn
+    grep -qxF "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
+    echo "{\"status\":\"added\",\"domain\":\"$domain\",\"list\":\"$list\"}"
+}
+
+cmd_remove_domain() {
+    local domain="$1" list="$2"
+    [ -z "$domain" ] && { echo '{"error":"missing domain"}'; return 1; }
+    local file
+    case "$list" in
+        direct) file="$CUSTOM_DIRECT" ;;
+        vpn)    file="$CUSTOM_VPN" ;;
+        *)      echo '{"error":"invalid list"}'; return 1 ;;
+    esac
+    [ -f "$file" ] && { grep -vxF "$domain" "$file" > "${file}.tmp"; mv "${file}.tmp" "$file"; }
+    echo "{\"status\":\"removed\",\"domain\":\"$domain\",\"list\":\"$list\"}"
+}
+
+cmd_get_domains() {
+    local direct_domains="[]" vpn_domains="[]"
+    [ -f "$CUSTOM_DIRECT" ] && direct_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_DIRECT")
+    [ -f "$CUSTOM_VPN" ] && vpn_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_VPN")
+
+    local ru_count=0 blocked_count=0
+    [ -f "$SR_RULES_DIR/ru_domains.list" ] && ru_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/ru_domains.list" 2>/dev/null)
+    [ -f "$SR_RULES_DIR/domains.list" ] && blocked_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/domains.list" 2>/dev/null)
+
+    jq -n --argjson direct "$direct_domains" --argjson vpn "$vpn_domains" \
+        --argjson ru_count "$ru_count" --argjson blocked_count "$blocked_count" \
+        '{custom_direct:$direct, custom_vpn:$vpn, ru_domains_count:$ru_count, blocked_domains_count:$blocked_count}'
+}
+
+# ============================================================
+# Info commands
+# ============================================================
+
+cmd_get_devices() {
+    local devices="[]"
+    if [ -f /tmp/dhcp.leases ]; then
+        while read -r ts mac ip name id; do
+            devices=$(echo "$devices" | jq --arg ip "$ip" --arg mac "$mac" --arg name "$name" \
+                '. + [{ip:$ip, mac:$mac, name:$name}]')
+        done < /tmp/dhcp.leases
+    fi
+    echo "$devices" | jq '.'
+}
+
+cmd_get_log() {
+    local lines="${1:-100}" filter="${2:-all}"
+    if [ ! -f "$FLOWVPN_TMP/singbox.log" ]; then
+        echo "[]"
+        return
+    fi
+
+    local grep_filter=""
+    case "$filter" in
+        vpn)    grep_filter="outbound/socks" ;;
+        direct) grep_filter="outbound/direct" ;;
+        error)  grep_filter="ERROR" ;;
+        dns)    grep_filter="dns:.*exchanged" ;;
+        *)      grep_filter="outbound/\|ERROR\|dns:.*exchanged" ;;
+    esac
+
+    # Get timezone offset
+    local tz_str=$(cat /etc/TZ 2>/dev/null)
+    local TZ_OFFSET=$(echo "$tz_str" | sed 's/[A-Za-z]*//g; s/^-//' | awk '{print int($1)}')
+    [ -z "$TZ_OFFSET" ] && TZ_OFFSET=3
+
+    # Collect from multiple sources
+    local tmplog="$FLOWVPN_TMP/combined.tmp"
+    > "$tmplog"
+
+    # Source 1: sing-box log (skip for flow-only filter)
+    if [ "$filter" != "flow" ]; then
+        grep "$grep_filter" "$FLOWVPN_TMP/singbox.log" 2>/dev/null | \
+            grep -v "packet connection$\|WARN\|cached\|inbound/\|1\.1\.1\.1:853\|1\.0\.0\.1:853\|8\.8\.8\.8:853\|8\.8\.4\.4:853\|127\.0\.0\.1:53\|127\.0\.0\.1:5354" | \
+            sed 's/\x1b\[[0-9;]*m//g; s/\x1b\[0m//g' | \
+            awk '{print "SING|"$0}' >> "$tmplog"
+    fi
+
+    # Source 2: xray log — only errors
+    if [ "$filter" = "all" ] || [ "$filter" = "error" ]; then
+        grep -iE "error|fail|warning" "$FLOWVPN_TMP/xray.log" 2>/dev/null | \
+            grep -v "accepted\|started\|Reading config" | \
+            tail -50 | awk '{print "XRAY|"$0}' >> "$tmplog"
+    fi
+
+    # Source 3: syslog flowvpn entries
+    if [ "$filter" = "all" ] || [ "$filter" = "flow" ]; then
+        logread -e flowvpn 2>/dev/null | tail -100 | awk '{print "FLOW|"$0}' >> "$tmplog"
+    fi
+
+    # Sort and parse
+    sort "$tmplog" 2>/dev/null | tail -"$lines" | \
+        sed 's/\x1b\[[0-9;]*m//g; s/\x1b\[0m//g' | \
+        awk -v tz="${TZ_OFFSET:-3}" '{
+            # Extract source prefix (SING|, XRAY|, FLOW|)
+            src="sing"
+            if(substr($0,1,5)=="SING|"){src="sing";$0=substr($0,6)}
+            else if(substr($0,1,5)=="XRAY|"){src="xray";$0=substr($0,6)}
+            else if(substr($0,1,5)=="FLOW|"){src="flow";$0=substr($0,6)}
+
+            # Extract time
+            time=""
+            for(i=1;i<=NF;i++){
+                if($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/){
+                    split($(i+1),t,":")
+                    h=t[1]+0+tz; if(h>=24)h-=24; if(h<0)h+=24
+                    time=$i" "sprintf("%02d:%02d:%02d",h,t[2]+0,t[3]+0)
+                    break
+                }
+            }
+
+            # FLOW entries (syslog: "Fri Apr 24 14:35:52 2026 user.notice flowvpn: message")
+            if(src=="flow"){
+                msg=""
+                for(i=1;i<=NF;i++){
+                    if($i ~ /^flowvpn/){
+                        for(j=i+1;j<=NF;j++) msg=msg" "$j
+                        break
+                    }
+                }
+                # Extract time: field 4 = HH:MM:SS
+                time=$1" "$2" "$3" "$4
+                gsub(/^ +/,"",msg)
+                if(msg != "") print time"|"msg"|flow"
+                next
+            }
+
+            # XRAY entries
+            if(src=="xray"){
+                route="xray"
+                dst=""
+                if(/accepted/){
+                    for(i=1;i<=NF;i++){
+                        if($i=="accepted"){dst=$(i+1); break}
+                    }
+                } else if(/error|fail|timeout/){
+                    route="error"
+                    idx=0
+                    for(i=1;i<=length($0);i++){if(substr($0,i,2)=="] ")idx=i+2}
+                    if(idx>0)dst=substr($0,idx)
+                    if(length(dst)>100)dst=substr(dst,1,100)"..."
+                }
+                if(dst != "") print time"|"dst"|"route
+                next
+            }
+
+            # SING entries
+            route=""
+            if(/outbound\/socks/) route="vpn"
+            else if(/outbound\/direct/) route="direct"
+            else if(/ERROR/) route="error"
+            else if(/dns:.*exchanged/) route="dns"
+
+            dst=""
+            if(route=="error"){
+                idx=0
+                for(i=1;i<=length($0);i++){if(substr($0,i,2)=="] ")idx=i+2}
+                if(idx>0)dst=substr($0,idx)
+                if(length(dst)>100)dst=substr(dst,1,100)"..."
+            } else if(route=="dns"){
+                for(i=1;i<=NF;i++){
+                    if($i=="exchanged"){
+                        if($(i+1)=="A"||$(i+1)=="AAAA") dst=$(i+2)" → "$(i+6)
+                        else if($(i+1)=="CNAME") dst=$(i+2)" → "$(i+6)
+                        else dst=$(i+1)" "$(i+2)
+                        break
+                    }
+                }
+            } else {
+                for(i=1;i<=NF;i++){
+                    if($i=="to"&&$(i+1)!~/^127\.|^:$|^0\.0/){dst=$(i+1);break}
+                }
+            }
+            gsub(/\.$/,"",dst)
+
+            if(route!=""&&(dst!=""||route=="error")) print time"|"dst"|"route
+        }' | \
+        jq -R -s 'split("\n") | map(select(length > 0)) | map(split("|") | {time: .[0], dst: .[1], route: .[2]})'
+
+    rm -f "$tmplog"
+}
+
+cmd_get_dns() {
+    local mode=$(get_config_val mode "all_vpn")
+    local dnsmasq_server=""
+    dnsmasq_server=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
+    jq -n --arg mode "$mode" --arg dnsmasq "$dnsmasq_server" \
+        '{mode:$mode, dnsmasq_server:$dnsmasq, proxy_dns:"tls://1.1.1.1", direct_dns:"udp://1.1.1.1",
+          dot_blocked:true, quic_blocked:($mode != "all_vpn")}'
+}
+
+cmd_set_config() {
+    local key="$1" value="$2"
+    [ -z "$key" ] || [ -z "$value" ] && { echo '{"error":"missing key or value"}'; return 1; }
+    # Whitelist allowed keys
+    case "$key" in
+        subscription_url|interface|mode|auto_start|selected_server) ;;
+        *) echo '{"error":"invalid key"}'; return 1 ;;
+    esac
+    local tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    echo "{\"status\":\"saved\",\"key\":\"$key\"}"
+}
+
+cmd_diagnose() {
+    local results="[]"
+    _check() {
+        local name="$1" status="$2" detail="$3"
+        results=$(echo "$results" | jq --arg n "$name" --arg s "$status" --arg d "$detail" \
+            '. + [{name:$n, status:$s, detail:$d}]')
+    }
+
+    # 1. xray process
+    if is_xray_running; then
+        _check "xray-core" "ok" "PID $(cat /tmp/flowvpn/xray.pid), порт 1080"
+    else
+        _check "xray-core" "error" "Не запущен"
+    fi
+
+    # 2. sing-box process
+    if is_singbox_running; then
+        _check "sing-box" "ok" "PID $(cat /tmp/flowvpn/singbox.pid), порт 2154"
+    else
+        _check "sing-box" "error" "Не запущен"
+    fi
+
+    # 3. nftables
+    if nft list table ip flowvpn >/dev/null 2>&1; then
+        local rule_count=$(nft list table ip flowvpn 2>/dev/null | grep -c "tproxy\|return\|reject")
+        _check "nftables" "ok" "Таблица flowvpn: $rule_count правил"
+    else
+        _check "nftables" "error" "Таблица flowvpn не найдена"
+    fi
+
+    # 4. ip rule for tproxy
+    if ip rule list | grep -q "fwmark 0x1"; then
+        _check "ip-rule" "ok" "fwmark 0x1 → table 100"
+    else
+        _check "ip-rule" "error" "Правило fwmark не найдено"
+    fi
+
+    # 5. dnsmasq → sing-box
+    local dns_srv=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
+    if echo "$dns_srv" | grep -q "5354"; then
+        _check "dns-redirect" "ok" "dnsmasq → sing-box ($dns_srv)"
+    else
+        _check "dns-redirect" "warn" "dnsmasq не перенаправлен: $dns_srv"
+    fi
+
+    # 6. DNS resolution
+    local dns_test=$(nslookup youtube.com 127.0.0.1 2>&1 | grep -c "Address.*[0-9]")
+    if [ "$dns_test" -gt 1 ]; then
+        _check "dns-resolve" "ok" "youtube.com резолвится"
+    else
+        _check "dns-resolve" "error" "youtube.com не резолвится"
+    fi
+
+    # 7. VPN connection (xray SOCKS)
+    if is_xray_running; then
+        local vpn_ip=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 https://ifconfig.me 2>/dev/null)
+        if [ -n "$vpn_ip" ]; then
+            _check "vpn-connection" "ok" "VPN IP: $vpn_ip"
+        else
+            _check "vpn-connection" "error" "Нет ответа через VPN"
+        fi
+    else
+        _check "vpn-connection" "error" "xray не запущен"
+    fi
+
+    # 8. Blocked site through VPN
+    if is_xray_running; then
+        local yt_code=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://youtube.com 2>/dev/null)
+        if [ "$yt_code" = "301" ] || [ "$yt_code" = "200" ]; then
+            _check "test-blocked" "ok" "youtube.com: HTTP $yt_code через VPN"
+        else
+            _check "test-blocked" "error" "youtube.com: HTTP $yt_code"
+        fi
+    else
+        _check "test-blocked" "error" "xray не запущен"
+    fi
+
+    # 9. RU site direct
+    local ya_code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://yandex.ru 2>/dev/null)
+    if [ "$ya_code" = "302" ] || [ "$ya_code" = "200" ]; then
+        _check "test-direct" "ok" "yandex.ru: HTTP $ya_code напрямую"
+    else
+        _check "test-direct" "warn" "yandex.ru: HTTP $ya_code"
+    fi
+
+    # 10. sing-box log errors
+    local err_count=0
+    [ -f "$FLOWVPN_TMP/singbox.log" ] && err_count=$(grep -c "ERROR" "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+    if [ "$err_count" -eq 0 ]; then
+        _check "log-errors" "ok" "Ошибок нет"
+    else
+        local last_err=$(grep "ERROR" "$FLOWVPN_TMP/singbox.log" | tail -1 | sed 's/.*\] //')
+        _check "log-errors" "warn" "$err_count ошибок. Последняя: $last_err"
+    fi
+
+    # 11. Log size
+    local log_size=0
+    [ -f "$FLOWVPN_TMP/singbox.log" ] && log_size=$(wc -l < "$FLOWVPN_TMP/singbox.log")
+    if [ "$log_size" -gt 5000 ]; then
+        _check "log-size" "warn" "$log_size строк — лог большой, рекомендуется очистить"
+    else
+        _check "log-size" "ok" "$log_size строк"
+    fi
+
+    # 12. Disk space
+    local free_mb=$(df /overlay 2>/dev/null | tail -1 | awk '{print int($4/1024)}')
+    if [ "$free_mb" -lt 5 ]; then
+        _check "disk" "error" "Мало места: ${free_mb}MB свободно"
+    else
+        _check "disk" "ok" "${free_mb}MB свободно на /overlay"
+    fi
+
+    echo "$results" | jq '.'
+}
+
+# ============================================================
+# Watchdog — auto-failover
+# ============================================================
+
+cmd_watchdog() {
+    local interval="${1:-60}" max_fails=3 fail_count=0
+    trap 'flog "Watchdog stopped"; exit 0' TERM INT
+
+    while true; do
+        sleep "$interval"
+
+        # Skip if not running
+        is_xray_running || continue
+
+        # Test VPN connectivity
+        local ok=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 -o /dev/null -w "%{http_code}" https://cp.cloudflare.com/generate_204 2>/dev/null)
+        if [ "$ok" = "204" ] || [ "$ok" = "200" ]; then
+            fail_count=0
+            continue
+        fi
+
+        fail_count=$((fail_count + 1))
+        logger -t flowvpn "Watchdog: server check failed ($fail_count/$max_fails)"
+
+        if [ "$fail_count" -ge "$max_fails" ]; then
+            logger -t flowvpn "Watchdog: switching server"
+            fail_count=0
+
+            local selected=$(get_config_val selected_server 0)
+            local total=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+            [ -z "$total" ] && continue
+
+            # Try next servers
+            local tried=0
+            while [ "$tried" -lt "$total" ]; do
+                selected=$(( (selected + 1) % total ))
+                tried=$((tried + 1))
+
+                # Quick test this server
+                generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray_test.json"
+                jq '.inbounds=[{tag:"t",port:1081,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+                    "$FLOWVPN_TMP/xray_test.json" > "$FLOWVPN_TMP/xray_probe.json"
+                /usr/bin/xray run -config "$FLOWVPN_TMP/xray_probe.json" >/dev/null 2>&1 &
+                local probe_pid=$!
+                sleep 3
+
+                local test_ip=$(curl -s --socks5-hostname 127.0.0.1:1081 --max-time 5 https://ifconfig.me 2>/dev/null)
+                kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null
+                rm -f "$FLOWVPN_TMP/xray_test.json" "$FLOWVPN_TMP/xray_probe.json"
+
+                if [ -n "$test_ip" ]; then
+                    local name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
+                    logger -t flowvpn "Watchdog: switched to $name ($test_ip)"
+                    local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+                    save_config "$tmp"
+                    cmd_restart >/dev/null 2>&1
+                    break
+                fi
+            done
+        fi
+    done
+}
+
+# ============================================================
+# Traffic stats
+# ============================================================
+
+cmd_get_traffic() {
+    local vpn_bytes=0 direct_bytes=0 vpn_pkts=0 direct_pkts=0
+
+    # Read nftables counters
+    local nft_out=$(nft list table ip flowvpn 2>/dev/null)
+    if [ -n "$nft_out" ]; then
+        # tproxy counter = total proxied traffic
+        vpn_bytes=$(echo "$nft_out" | grep "tproxy" | grep -oE "bytes [0-9]+" | head -1 | awk '{print $2}')
+        vpn_pkts=$(echo "$nft_out" | grep "tproxy" | grep -oE "packets [0-9]+" | head -1 | awk '{print $2}')
+        [ -z "$vpn_bytes" ] && vpn_bytes=0
+        [ -z "$vpn_pkts" ] && vpn_pkts=0
+    fi
+
+    # Direct = total - VPN (approximate from sing-box connections)
+    local direct_conns=0 vpn_conns=0
+    if [ -f "$FLOWVPN_TMP/singbox.log" ]; then
+        vpn_conns=$(grep -c "outbound/socks" "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+        direct_conns=$(grep -c "outbound/direct" "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+    fi
+
+    jq -n --argjson vb "$vpn_bytes" --argjson vp "$vpn_pkts" \
+        --argjson vc "$vpn_conns" --argjson dc "$direct_conns" \
+        '{vpn_bytes:$vb, vpn_packets:$vp, vpn_connections:$vc, direct_connections:$dc}'
+}
+
+# ============================================================
+# Schedule
+# ============================================================
+
+cmd_schedule() {
+    local action="$1" on_time="$2" off_time="$3"
+    case "$action" in
+        set)
+            [ -z "$on_time" ] || [ -z "$off_time" ] && { echo '{"error":"need on_time and off_time"}'; return 1; }
+            local tmp=$(jq --arg on "$on_time" --arg off "$off_time" \
+                '.schedule = {enabled:true, on:$on, off:$off}' "$FLOWVPN_CONFIG")
+            save_config "$tmp"
+            _setup_cron
+            echo "{\"status\":\"schedule set\",\"on\":\"$on_time\",\"off\":\"$off_time\"}"
+            ;;
+        disable)
+            local tmp=$(jq '.schedule.enabled = false' "$FLOWVPN_CONFIG")
+            save_config "$tmp"
+            _remove_cron
+            echo '{"status":"schedule disabled"}'
+            ;;
+        *)
+            local sched=$(jq '.schedule // {enabled:false}' "$FLOWVPN_CONFIG")
+            echo "$sched"
+            ;;
+    esac
+}
+
+_setup_cron() {
+    _remove_cron
+    local on_time=$(jq -r '.schedule.on // "07:00"' "$FLOWVPN_CONFIG")
+    local off_time=$(jq -r '.schedule.off // "23:00"' "$FLOWVPN_CONFIG")
+    local on_h=${on_time%%:*} on_m=${on_time##*:}
+    local off_h=${off_time%%:*} off_m=${off_time##*:}
+    (crontab -l 2>/dev/null; echo "$on_m $on_h * * * /usr/bin/flowvpn start >/dev/null 2>&1 #flowvpn") | crontab -
+    (crontab -l 2>/dev/null; echo "$off_m $off_h * * * /usr/bin/flowvpn stop >/dev/null 2>&1 #flowvpn") | crontab -
+}
+
+_remove_cron() {
+    crontab -l 2>/dev/null | grep -v "#flowvpn" | crontab -
+}
+
+# ============================================================
+# Auto-update
+# ============================================================
+
+cmd_auto_update() {
+    local action="$1"
+    case "$action" in
+        enable)
+            local tmp=$(jq '.auto_update = true' "$FLOWVPN_CONFIG")
+            save_config "$tmp"
+            _setup_auto_update_cron
+            echo '{"status":"auto-update enabled"}'
+            ;;
+        disable)
+            local tmp=$(jq '.auto_update = false' "$FLOWVPN_CONFIG")
+            save_config "$tmp"
+            _remove_auto_update_cron
+            echo '{"status":"auto-update disabled"}'
+            ;;
+        *)
+            jq '{auto_update: (.auto_update // false)}' "$FLOWVPN_CONFIG"
+            ;;
+    esac
+}
+
+_setup_auto_update_cron() {
+    _remove_auto_update_cron
+    (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/flowvpn update >/dev/null 2>&1 #flowvpn-update") | crontab -
+}
+
+_remove_auto_update_cron() {
+    crontab -l 2>/dev/null | grep -v "#flowvpn-update" | crontab -
+}
+
+# ============================================================
+# Backup / Restore
+# ============================================================
+
+cmd_backup() {
+    local direct_domains="" vpn_domains=""
+    [ -f /etc/flowvpn/direct_domains.txt ] && direct_domains=$(cat /etc/flowvpn/direct_domains.txt)
+    [ -f /etc/flowvpn/vpn_domains.txt ] && vpn_domains=$(cat /etc/flowvpn/vpn_domains.txt)
+    jq -n --argjson config "$(cat $FLOWVPN_CONFIG)" \
+        --arg direct "$direct_domains" --arg vpn "$vpn_domains" \
+        '{config:$config, direct_domains:$direct, vpn_domains:$vpn, version:"v4"}'
+}
+
+cmd_restore() {
+    local data="$1"
+    [ -z "$data" ] && { echo '{"error":"no data"}'; return 1; }
+    echo "$data" | jq -r '.config' > "$FLOWVPN_CONFIG"
+    echo "$data" | jq -r '.direct_domains // ""' > /etc/flowvpn/direct_domains.txt
+    echo "$data" | jq -r '.vpn_domains // ""' > /etc/flowvpn/vpn_domains.txt
+    echo '{"status":"restored"}'
+}
+
+# ============================================================
+# Per-device routing
+# ============================================================
+
+cmd_set_device_route() {
+    local ip="$1" route="$2"
+    [ -z "$ip" ] || [ -z "$route" ] && { echo '{"error":"need ip and route (vpn/direct)"}'; return 1; }
+    local tmp=$(jq --arg ip "$ip" --arg r "$route" \
+        '.device_rules[$ip] = $r' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    # Rebuild nftables if running
+    if is_singbox_running; then
+        local iface=$(get_config_val interface "br-lan")
+        setup_network 2154 32768 "$iface"
+    fi
+    echo "{\"status\":\"device route set\",\"ip\":\"$ip\",\"route\":\"$route\"}"
+}
+
+cmd_remove_device_route() {
+    local ip="$1"
+    [ -z "$ip" ] && { echo '{"error":"need ip"}'; return 1; }
+    local tmp=$(jq --arg ip "$ip" 'del(.device_rules[$ip])' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    if is_singbox_running; then
+        local iface=$(get_config_val interface "br-lan")
+        setup_network 2154 32768 "$iface"
+    fi
+    echo "{\"status\":\"device route removed\",\"ip\":\"$ip\"}"
+}
+
+cmd_healthcheck() {
+    local results="[]"
+    _hc() {
+        local name="$1" status="$2" detail="$3"
+        results=$(echo "$results" | jq --arg n "$name" --arg s "$status" --arg d "$detail" \
+            '. + [{name:$n, status:$s, detail:$d}]')
+    }
+
+    # 1. Processes
+    is_xray_running && _hc "xray" "ok" "PID $(cat /tmp/flowvpn/xray.pid)" \
+        || _hc "xray" "error" "Не запущен"
+    is_singbox_running && _hc "sing-box" "ok" "PID $(cat /tmp/flowvpn/singbox.pid)" \
+        || _hc "sing-box" "error" "Не запущен"
+
+    # 2. Ports
+    netstat -tlnp 2>/dev/null | grep -q ":1080" && _hc "SOCKS :1080" "ok" "xray слушает" \
+        || _hc "SOCKS :1080" "error" "Порт не открыт"
+    netstat -tlnp 2>/dev/null | grep -q ":2154" && _hc "tproxy :2154" "ok" "sing-box слушает" \
+        || _hc "tproxy :2154" "error" "Порт не открыт"
+    netstat -ulnp 2>/dev/null | grep -q ":5354" && _hc "DNS :5354" "ok" "sing-box DNS слушает" \
+        || _hc "DNS :5354" "error" "Порт не открыт"
+
+    # 3. nftables
+    if nft list table ip flowvpn >/dev/null 2>&1; then
+        local rc=$(nft list table ip flowvpn 2>/dev/null | grep -c "return\|tproxy\|reject")
+        _hc "nftables" "ok" "$rc правил в таблице flowvpn"
+    else
+        _hc "nftables" "error" "Таблица flowvpn не найдена"
+    fi
+
+    # 4. IP rule
+    ip rule list | grep -q "fwmark 0x1" && _hc "ip rule" "ok" "fwmark 0x1 → table 100" \
+        || _hc "ip rule" "error" "Правило отсутствует"
+
+    # 5. DNS
+    local dns_srv=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
+    echo "$dns_srv" | grep -q "5354" && _hc "DNS redirect" "ok" "dnsmasq → $dns_srv" \
+        || _hc "DNS redirect" "warn" "dnsmasq: $dns_srv"
+    nslookup youtube.com 127.0.0.1 >/dev/null 2>&1 && _hc "DNS youtube.com" "ok" "Резолвится" \
+        || _hc "DNS youtube.com" "error" "Не резолвится"
+
+    # 6. VPN connection
+    if is_xray_running; then
+        local vpn_ip=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://ifconfig.me 2>/dev/null)
+        local home_ip=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null)
+        [ -n "$vpn_ip" ] && _hc "VPN туннель" "ok" "VPN IP: $vpn_ip" \
+            || _hc "VPN туннель" "error" "Нет ответа"
+        [ -n "$home_ip" ] && [ "$vpn_ip" != "$home_ip" ] && _hc "IP проверка" "ok" "VPN ≠ Home ($home_ip)" \
+            || _hc "IP проверка" "warn" "VPN=$vpn_ip Home=$home_ip"
+    fi
+
+    # 7. Blocked sites
+    for site in youtube.com instagram.com x.com; do
+        local code=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://$site 2>/dev/null)
+        case "$code" in 200|301|302) _hc "$site" "ok" "HTTP $code через VPN" ;; *) _hc "$site" "error" "HTTP $code" ;; esac
+    done
+
+    # 8. RU sites direct
+    for site in yandex.ru vk.com sber.ru 2ip.ru; do
+        local code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://$site 2>/dev/null)
+        case "$code" in 200|301|302) _hc "$site" "ok" "HTTP $code напрямую" ;; *) _hc "$site" "warn" "HTTP $code" ;; esac
+    done
+
+    # 9. Geosite
+    grep -q "updated rule-set geosite-ru" /tmp/flowvpn/singbox.log 2>/dev/null \
+        && _hc "geosite-ru" "ok" "Загружен" || _hc "geosite-ru" "error" "Не загружен"
+    grep -q "updated rule-set geoip-ru" /tmp/flowvpn/singbox.log 2>/dev/null \
+        && _hc "geoip-ru" "ok" "Загружен" || _hc "geoip-ru" "error" "Не загружен"
+
+    # 10. Errors
+    local sb_err=$(grep -c "ERROR" /tmp/flowvpn/singbox.log 2>/dev/null)
+    local xr_err=$(grep -ciE "error|fail" /tmp/flowvpn/xray.log 2>/dev/null)
+    [ "$sb_err" -eq 0 ] && [ "$xr_err" -eq 0 ] && _hc "Ошибки" "ok" "Нет ошибок" \
+        || _hc "Ошибки" "warn" "sing-box: $sb_err, xray: $xr_err"
+
+    # 11. Resources
+    local free_ram=$(free | grep Mem | awk '{print int($4/1024)}')
+    local free_flash=$(df /overlay 2>/dev/null | tail -1 | awk '{print int($4/1024)}')
+    local cpu=$(cat /proc/loadavg | awk '{print $1}')
+    [ "$free_ram" -gt 50 ] && _hc "RAM" "ok" "${free_ram}MB свободно" \
+        || _hc "RAM" "warn" "${free_ram}MB свободно — мало!"
+    [ "$free_flash" -gt 5 ] && _hc "Flash" "ok" "${free_flash}MB свободно" \
+        || _hc "Flash" "error" "${free_flash}MB — критически мало!"
+    _hc "CPU" "ok" "Load: $cpu"
+
+    # 12. Log rotation
+    local log_lines=$(wc -l < /tmp/flowvpn/singbox.log 2>/dev/null || echo 0)
+    [ "$log_lines" -lt 5000 ] && _hc "Лог" "ok" "$log_lines строк" \
+        || _hc "Лог" "warn" "$log_lines строк — рекомендуется очистить"
+
+    echo "$results" | jq '.'
+}
+
+cmd_set_wifi() {
+    local ssid="$1" password="$2"
+    [ -z "$password" ] && { echo '{"error":"missing password"}'; return 1; }
+    uci set wireless.default_radio0.encryption="psk2"
+    uci set wireless.default_radio0.key="$password"
+    uci set wireless.default_radio1.encryption="psk2"
+    uci set wireless.default_radio1.key="$password"
+    [ -n "$ssid" ] && {
+        uci set wireless.default_radio0.ssid="${ssid}_2"
+        uci set wireless.default_radio1.ssid="${ssid}_5"
+    }
+    uci commit wireless
+    wifi reload >/dev/null 2>&1 &
+    echo '{"status":"wifi updated"}'
+}
+
+# ============================================================
+# Init
+# ============================================================
+
+if [ ! -f "$FLOWVPN_CONFIG" ]; then
+    mkdir -p /etc/flowvpn
+    echo '{"subscription_url":"","selected_server":0,"interface":"br-lan","auto_start":true,"mode":"all_vpn"}' | jq '.' > "$FLOWVPN_CONFIG"
+fi
+
+case "$1" in
+    start)          cmd_start ;;
+    stop)           cmd_stop ;;
+    restart)        cmd_restart ;;
+    status)         cmd_status ;;
+    set-server)     cmd_set_server "$2" ;;
+    update)         cmd_update ;;
+    ping)           cmd_ping ;;
+    set-mode)       cmd_set_mode "$2" ;;
+    add-domain)     cmd_add_domain "$2" "$3" ;;
+    remove-domain)  cmd_remove_domain "$2" "$3" ;;
+    get-domains)    cmd_get_domains ;;
+    get-devices)    cmd_get_devices ;;
+    get-log)        cmd_get_log "$2" "$3" ;;
+    clear-log)      > "$FLOWVPN_TMP/singbox.log"; echo '{"status":"cleared"}' ;;
+    diagnose)       cmd_diagnose ;;
+    healthcheck)    cmd_healthcheck ;;
+    watchdog)       cmd_watchdog "$2" ;;
+    get-traffic)    cmd_get_traffic ;;
+    schedule)       cmd_schedule "$2" "$3" "$4" ;;
+    auto-update)    cmd_auto_update "$2" ;;
+    backup)         cmd_backup ;;
+    restore)        cmd_restore "$2" ;;
+    set-device)     cmd_set_device_route "$2" "$3" ;;
+    remove-device)  cmd_remove_device_route "$2" ;;
+    get-dns)        cmd_get_dns ;;
+    set-config)     cmd_set_config "$2" "$3" ;;
+    set-wifi)       cmd_set_wifi "$2" "$3" ;;
+    *)
+        echo "FlowVPN v3 — VPN for OpenWrt"
+        echo "Usage: flowvpn {start|stop|restart|status|set-server N|update|ping}"
+        echo "       flowvpn {set-mode all_vpn|blocklist}"
+        echo "       flowvpn {add-domain DOMAIN direct|vpn}"
+        echo "       flowvpn {remove-domain DOMAIN direct|vpn}"
+        echo "       flowvpn {get-domains|get-devices|get-log|get-dns}"
+        echo "       flowvpn {set-config KEY VALUE|set-wifi SSID PASSWORD}"
+        ;;
+esac
