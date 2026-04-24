@@ -47,6 +47,7 @@ case "$action" in
     clear-log)      /usr/bin/flowvpn clear-log ;;
     diagnose)       /usr/bin/flowvpn diagnose ;;
     healthcheck)    /usr/bin/flowvpn healthcheck ;;
+    system-info)    /usr/bin/flowvpn system-info ;;
     get-traffic)    /usr/bin/flowvpn get-traffic ;;
     set-config)
         if [ -n "$key" ]; then
