@@ -2,260 +2,1223 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
 <title>FlowVPN</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0a0f;--bg2:#12121a;--card:rgba(255,255,255,0.04);--border:rgba(255,255,255,0.08);--text:#e4e4e7;--dim:#71717a;--accent:#7c3aed;--accent2:#3b82f6;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--radius:16px}
-[data-theme="light"]{--bg:#f5f5f7;--bg2:#ffffff;--card:rgba(0,0,0,0.03);--border:rgba(0,0,0,0.1);--text:#1a1a1a;--dim:#6b7280}
-[data-theme="light"] .toggle-track{background:rgba(0,0,0,0.15)}
-[data-theme="light"] .server:hover{background:rgba(0,0,0,0.04)}
-[data-theme="light"] .server.active{background:rgba(124,58,237,0.06)}
-[data-theme="light"] .stat-item{background:rgba(0,0,0,0.02)}
-[data-theme="light"] .input{background:rgba(0,0,0,0.03)}
-[data-theme="light"] .btn-g{background:rgba(0,0,0,0.05)}
-[data-theme="light"] .btn-g:hover{background:rgba(0,0,0,0.08)}
-[data-theme="light"] .toast{background:rgba(255,255,255,0.95)}
-[data-theme="light"] .domain-tag{background:rgba(0,0,0,0.04)}
-[data-theme="light"] .log-line{border-bottom-color:rgba(0,0,0,0.05)}
-[data-theme="light"] .mode-btn{background:rgba(0,0,0,0.02)}
-[data-theme="light"] .mode-btn:hover{background:rgba(0,0,0,0.05)}
-[data-theme="light"] .tab{color:var(--dim)}
-[data-theme="light"] .toggle-knob{box-shadow:0 1px 4px rgba(0,0,0,.15)}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;min-height:100vh}
+:root{
+  --bg:#0b0b10;
+  --bg-gradient:radial-gradient(ellipse 60% 50% at 30% 0%, rgba(124,58,237,0.08), transparent 50%), radial-gradient(ellipse 40% 40% at 80% 100%, rgba(59,130,246,0.05), transparent 50%), #0b0b10;
+  --card:rgba(255,255,255,0.03);
+  --card-hover:rgba(255,255,255,0.05);
+  --border:rgba(255,255,255,0.06);
+  --border-strong:rgba(255,255,255,0.1);
+  --text:#fafafa;
+  --text-muted:#a1a1aa;
+  --text-dim:#71717a;
+  --accent:#a78bfa;
+  --accent-warm:#f472b6;
+  --accent-cool:#60a5fa;
+  --green:#34d399;
+  --red:#f87171;
+  --yellow:#fbbf24;
+  --orange:#fb923c;
+}
+[data-theme="light"]{
+  --bg:#fafaf9;
+  --bg-gradient:radial-gradient(ellipse 60% 50% at 30% 0%, rgba(124,58,237,0.04), transparent 50%), radial-gradient(ellipse 40% 40% at 80% 100%, rgba(59,130,246,0.03), transparent 50%), #fafaf9;
+  --card:rgba(0,0,0,0.02);
+  --card-hover:rgba(0,0,0,0.04);
+  --border:rgba(0,0,0,0.06);
+  --border-strong:rgba(0,0,0,0.1);
+  --text:#18181b;
+  --text-muted:#52525b;
+  --text-dim:#a1a1aa;
+  --accent:#7c3aed;
+  --accent-warm:#db2777;
+  --accent-cool:#2563eb;
+  --green:#059669;
+  --red:#dc2626;
+  --yellow:#d97706;
+  --orange:#ea580c;
+}
 
-/* Layout */
-.app{max-width:1200px;margin:0 auto;padding:20px 24px}
-.header{display:flex;align-items:center;justify-content:space-between;padding:12px 0 24px}
-.logo{font-size:26px;font-weight:800;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.5px}
-.header-right{display:flex;align-items:center;gap:16px}
-.header-status{font-size:13px;color:var(--dim)}
+body{
+  background:var(--bg-gradient);
+  color:var(--text);
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+  min-height:100vh;
+  font-feature-settings:'cv02','cv03','cv04','cv11';
+  line-height:1.5;
+  letter-spacing:-0.01em;
+  overflow-x:hidden;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{max-width:100vw}
+/* Numbers: tabular-nums stabilizes width when values change (speed, ping, uptime) */
+.speed-value,.stat-num,.mini-stat-val,.metric-value,.server-ping,
+.device-meta,.log-time,.header-info b,.status-text .meta b,
+.log-count-badge,.log-dup-count,.dev-group-count{
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:'tnum','zero'
+}
 
-/* Desktop: two columns */
-.layout{display:grid;grid-template-columns:380px 1fr;gap:20px;align-items:start}
-@media(max-width:800px){.layout{grid-template-columns:1fr}}
+.app{max-width:1180px;margin:0 auto;padding:0 28px 80px}
+
+/* Header */
+.header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 0;margin:0 -28px 20px;padding-left:28px;padding-right:28px;
+  position:sticky;top:0;z-index:50;
+  background:rgba(11,11,15,0.72);
+  backdrop-filter:saturate(140%) blur(14px);
+  -webkit-backdrop-filter:saturate(140%) blur(14px);
+  border-bottom:1px solid transparent;
+  transition:border-color .2s ease, background .2s ease
+}
+[data-theme="light"] .header{
+  background:rgba(248,250,252,0.78)
+}
+.header.scrolled{border-bottom-color:var(--border)}
+.brand{display:flex;align-items:baseline;gap:10px}
+.logo{
+  font-size:26px;font-weight:800;letter-spacing:-0.03em;
+  background:linear-gradient(120deg, var(--accent) 0%, var(--accent-cool) 60%, var(--accent-warm) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.version{font-size:11px;color:var(--text-dim);font-weight:500;letter-spacing:0.04em;text-transform:uppercase}
+.header-actions{display:flex;align-items:center;gap:10px}
+.header-info{
+  font-size:12.5px;color:var(--text-muted);
+  display:flex;align-items:center;gap:8px;
+  padding:6px 12px;background:var(--card);border:1px solid var(--border);border-radius:999px;
+  transition:all .2s ease
+}
+.header-info.on{
+  background:rgba(52,211,153,0.08);
+  border-color:rgba(52,211,153,0.2);
+  color:var(--text)
+}
+.header-info.off{
+  background:rgba(248,113,113,0.06);
+  border-color:rgba(248,113,113,0.18);
+  color:var(--text-muted)
+}
+.header-info b{color:var(--text);font-weight:600;font-family:'JetBrains Mono',monospace;font-size:11.5px}
+.header-mini-toggle{
+  width:40px;height:22px;position:relative;cursor:pointer;
+  display:none;align-items:center;flex-shrink:0
+}
+.header-mini-toggle input{display:none}
+.header-mini-toggle .mt-track{
+  position:absolute;inset:0;border-radius:11px;
+  background:rgba(255,255,255,0.08);
+  border:1px solid var(--border-strong);
+  transition:background .2s ease
+}
+.header-mini-toggle input:checked+.mt-track{
+  background:linear-gradient(135deg, var(--accent), var(--accent-cool));
+  border-color:transparent
+}
+.header-mini-toggle .mt-knob{
+  position:absolute;top:2px;left:2px;
+  width:16px;height:16px;border-radius:50%;
+  background:#fff;transition:transform .25s cubic-bezier(0.4,0,0.2,1);
+  box-shadow:0 1px 3px rgba(0,0,0,0.3)
+}
+.header-mini-toggle input:checked~.mt-knob{transform:translateX(18px)}
+.header.scrolled .header-mini-toggle{display:inline-flex}
+.header.scrolled .header-info{padding:6px 10px 6px 12px}
+
+/* Main toggle — HERO */
+.hero{
+  background:linear-gradient(135deg, var(--card) 0%, rgba(124,58,237,0.04) 100%);
+  border:1px solid var(--border);
+  border-radius:24px;
+  padding:32px 36px;
+  margin-bottom:20px;
+  position:relative;
+  overflow:hidden;
+}
+.hero::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(circle at 80% 50%, rgba(167,139,250,0.08), transparent 70%);
+  pointer-events:none;
+}
+.hero-inner{display:flex;align-items:center;justify-content:space-between;gap:24px;position:relative}
+.hero-status{display:flex;align-items:center;gap:20px}
+.status-orb{
+  width:68px;height:68px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(circle, rgba(52,211,153,0.2), rgba(52,211,153,0.05));
+  border:1px solid rgba(52,211,153,0.3);
+  position:relative;
+}
+.status-orb.off{
+  background:radial-gradient(circle, rgba(248,113,113,0.15), rgba(248,113,113,0.03));
+  border-color:rgba(248,113,113,0.2);
+}
+.status-orb .pulse{
+  position:absolute;inset:-2px;border-radius:50%;
+  border:2px solid var(--green);
+  animation:pulse 2.5s ease-out infinite;
+}
+.status-orb.off .pulse{display:none}
+@keyframes pulse{
+  0%{transform:scale(1);opacity:0.8}
+  100%{transform:scale(1.4);opacity:0}
+}
+.status-orb .dot{
+  width:14px;height:14px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 16px var(--green);
+}
+.status-orb.off .dot{background:var(--red);box-shadow:none}
+
+.status-text h1{
+  font-size:28px;font-weight:700;letter-spacing:-0.02em;
+  margin-bottom:8px;line-height:1.2;
+}
+.status-text .meta{
+  font-size:13px;color:var(--text-muted);
+  display:flex;gap:10px 18px;flex-wrap:wrap;align-items:center;
+  line-height:1.5;
+}
+.status-text .meta span{display:inline-flex;align-items:center;gap:6px}
+.status-text .meta span+span{
+  position:relative;padding-left:18px;
+}
+.status-text .meta span+span::before{
+  content:"";position:absolute;left:0;top:50%;
+  width:3px;height:3px;border-radius:50%;
+  background:var(--text-dim);transform:translateY(-50%);
+}
+.status-text .meta b{color:var(--text);font-weight:600}
 
 /* Toggle */
-.toggle{position:relative;width:52px;height:28px;cursor:pointer;flex-shrink:0}
+.toggle{position:relative;width:64px;height:34px;cursor:pointer;flex-shrink:0}
 .toggle input{display:none}
-.toggle-track{position:absolute;inset:0;border-radius:14px;background:rgba(255,255,255,0.1);transition:.3s}
-.toggle input:checked+.toggle-track{background:var(--accent)}
-.toggle-knob{position:absolute;top:2px;left:2px;width:24px;height:24px;border-radius:50%;background:#fff;transition:.3s;box-shadow:0 1px 4px rgba(0,0,0,.3)}
-.toggle input:checked~.toggle-knob{transform:translateX(24px)}
+.toggle-track{
+  position:absolute;inset:0;border-radius:17px;
+  background:rgba(255,255,255,0.08);
+  transition:background .3s ease;
+  border:1px solid var(--border-strong);
+}
+.toggle input:checked+.toggle-track{
+  background:linear-gradient(135deg, var(--accent) 0%, var(--accent-cool) 100%);
+  border-color:transparent;
+}
+.toggle-knob{
+  position:absolute;top:3px;left:3px;
+  width:26px;height:26px;border-radius:50%;
+  background:#fff;transition:transform .3s cubic-bezier(0.4,0,0.2,1);
+  box-shadow:0 2px 8px rgba(0,0,0,0.25);
+}
+.toggle input:checked~.toggle-knob{transform:translateX(30px)}
+
+/* Settings row with inline toggle */
+.setting-row{
+  display:flex;align-items:flex-start;justify-content:space-between;
+  gap:20px
+}
+.setting-row-info{flex:1;min-width:0}
+.setting-row-title{
+  font-size:14px;font-weight:600;color:var(--text);
+  letter-spacing:-0.01em;line-height:1.35
+}
+.setting-row-desc{
+  font-size:12.5px;color:var(--text-muted);
+  line-height:1.5;margin-top:4px
+}
+.toggle-sm{width:48px;height:28px;flex-shrink:0}
+.toggle-sm .toggle-knob{width:22px;height:22px;top:2px;left:2px}
+.toggle-sm input:checked~.toggle-knob{transform:translateX(20px)}
+.setting-body{
+  margin-top:16px;padding-top:16px;
+  border-top:1px solid var(--border);
+  transition:opacity .2s ease
+}
+.setting-body.disabled{opacity:0.4;pointer-events:none}
+.setting-status{
+  font-size:12px;color:var(--text-dim);
+  margin-top:10px;display:flex;align-items:center;gap:6px
+}
+.setting-status.on{color:var(--green)}
+.setting-status.on::before{
+  content:"";width:6px;height:6px;border-radius:50%;
+  background:var(--green);box-shadow:0 0 6px var(--green)
+}
+
+/* Layout */
+.grid{display:grid;grid-template-columns:360px minmax(0,1fr);gap:20px;align-items:start}
+@media(max-width:840px){
+  .grid{display:flex;flex-direction:column;gap:0}
+  .grid > :nth-child(2){order:1}
+  .grid > :nth-child(1){order:2}
+  .header{flex-wrap:wrap;gap:12px}
+}
 
 /* Cards */
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:14px;backdrop-filter:blur(10px)}
-.card-title{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+.card{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:18px;
+  padding:24px 26px;
+  margin-bottom:18px;
+  transition:border-color .2s ease;
+}
+.card:hover{border-color:var(--border-strong)}
+.card-accent{position:relative;padding-left:26px}
+.card-accent::before{
+  content:"";position:absolute;left:0;top:14px;bottom:14px;
+  width:3px;border-radius:0 3px 3px 0
+}
+.card-accent-direct::before{background:linear-gradient(180deg,var(--green),rgba(52,211,153,0.4))}
+.card-accent-direct{background:linear-gradient(90deg,rgba(52,211,153,0.02),transparent 30%),var(--card)}
+.card-accent-vpn::before{background:linear-gradient(180deg,var(--accent),var(--accent-warm))}
+.card-accent-vpn{background:linear-gradient(90deg,rgba(167,139,250,0.03),transparent 30%),var(--card)}
+.card-accent-dns::before{background:linear-gradient(180deg,var(--accent-cool),rgba(96,165,250,0.4))}
+.card-accent-dns{background:linear-gradient(90deg,rgba(96,165,250,0.02),transparent 30%),var(--card)}
+.card-head{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:6px;gap:8px
+}
+.card-title{
+  font-size:14px;font-weight:600;color:var(--text);
+  letter-spacing:-0.01em;
+}
+.card-desc{
+  font-size:12.5px;color:var(--text-muted);
+  margin-bottom:18px;line-height:1.55
+}
 
-/* Status */
-.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.stat-item{background:rgba(255,255,255,0.02);border-radius:12px;padding:14px 16px}
-.stat-label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
-.stat-value{font-size:16px;font-weight:600;font-family:'SF Mono','Fira Code',monospace}
-.stat-big{grid-column:span 2;text-align:center}
-.stat-big .stat-value{font-size:20px}
+/* Live dot */
+.live-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--green);box-shadow:0 0 6px var(--green);
+  animation:livePulse 1.6s infinite
+}
 
-/* Dots */
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
-.dot-g{background:var(--green);box-shadow:0 0 8px var(--green)}.dot-r{background:var(--red)}.dot-y{background:var(--yellow)}
+/* Sparkline */
+.spark{
+  display:block;width:100%;max-width:100%;height:54px;
+  margin:6px 0 4px;border-radius:8px
+}
 
-/* Servers */
-.server{display:flex;align-items:center;padding:12px 16px;border-radius:12px;cursor:pointer;transition:.2s;margin-bottom:6px;background:rgba(255,255,255,0.02);border:1px solid transparent}
-.server:hover{background:rgba(255,255,255,0.05);transform:translateX(2px)}
-.server.active{border-color:var(--accent);background:rgba(124,58,237,0.08)}
-.server-name{flex:1;font-size:14px;font-weight:500}.server-ping{font-size:12px;font-family:monospace;min-width:55px;text-align:right}
-.pg{color:var(--green)}.pm{color:var(--yellow)}.pb{color:var(--red)}.pu{color:var(--dim)}
+/* Mini stats under speed */
+.mini-stats{
+  display:grid;grid-template-columns:1fr 1fr;gap:8px;
+  margin-top:10px;padding-top:12px;
+  border-top:1px solid var(--border)
+}
+.mini-stat{display:flex;flex-direction:column;gap:2px}
+.mini-stat-label{
+  font-size:10px;color:var(--text-dim);
+  text-transform:uppercase;letter-spacing:0.05em;font-weight:600
+}
+.mini-stat-val{
+  font-family:'JetBrains Mono',monospace;
+  font-size:14px;font-weight:700
+}
+
+/* Speed display */
+.speed-row{display:flex;gap:8px;margin-top:8px}
+.speed-item{
+  flex:1;padding:12px 14px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid var(--border);border-radius:12px;
+  text-align:center
+}
+.speed-label{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
+.speed-value{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600}
+.speed-down .speed-value{color:var(--green)}
+.speed-up .speed-value{color:var(--accent-warm)}
+
+/* Servers list */
+.server{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 14px;border-radius:12px;cursor:pointer;
+  margin-bottom:4px;background:transparent;
+  border:1px solid transparent;
+  transition:all .15s ease;
+}
+.server:hover{background:var(--card-hover);transform:translateX(2px)}
+.server.active{
+  background:linear-gradient(135deg, rgba(167,139,250,0.1), rgba(96,165,250,0.05));
+  border-color:rgba(167,139,250,0.3);
+}
+.server-flag{font-size:18px;filter:saturate(1.2)}
+.server-name{flex:1;font-size:14px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.server-ping-box{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
+.ping-bars{
+  display:inline-flex;align-items:flex-end;gap:2px;
+  height:14px;width:22px
+}
+.ping-bars span{
+  width:3px;background:var(--border-strong);border-radius:1px;
+  transition:background .2s
+}
+.ping-bars span:nth-child(1){height:4px}
+.ping-bars span:nth-child(2){height:7px}
+.ping-bars span:nth-child(3){height:10px}
+.ping-bars span:nth-child(4){height:13px}
+.ping-good .ping-bars span{background:var(--green)}
+.ping-mid .ping-bars span:nth-child(-n+3){background:var(--yellow)}
+.ping-bad .ping-bars span:nth-child(-n+2){background:var(--red)}
+.server-ping{
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  padding:2px 7px;border-radius:6px;font-weight:500;min-width:52px;text-align:center
+}
+.server-meter{
+  font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;
+  padding:2px 6px;border-radius:6px;flex-shrink:0;
+  background:rgba(251,191,36,0.12);color:var(--yellow);
+  border:1px solid rgba(251,191,36,0.25)
+}
+.server-metered.active{background:linear-gradient(135deg, rgba(251,191,36,0.08), rgba(251,191,36,0.02));border-color:rgba(251,191,36,0.3)}
+.ping-good .server-ping{color:var(--green);background:rgba(52,211,153,0.1)}
+.ping-mid .server-ping{color:var(--yellow);background:rgba(251,191,36,0.1)}
+.ping-bad .server-ping{color:var(--red);background:rgba(248,113,113,0.1)}
+.ping-none .server-ping{color:var(--text-dim)}
+.ping-none .ping-bars{display:none}
 
 /* Tabs */
-.tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border-radius:12px;padding:4px;border:1px solid var(--border)}
-.tab{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;background:transparent;color:var(--dim);border:none;transition:.2s;flex:1;text-align:center;font-weight:500}
-.tab.active{background:var(--accent);color:#fff}
-.tab:hover:not(.active){background:rgba(255,255,255,0.04)}
+.tabs{
+  display:flex;gap:2px;margin-bottom:18px;
+  padding:4px;background:var(--card);
+  border:1px solid var(--border);border-radius:14px;
+}
+.tab{
+  flex:1;padding:9px 14px;border-radius:10px;
+  font-size:13px;font-weight:500;
+  cursor:pointer;background:transparent;
+  color:var(--text-muted);border:none;
+  transition:all .15s ease;text-align:center;
+  font-family:inherit
+}
+.tab:hover{color:var(--text)}
+.tab.active{
+  background:var(--bg);color:var(--text);
+  box-shadow:0 1px 3px rgba(0,0,0,0.15);
+  font-weight:600
+}
 
-/* Inputs */
-.input{width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text);font-size:13px;outline:none;transition:.2s}
-.input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(124,58,237,0.1)}
+/* Inputs & buttons */
+.input{
+  width:100%;padding:10px 14px;
+  border-radius:10px;border:1px solid var(--border-strong);
+  background:rgba(255,255,255,0.02);color:var(--text);
+  font-size:13px;outline:none;font-family:inherit;
+  transition:all .15s ease
+}
+.input:focus{border-color:var(--accent);background:rgba(255,255,255,0.04)}
+.input::placeholder{color:var(--text-dim)}
 
-/* Buttons */
-.btn{padding:9px 18px;border-radius:10px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s}
-.btn-a{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
-.btn-a:hover{opacity:.9;transform:translateY(-1px)}.btn-g{background:rgba(255,255,255,0.06);color:var(--text);border:1px solid var(--border)}
-.btn-g:hover{background:rgba(255,255,255,0.1)}.btn-sm{padding:6px 12px;font-size:11px}
-.btn-d{background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.2)}
-.btn:disabled{opacity:.3;cursor:not-allowed}
+.btn{
+  padding:9px 16px;border-radius:10px;border:1px solid transparent;cursor:pointer;
+  font-size:13px;font-weight:500;font-family:inherit;
+  transition:transform .12s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease, color .15s ease;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  line-height:1;white-space:nowrap
+}
+.btn:active{transform:translateY(0)!important}
+.btn-primary{
+  background:linear-gradient(135deg, var(--accent) 0%, var(--accent-cool) 100%);
+  color:#fff;font-weight:600;
+  box-shadow:0 1px 3px rgba(124,58,237,0.3)
+}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(124,58,237,0.4)}
+.btn-secondary{
+  background:rgba(167,139,250,0.1);color:var(--accent);
+  border-color:rgba(167,139,250,0.3);font-weight:600
+}
+.btn-secondary:hover{background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.5)}
+.btn-ghost{
+  background:var(--card);color:var(--text);
+  border-color:var(--border-strong)
+}
+.btn-ghost:hover{background:var(--card-hover);border-color:var(--text-dim)}
+.btn-danger{
+  background:rgba(248,113,113,0.08);color:var(--red);
+  border-color:rgba(248,113,113,0.2)
+}
+.btn-danger:hover{background:rgba(248,113,113,0.15);border-color:rgba(248,113,113,0.4)}
+.btn-sm{padding:6px 11px;font-size:12px}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+.btn-icon{padding:8px;width:36px;height:36px}
 
-/* Mode switch */
-.mode-switch{display:flex;gap:8px}
-.mode-btn{flex:1;padding:14px;border-radius:12px;text-align:center;font-size:13px;cursor:pointer;border:1px solid var(--border);background:var(--card);transition:.2s;font-weight:500}
-.mode-btn:hover{background:rgba(255,255,255,0.06)}
-.mode-btn.active{border-color:var(--accent);background:rgba(124,58,237,0.1);color:var(--accent)}
-.mode-btn small{display:block;color:var(--dim);font-size:11px;margin-top:4px;font-weight:400}
+/* Mode switcher */
+.mode-switch{display:flex;gap:10px;margin-bottom:4px}
+.mode-option{
+  flex:1;padding:16px 18px;border-radius:14px;
+  cursor:pointer;border:1px solid var(--border);
+  background:rgba(255,255,255,0.02);transition:all .2s ease;
+  position:relative;overflow:hidden
+}
+.mode-option:hover{border-color:var(--border-strong);background:var(--card-hover)}
+.mode-option.active{
+  border-color:var(--accent);
+  background:linear-gradient(135deg, rgba(167,139,250,0.08), rgba(96,165,250,0.03))
+}
+.mode-option.active::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(circle at 80% 0%, rgba(167,139,250,0.1), transparent 60%);
+  pointer-events:none
+}
+.mode-option h3{font-size:14px;font-weight:600;margin-bottom:6px;position:relative;letter-spacing:-0.01em}
+.mode-option p{font-size:12px;color:var(--text-muted);line-height:1.55;position:relative}
 
-/* Domains */
-.domain-tag{display:inline-flex;align-items:center;gap:4px;padding:5px 12px;border-radius:8px;font-size:12px;background:rgba(255,255,255,0.04);border:1px solid var(--border);margin:3px;font-family:monospace}
-.domain-x{cursor:pointer;color:var(--red);font-weight:bold;margin-left:6px;opacity:.6;transition:.2s}
-.domain-x:hover{opacity:1}
+/* Domain tags */
+.domains{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.tag{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:5px 10px 5px 12px;border-radius:8px;
+  font-size:12px;background:var(--card);
+  border:1px solid var(--border-strong);
+  font-family:'JetBrains Mono',monospace;
+  transition:border-color .15s
+}
+.tag:hover{border-color:var(--accent)}
+.tag-remove{
+  cursor:pointer;color:var(--text-dim);font-weight:700;
+  width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:4px;transition:all .15s
+}
+.tag-remove:hover{background:rgba(248,113,113,0.15);color:var(--red)}
+
+/* Stats row */
+.stats{display:flex;gap:10px;margin-top:14px}
+.stat{
+  flex:1;padding:12px 14px;background:rgba(255,255,255,0.02);
+  border:1px solid var(--border);border-radius:10px;text-align:center
+}
+.stat-label{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
+.stat-num{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600}
 
 /* Devices */
-.device{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
-.device:last-child{border:none}
-.device-icon{width:32px;height:32px;border-radius:8px;background:rgba(124,58,237,0.1);display:flex;align-items:center;justify-content:center;margin-right:12px;font-size:14px}
-.device-info{flex:1}.device-ip{font-family:monospace;font-size:12px;color:var(--dim)}
-.device-name{font-weight:500;font-size:13px}
+.device{
+  display:flex;align-items:center;gap:12px;
+  padding:11px 14px;cursor:pointer;border-radius:10px;
+  border:1px solid transparent;transition:all .15s ease;
+  margin-bottom:3px
+}
+.device:hover{background:var(--card-hover);border-color:var(--border-strong)}
+.device-avatar{
+  width:34px;height:34px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--card);border:1px solid var(--border-strong);
+  flex-shrink:0
+}
+.device-info{flex:1;min-width:0}
+.device-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
+.device-meta{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);line-height:1.4}
+.badge{
+  padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:0.04em
+}
+.badge-vpn{background:rgba(167,139,250,0.15);color:var(--accent)}
+.badge-direct{background:rgba(52,211,153,0.12);color:var(--green)}
+
+/* Devices search + groups */
+.dev-search{
+  position:relative;margin-bottom:14px
+}
+.dev-search input{
+  width:100%;padding:10px 14px 10px 36px;
+  border-radius:10px;background:var(--card-hover);
+  border:1px solid var(--border);color:var(--text);
+  font-size:13px;outline:none;transition:border-color .15s
+}
+.dev-search input:focus{border-color:var(--accent)}
+.dev-search::before{
+  content:"";position:absolute;left:12px;top:50%;
+  width:16px;height:16px;transform:translateY(-50%);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.2' stroke-linecap='round'><circle cx='10.5' cy='10.5' r='7.5'/><path d='M21 21l-5.5-5.5'/></svg>");
+  background-size:contain;background-repeat:no-repeat;opacity:.7
+}
+.dev-group-header{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 2px;margin:8px 0 4px;font-size:11px;
+  color:var(--text-dim);text-transform:uppercase;
+  letter-spacing:0.06em;font-weight:600
+}
+.dev-group-header:first-child{margin-top:0}
+.dev-group-count{
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  padding:2px 7px;background:var(--card-hover);
+  border-radius:8px;color:var(--text-muted);font-weight:700
+}
+.device-avatar.vpn{color:var(--accent);background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.2)}
+.device-avatar.direct{color:var(--green);background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2)}
+.device-avatar.unknown{color:var(--text-dim)}
+.dev-empty{
+  color:var(--text-dim);font-size:12px;padding:24px 16px;
+  text-align:center
+}
 
 /* Logs */
-.log-line{font-family:'SF Mono','Fira Code',monospace;font-size:11px;padding:4px 0;color:var(--dim);word-break:break-all;border-bottom:1px solid rgba(255,255,255,0.03);line-height:1.5}
-.log-vpn{color:var(--accent)}.log-direct{color:var(--green)}.log-err{color:var(--red)}.log-flow{color:var(--accent2)}.log-xray{color:#f97316}
+.log-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.log-filter{
+  padding:5px 11px;border-radius:8px;
+  font-size:11px;font-weight:500;cursor:pointer;
+  background:var(--card);border:1px solid var(--border);
+  color:var(--text-muted);font-family:inherit;
+  transition:all .15s
+}
+.log-filter:hover{background:var(--card-hover);color:var(--text)}
+.log-filter.active{background:var(--accent);color:#fff;border-color:transparent}
 
-/* Utils */
-.flex{display:flex;gap:8px}.flex-1{flex:1}.mt{margin-top:12px}.mb{margin-bottom:10px}
-.section{display:none}.section.active{display:block}
-.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;background:rgba(124,58,237,0.12);color:var(--accent);font-weight:600}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--dim);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle}
-.icon{display:inline-block;width:16px;height:16px;vertical-align:middle;fill:currentColor}
-.icon-lg{width:20px;height:20px}
-.icon-xl{width:24px;height:24px}
+.log-entries{max-height:500px;overflow-y:auto;padding-right:4px}
+.log-entries::-webkit-scrollbar{width:6px}
+.log-entries::-webkit-scrollbar-track{background:transparent}
+.log-entries::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
+
+.log-line{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 10px;font-family:'JetBrains Mono',monospace;
+  font-size:11px;border-radius:6px;
+  border:1px solid transparent;margin-bottom:2px;
+  line-height:1.5
+}
+.log-line:hover{background:var(--card);border-color:var(--border)}
+.log-time{color:var(--text-dim);flex-shrink:0;min-width:60px}
+.log-icon{flex-shrink:0;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center}
+.log-label{font-weight:700;min-width:50px;flex-shrink:0;font-size:10px;letter-spacing:0.03em}
+.log-msg{color:var(--text);flex:1;word-break:break-all;overflow:hidden}
+
+.log-vpn .log-icon,.log-vpn .log-label{color:var(--accent)}
+.log-direct .log-icon,.log-direct .log-label{color:var(--green)}
+.log-error .log-icon,.log-error .log-label{color:var(--red)}
+.log-error{background:rgba(248,113,113,0.04)}
+.log-dns .log-icon,.log-dns .log-label{color:var(--yellow)}
+.log-flow .log-icon,.log-flow .log-label{color:var(--accent-cool)}
+.log-xray .log-icon,.log-xray .log-label{color:var(--orange)}
+
+.log-stats{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-top:12px;padding-top:12px;border-top:1px solid var(--border);
+  font-size:11px;color:var(--text-muted)
+}
+.log-stats-inline{display:flex;gap:14px}
+.log-stats-inline b{color:var(--text);font-family:'JetBrains Mono',monospace}
+
+/* Log live controls */
+.log-toolbar{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:12px;gap:10px;flex-wrap:wrap
+}
+.log-live{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:5px 10px 5px 8px;border-radius:999px;
+  font-size:11px;font-weight:600;letter-spacing:0.05em;
+  background:rgba(248,113,113,0.08);color:var(--red);
+  border:1px solid rgba(248,113,113,0.2);
+  cursor:pointer;user-select:none;text-transform:uppercase;
+  transition:all .15s
+}
+.log-live::before{
+  content:"";width:7px;height:7px;border-radius:50%;
+  background:var(--red);box-shadow:0 0 6px var(--red);
+  animation:livePulse 1.2s infinite
+}
+.log-live.paused{background:var(--card-hover);color:var(--text-dim);border-color:var(--border-strong)}
+.log-live.paused::before{background:var(--text-dim);box-shadow:none;animation:none}
+@keyframes livePulse{
+  0%,100%{opacity:1;transform:scale(1)}
+  50%{opacity:0.5;transform:scale(1.2)}
+}
+.log-count-badge{
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--text-dim);padding:2px 6px;
+  background:var(--card-hover);border-radius:6px;
+  margin-left:6px;font-weight:600
+}
+.log-line.log-dup{position:relative}
+.log-line .log-dup-count{
+  font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;
+  padding:1px 6px;border-radius:8px;
+  background:var(--border-strong);color:var(--text-muted);
+  flex-shrink:0;margin-left:auto
+}
+.log-empty{
+  color:var(--text-dim);font-size:12px;padding:36px 16px;
+  text-align:center;display:flex;flex-direction:column;
+  align-items:center;gap:10px
+}
+.log-empty svg{width:32px;height:32px;opacity:0.4}
+.log-entries{transition:opacity .18s ease}
+.log-entries.updating{opacity:0.6}
+
+/* Diagnostics */
+.check{
+  display:flex;align-items:flex-start;gap:12px;
+  padding:11px 14px;margin-bottom:5px;
+  border-radius:10px;border:1px solid;
+}
+.check-icon{
+  flex-shrink:0;width:20px;height:20px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;margin-top:1px
+}
+.check-body{flex:1}
+.check-name{font-size:13px;font-weight:600;margin-bottom:2px}
+.check-detail{font-size:11px;color:var(--text-muted);line-height:1.5}
+
+.check-ok{background:rgba(52,211,153,0.03);border-color:rgba(52,211,153,0.15)}
+.check-ok .check-icon{background:var(--green);color:#000}
+.check-warn{background:rgba(251,191,36,0.03);border-color:rgba(251,191,36,0.15)}
+.check-warn .check-icon{background:var(--yellow);color:#000}
+.check-error{background:rgba(248,113,113,0.03);border-color:rgba(248,113,113,0.15)}
+.check-error .check-icon{background:var(--red);color:#fff}
+.check-action{cursor:pointer;transition:transform .12s ease, box-shadow .15s ease, border-color .15s}
+.check-action:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.12)}
+.check-action.check-warn:hover{border-color:var(--yellow)}
+.check-action.check-error:hover{border-color:var(--red)}
+.check-act-btn{
+  margin-top:8px;padding:5px 11px;border-radius:8px;
+  background:transparent;border:1px solid currentColor;
+  font-family:inherit;font-size:11.5px;font-weight:600;
+  cursor:pointer;display:inline-flex;align-items:center;gap:4px;
+  transition:background .15s
+}
+.check-warn .check-act-btn{color:var(--yellow)}
+.check-error .check-act-btn{color:var(--red)}
+.check-warn .check-act-btn:hover{background:rgba(251,191,36,0.12)}
+.check-error .check-act-btn:hover{background:rgba(248,113,113,0.12)}
+
+.check-summary{
+  display:flex;justify-content:space-around;align-items:center;
+  padding:14px;margin-top:14px;
+  background:var(--card);border:1px solid var(--border);border-radius:12px;
+  font-size:13px
+}
+.summary-item{display:flex;align-items:center;gap:6px}
+.summary-num{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px}
+
+/* Quick diagnose metrics */
+.metric-grid{
+  display:grid;grid-template-columns:repeat(2,1fr);gap:12px;
+  margin-bottom:18px
+}
+@media(max-width:640px){.metric-grid{grid-template-columns:1fr}}
+.metric{
+  padding:16px;border-radius:14px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid var(--border);
+  display:flex;gap:14px;align-items:flex-start;
+  transition:border-color .15s
+}
+.metric:hover{border-color:var(--border-strong)}
+.metric-icon{
+  flex-shrink:0;width:40px;height:40px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--card);border:1px solid var(--border-strong);
+  color:var(--text-muted)
+}
+.metric-icon svg{width:20px;height:20px}
+.metric.ok .metric-icon{color:var(--green);background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2)}
+.metric.warn .metric-icon{color:var(--yellow);background:rgba(251,191,36,0.08);border-color:rgba(251,191,36,0.2)}
+.metric.err .metric-icon{color:var(--red);background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.2)}
+.metric.info .metric-icon{color:var(--accent-cool);background:rgba(96,165,250,0.08);border-color:rgba(96,165,250,0.2)}
+.metric-body{flex:1;min-width:0}
+.metric-label{
+  font-size:11px;text-transform:uppercase;letter-spacing:0.05em;
+  color:var(--text-dim);font-weight:600;margin-bottom:6px
+}
+.metric-value{
+  font-size:18px;font-weight:700;line-height:1.2;
+  letter-spacing:-0.01em;word-break:break-all
+}
+.metric-value.mono{font-family:'JetBrains Mono',monospace;font-size:16px}
+.metric-sub{
+  font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.4
+}
+
+/* System info */
+.sys-info{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px;margin-top:8px}
+@media(max-width:520px){.sys-info{grid-template-columns:1fr}}
+.sys-row{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--border)}
+.sys-row:last-child{border-bottom:none}
+.sys-row-label{color:var(--text-muted)}
+.sys-row-val{color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%}
+.sys-bar{margin-top:14px}
+.sys-bar-label{display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:5px}
+.sys-bar-label b{color:var(--text);font-family:'JetBrains Mono',monospace}
+.sys-bar-track{
+  height:6px;background:var(--card-hover);
+  border-radius:3px;overflow:hidden
+}
+.sys-bar-fill{
+  height:100%;border-radius:3px;
+  background:linear-gradient(90deg, var(--accent-cool), var(--accent));
+  transition:width .4s ease
+}
+.sys-bar-fill.warn{background:linear-gradient(90deg, var(--yellow), var(--orange))}
+.sys-bar-fill.err{background:linear-gradient(90deg, var(--orange), var(--red))}
+
+/* Bottom navigation (mobile) */
+.bottom-nav{
+  display:none;
+  position:fixed;left:0;right:0;bottom:0;z-index:60;
+  padding:8px 6px calc(8px + env(safe-area-inset-bottom));
+  background:rgba(11,11,15,0.85);
+  backdrop-filter:saturate(140%) blur(18px);
+  -webkit-backdrop-filter:saturate(140%) blur(18px);
+  border-top:1px solid var(--border);
+  justify-content:space-around;align-items:stretch;gap:2px
+}
+[data-theme="light"] .bottom-nav{background:rgba(248,250,252,0.9)}
+.bn-item{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:6px 2px;background:transparent;border:0;cursor:pointer;
+  color:var(--text-dim);font-family:inherit;font-size:9.5px;font-weight:500;
+  transition:color .15s;border-radius:10px;min-width:0
+}
+.bn-item svg{width:22px;height:22px}
+.bn-item span{
+  letter-spacing:-0.02em;text-align:center;line-height:1.15;
+  width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
+}
+.bn-item.active{color:var(--accent)}
+.bn-item:active{background:var(--card-hover)}
+
+/* Onboarding */
+.onboard{
+  position:fixed;inset:0;z-index:200;
+  display:none;align-items:center;justify-content:center;
+  padding:20px
+}
+.onboard.show{display:flex;animation:onboardIn .3s ease}
+@keyframes onboardIn{from{opacity:0}to{opacity:1}}
+.onboard-backdrop{
+  position:absolute;inset:0;
+  background:rgba(0,0,0,0.6);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)
+}
+.onboard-card{
+  position:relative;width:100%;max-width:520px;
+  background:var(--card);border:1px solid var(--border-strong);
+  border-radius:20px;box-shadow:0 24px 60px rgba(0,0,0,0.5);
+  overflow:hidden
+}
+.onboard-head{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:18px 24px;border-bottom:1px solid var(--border)
+}
+.onboard-steps{display:flex;align-items:center;gap:10px}
+.step{display:flex;align-items:center;gap:6px;opacity:0.35;transition:opacity .2s}
+.step.active{opacity:1}
+.step.done{opacity:0.65}
+.step-num{
+  width:22px;height:22px;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;
+  background:var(--card-hover);color:var(--text-muted);
+  border:1px solid var(--border-strong)
+}
+.step.active .step-num{background:linear-gradient(135deg,var(--accent),var(--accent-cool));color:#fff;border-color:transparent}
+.step.done .step-num{background:var(--green);color:#fff;border-color:transparent}
+.step-name{font-size:12px;color:var(--text-muted);font-weight:500}
+.step.active .step-name{color:var(--text)}
+.onboard-body{padding:28px 24px 24px}
+.onboard-pane{display:none}
+.onboard-pane.active{display:block;animation:paneIn .25s ease}
+@keyframes paneIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.onboard-pane h2{font-size:20px;font-weight:700;letter-spacing:-0.02em;margin-bottom:10px}
+.onboard-pane p{color:var(--text-muted);font-size:13.5px;line-height:1.55;margin-bottom:16px}
+.onboard-pane code{font-family:'JetBrains Mono',monospace;font-size:12px;padding:1px 5px;background:var(--card-hover);border-radius:4px;color:var(--accent)}
+.onboard-pane .input{width:100%;margin-bottom:10px}
+.onboard-hint{
+  font-size:12px;color:var(--text-dim);line-height:1.5;
+  padding:10px 12px;background:var(--card-hover);border-radius:10px;
+  border-left:3px solid var(--accent-cool)
+}
+.onboard-loader{display:flex;justify-content:center;padding:30px 0}
+.onboard-actions{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
+
+/* Footer */
+.footer{
+  display:flex;justify-content:space-between;align-items:center;
+  flex-wrap:wrap;gap:12px;
+  margin-top:48px;padding:20px 0;
+  border-top:1px solid var(--border);
+  font-size:12px;color:var(--text-muted)
+}
+.footer-left{display:flex;align-items:center;gap:10px}
+.footer-brand{
+  font-weight:700;letter-spacing:-0.01em;
+  background:linear-gradient(120deg, var(--accent) 0%, var(--accent-cool) 60%, var(--accent-warm) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  font-size:13px
+}
+.footer-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.footer-dim{color:var(--text-dim)}
+.footer-link{
+  color:var(--text-muted);text-decoration:none;
+  transition:color .15s
+}
+.footer-link:hover{color:var(--accent)}
+
+/* Utility */
+.icon{width:14px;height:14px;display:inline-block;vertical-align:middle;fill:currentColor}
+.icon-sm{width:12px;height:12px}
+.icon-lg{width:18px;height:18px}
+.flex{display:flex;gap:8px}
+.flex-1{flex:1}
+.mt{margin-top:10px}
+.mb{margin-bottom:10px}
+.section{display:none}
+.section.active{display:block}
+.spinner{
+  display:inline-block;width:12px;height:12px;
+  border:2px solid currentColor;border-top-color:transparent;
+  border-radius:50%;animation:spin .6s linear infinite
+}
 @keyframes spin{to{transform:rotate(360deg)}}
-.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 24px;border-radius:12px;font-size:13px;background:rgba(18,18,26,0.95);border:1px solid var(--border);opacity:0;transition:.3s;pointer-events:none;z-index:99;backdrop-filter:blur(10px)}
-.toast.show{opacity:1}
-.row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-size:14px}
-.row-label{color:var(--dim)}.row-value{font-family:'SF Mono','Fira Code',monospace;font-size:13px}
+
+/* Toasts (stack, bottom-right) */
+.toasts{
+  position:fixed;bottom:24px;right:24px;z-index:100;
+  display:flex;flex-direction:column;gap:10px;
+  pointer-events:none;max-width:360px
+}
+.toast{
+  display:flex;align-items:flex-start;gap:10px;
+  padding:12px 16px;border-radius:12px;font-size:13px;font-weight:500;
+  background:var(--card);border:1px solid var(--border-strong);
+  box-shadow:0 8px 28px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.1);
+  opacity:0;transform:translateX(20px);
+  transition:opacity .25s ease, transform .25s cubic-bezier(0.4,0,0.2,1);
+  pointer-events:auto;position:relative;overflow:hidden;
+  min-width:240px;max-width:360px;line-height:1.45
+}
+.toast.show{opacity:1;transform:translateX(0)}
+.toast.hide{opacity:0;transform:translateX(20px)}
+.toast::before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:var(--accent)
+}
+.toast.success::before{background:var(--green)}
+.toast.error::before{background:var(--red)}
+.toast.info::before{background:var(--accent-cool)}
+.toast.loading::before{background:var(--yellow)}
+.toast-icon{
+  flex-shrink:0;width:18px;height:18px;margin-top:1px;
+  display:flex;align-items:center;justify-content:center
+}
+.toast-icon svg{width:18px;height:18px}
+.toast.success .toast-icon{color:var(--green)}
+.toast.error .toast-icon{color:var(--red)}
+.toast.info .toast-icon{color:var(--accent-cool)}
+.toast.loading .toast-icon{color:var(--yellow)}
+.toast-icon.spin{animation:spin 1s linear infinite}
+.toast-body{flex:1;color:var(--text);word-wrap:break-word}
+.toast-title{font-weight:600;font-size:13px}
+.toast-desc{font-weight:400;font-size:12px;color:var(--text-muted);margin-top:2px}
+.toast-close{
+  flex-shrink:0;width:18px;height:18px;margin-top:1px;
+  cursor:pointer;color:var(--text-dim);
+  display:flex;align-items:center;justify-content:center;
+  border-radius:4px;transition:all .15s
+}
+.toast-close:hover{background:rgba(255,255,255,0.08);color:var(--text)}
+.toast-close svg{width:14px;height:14px}
+
+/* Section typography */
+.row{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:7px 0;font-size:13px
+}
+.row+.row{border-top:1px solid var(--border)}
+.row-label{color:var(--text-muted)}
+.row-val{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text)}
+
+/* ==================== Mobile optimizations (at end to override desktop) ==================== */
+@media(max-width:640px){
+  .app{padding:0 14px calc(82px + env(safe-area-inset-bottom))}
+  .header{margin:0 -14px 14px;padding:12px 14px;gap:6px}
+  .header-info{font-size:11.5px;padding:5px 10px;gap:6px;max-width:100%;overflow:hidden}
+  .header-info b{font-size:11px}
+  .logo{font-size:22px}
+  .version{display:none}
+  .header-actions{gap:6px}
+  .header-mini-toggle{display:inline-flex}
+  .header .btn-icon{width:32px;height:32px;padding:6px}
+
+  .hero{padding:18px 18px;border-radius:18px;margin-bottom:14px}
+  .hero-inner{flex-direction:row;gap:14px;align-items:center}
+  .hero-status{gap:14px;flex:1;min-width:0}
+  .status-orb{width:44px;height:44px;flex-shrink:0}
+  .status-orb .dot{width:10px;height:10px}
+  .status-text h1{font-size:20px;margin-bottom:6px}
+  .status-text .meta{font-size:11.5px;gap:6px 12px}
+  .status-text .meta span+span{padding-left:14px}
+  .status-text .meta b{font-size:11px}
+  .toggle{width:54px;height:30px}
+  .toggle-knob{width:22px;height:22px}
+  .toggle input:checked~.toggle-knob{transform:translateX(24px)}
+
+  .card{padding:16px 16px;border-radius:14px;margin-bottom:12px}
+  .card-accent{padding-left:18px}
+  .card-accent::before{top:10px;bottom:10px}
+
+  /* Top tabs hidden, bottom nav shown */
+  .tabs{display:none}
+  .bottom-nav{display:flex}
+  .footer{display:none}
+
+  .mode-switch{flex-direction:column;gap:8px}
+  .mode-option{padding:14px 14px}
+
+  .speed-row{gap:6px}
+  .speed-item{padding:10px 10px;min-width:0}
+  .speed-value{font-size:13px}
+  .speed-label{font-size:9.5px}
+
+  .server{padding:10px 12px}
+  .server-name{font-size:13px}
+  .server-ping{font-size:10.5px;min-width:44px;padding:2px 6px}
+
+  .log-entries{max-height:380px}
+  .log-line{font-size:10.5px;padding:5px 8px;gap:6px}
+  .log-time{min-width:54px}
+  .log-label{min-width:40px;font-size:9.5px}
+
+  .device{padding:10px 12px;gap:10px}
+  .device-avatar{width:30px;height:30px;border-radius:8px}
+  .device-name{font-size:12.5px}
+  .device-meta{font-size:10.5px}
+
+  .metric{padding:14px;gap:10px}
+  .metric-icon{width:36px;height:36px}
+  .metric-value{font-size:15px}
+
+  .toasts{left:14px;right:14px;bottom:calc(82px + env(safe-area-inset-bottom));max-width:none}
+  .toast{min-width:0;max-width:none}
+
+  .onboard-card{max-width:none;border-radius:16px}
+  .onboard-body{padding:22px 18px 20px}
+  .onboard-head{padding:14px 16px}
+  .step-name{display:none}
+  .onboard-pane h2{font-size:17px}
+}
+
+@media(max-width:380px){
+  .hero{padding:14px 14px}
+  .status-text h1{font-size:18px}
+  .status-text .meta{font-size:11px}
+  .bn-item span{font-size:9.5px}
+}
 </style>
 </head>
 <body>
 <svg style="display:none">
-  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></symbol>
-  <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></symbol>
-  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></symbol>
-  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></symbol>
-  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></symbol>
-  <symbol id="i-device" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
-  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></symbol>
-  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></symbol>
-  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></symbol>
-  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01"/></symbol>
-  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
-  <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="11" rx="2.5"/><path d="M7.5 11V7a4.5 4.5 0 019 0v4"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 014 9 13 13 0 01-4 9 13 13 0 01-4-9 13 13 0 014-9z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6l-12 12"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7.5"/><path d="M21 21l-5.5-5.5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.5 12c0 .6 0 1.2-.1 1.7l2.1 1.7-2 3.5-2.5-1c-.9.7-2 1.2-3 1.5L13.5 22h-3l-.5-2.6c-1-.3-2.1-.8-3-1.5l-2.5 1-2-3.5 2.1-1.7c-.1-.5-.1-1.1-.1-1.7s0-1.2.1-1.7L2.5 8.6l2-3.5 2.5 1c.9-.7 2-1.2 3-1.5L10.5 2h3l.5 2.6c1 .3 2.1.8 3 1.5l2.5-1 2 3.5-2.1 1.7c.1.5.1 1.1.1 1.7z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.5 1.5M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7L12 19"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.5 4.5l1.5 1.5M18 18l1.5 1.5M2 12h2M20 12h2M4.5 19.5L6 18M18 6l1.5-1.5"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5A9 9 0 1111.5 3a7 7 0 009.5 9.5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2.2 2.2 0 002 3.3h16.4a2.2 2.2 0 002-3.3L13.7 3.9a2.2 2.2 0 00-3.4 0z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M18 14l-6 6-6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4M6 10l6-6 6 6"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="i-device" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><circle cx="12" cy="18" r="0.5" fill="currentColor"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 20h20"/></symbol>
+  <symbol id="i-watch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 6V3h6v3M9 18v3h6v-3M12 9v3l2 1.5"/></symbol>
+  <symbol id="i-printer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><rect x="6" y="15" width="12" height="6"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="13" rx="1.5"/><path d="M8 22h8"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="14" r="3.5"/><circle cx="12" cy="6" r="0.5" fill="currentColor"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21h6M10 17h4M8 14a6 6 0 118 0c-1 1-1 2-1 3H9c0-1 0-2-1-3z"/></symbol>
+  <symbol id="i-vacuum" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3"/></symbol>
+  <symbol id="i-router" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="14" width="18" height="7" rx="1.5"/><circle cx="7" cy="17.5" r="0.5" fill="currentColor"/><path d="M12 14V9M9 6a4.2 4.2 0 016 0M7 3a8 8 0 0110 0"/></symbol>
+  <symbol id="i-doorbell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V10a6 6 0 0112 0v6"/><path d="M4 16h16v3H4zM10 21h4"/></symbol>
+  <symbol id="i-tablet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 010 18z" fill="currentColor" stroke="none"/></symbol>
 </svg>
+
 <div class="app">
-  <div class="header">
-    <div class="logo">FlowVPN</div>
-    <div class="header-right">
-      <span class="header-status" id="headerStatus">Offline</span>
-      <button class="btn btn-g btn-sm" onclick="toggleTheme()" id="themeBtn" title="Переключить тему" style="padding:4px 8px"><svg class="icon"><use href="#i-moon"/></svg></button>
-      <label class="toggle"><input type="checkbox" id="vpnToggle" onchange="toggleVPN()"><div class="toggle-track"></div><div class="toggle-knob"></div></label>
+  <div class="header" id="appHeader">
+    <div class="brand">
+      <div class="logo">FlowVPN</div>
+      <div class="version">v4</div>
+    </div>
+    <div class="header-actions">
+      <div class="header-info" id="headerInfo">Загрузка…</div>
+      <label class="header-mini-toggle" title="Вкл/Выкл VPN">
+        <input type="checkbox" id="vpnMiniToggle" onchange="syncMiniToggle(this)">
+        <div class="mt-track"></div>
+        <div class="mt-knob"></div>
+      </label>
+      <button class="btn btn-ghost btn-icon" onclick="toggleTheme()" id="themeBtn" title="Тема"><svg class="icon"><use href="#i-moon"/></svg></button>
     </div>
   </div>
 
-  <div class="layout">
-    <!-- Left column: Status + Servers -->
-    <div class="left-col">
-      <div class="card">
-        <div class="status-grid">
-          <div class="stat-item stat-big">
-            <div class="stat-label">Подключение</div>
-            <div class="stat-value" id="connStatus"><span class="dot dot-r"></span> Отключено</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Сервер</div>
-            <div class="stat-value" id="curServer" style="font-size:14px">—</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">IP через VPN</div>
-            <div class="stat-value" id="vpnIp" style="font-size:12px">—</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Время работы</div>
-            <div class="stat-value" id="uptime">—</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Режим</div>
-            <div class="stat-value" id="curMode" style="font-size:12px">—</div>
-            <div style="font-size:10px;color:var(--dim);margin-top:4px" id="modeHint"></div>
-          </div>
+  <!-- Hero status -->
+  <div class="hero">
+    <div class="hero-inner">
+      <div class="hero-status">
+        <div class="status-orb off" id="statusOrb">
+          <div class="pulse"></div>
+          <div class="dot"></div>
         </div>
-        <div style="display:flex;gap:12px;margin-top:12px">
-          <div class="stat-item" style="flex:1;text-align:center">
-            <div class="stat-label"><svg class="icon" style="width:12px;height:12px"><use href="#i-down"/></svg> Скорость</div>
-            <div class="stat-value" id="speedDown" style="font-size:14px;color:var(--green)">—</div>
-          </div>
-          <div class="stat-item" style="flex:1;text-align:center">
-            <div class="stat-label"><svg class="icon" style="width:12px;height:12px"><use href="#i-up"/></svg> Скорость</div>
-            <div class="stat-value" id="speedUp" style="font-size:14px;color:var(--accent)">—</div>
+        <div class="status-text">
+          <h1 id="statusTitle">Отключено</h1>
+          <div class="meta" id="statusMeta">
+            <span>Нажмите, чтобы подключиться</span>
           </div>
         </div>
       </div>
+      <label class="toggle" title="Вкл/Выкл VPN">
+        <input type="checkbox" id="vpnToggle" onchange="toggleVPN()">
+        <div class="toggle-track"></div>
+        <div class="toggle-knob"></div>
+      </label>
+    </div>
+  </div>
 
+  <div class="grid">
+    <!-- Left column -->
+    <div>
+      <!-- Now panel -->
       <div class="card">
-        <div class="card-title"><span>Серверы</span><button class="btn btn-g btn-sm" onclick="doPing()" id="pingBtn" title="Замерить задержку до каждого сервера">Пинг</button></div>
-        <div id="serverList"><div style="color:var(--dim);font-size:13px;padding:20px;text-align:center">Нет серверов. Добавьте подписку в настройках.</div></div>
+        <div class="card-head">
+          <div class="card-title">Сейчас</div>
+          <span class="live-dot" title="Обновляется в реальном времени"></span>
+        </div>
+        <canvas id="speedSpark" class="spark" width="600" height="60"></canvas>
+        <div class="speed-row">
+          <div class="speed-item speed-down">
+            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-down"/></svg> Загрузка</div>
+            <div class="speed-value" id="speedDown">—</div>
+          </div>
+          <div class="speed-item speed-up">
+            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-up"/></svg> Отдача</div>
+            <div class="speed-value" id="speedUp">—</div>
+          </div>
+        </div>
+        <div class="mini-stats" id="miniStats">
+          <div class="mini-stat"><div class="mini-stat-label">Соединений</div><div class="mini-stat-val" id="nowConns">—</div></div>
+          <div class="mini-stat"><div class="mini-stat-label">Через VPN</div><div class="mini-stat-val" id="nowVpnBytes" style="color:var(--accent)">—</div></div>
+        </div>
+      </div>
+
+      <!-- Servers -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Серверы</div>
+          <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn">Проверить пинг</button>
+        </div>
+        <div id="serverList">
+          <div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Загрузка…</div>
+        </div>
       </div>
     </div>
 
-    <!-- Right column: Tabs -->
-    <div class="right-col">
+    <!-- Right column -->
+    <div>
       <div class="tabs">
-        <button class="tab active" onclick="showTab('routing',this)">Маршрутизация</button>
-        <button class="tab" onclick="showTab('devices',this)">Устройства</button>
-        <button class="tab" onclick="showTab('logs',this)">Журнал</button>
-        <button class="tab" onclick="showTab('diagnose',this)">Диагностика</button>
-        <button class="tab" onclick="showTab('settings',this)">Настройки</button>
+        <button class="tab active" data-tab="routing" onclick="showTab('routing',this)">Маршрутизация</button>
+        <button class="tab" data-tab="devices" onclick="showTab('devices',this)">Устройства</button>
+        <button class="tab" data-tab="logs" onclick="showTab('logs',this)">Журнал</button>
+        <button class="tab" data-tab="diagnose" onclick="showTab('diagnose',this)">Диагностика</button>
+        <button class="tab" data-tab="settings" onclick="showTab('settings',this)">Настройки</button>
       </div>
 
       <!-- Routing -->
       <div class="section active" id="sec-routing">
         <div class="card">
-          <div class="card-title">Режим маршрутизации</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:12px">Выберите, какой трафик направлять через VPN-сервер</p>
+          <div class="card-title">Как направлять трафик</div>
+          <p class="card-desc">Выберите что будет идти через VPN, а что напрямую</p>
           <div class="mode-switch">
-            <div class="mode-btn" id="mode-all" onclick="setMode('all_vpn')">Всё через VPN<small>Российские сайты напрямую</small></div>
-            <div class="mode-btn" id="mode-block" onclick="setMode('blocklist')">По списку<small>Только заблокированные через VPN</small></div>
+            <div class="mode-option" id="mode-all" onclick="setMode('all_vpn')">
+              <h3>Всё через VPN</h3>
+              <p>Российские сайты — напрямую, всё остальное защищено VPN</p>
+            </div>
+            <div class="mode-option" id="mode-block" onclick="setMode('blocklist')">
+              <h3>По списку</h3>
+              <p>Только заблокированные в РФ сайты пойдут через VPN</p>
+            </div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-title"><span>Домены напрямую (минуя VPN)</span><span class="badge" id="directCount">0</span></div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Эти сайты будут открываться без VPN. Основной список RU-доменов загружается автоматически. Здесь можно добавить свои.</p>
-          <div id="directDomains"></div>
-          <div class="flex mt"><input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru" onkeydown="if(event.key==='Enter')addDomain('direct')"><button class="btn btn-g btn-sm" onclick="addDomain('direct')">Добавить</button></div>
+
+        <div class="card card-accent card-accent-direct">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Исключения — минуя VPN</div>
+              <p class="card-desc" style="margin:3px 0 0">Эти сайты откроются напрямую, без VPN</p>
+            </div>
+            <div class="stat-num" id="directCount" style="color:var(--green);font-size:13px">0</div>
+          </div>
+          <div class="domains" id="directDomains"></div>
+          <div class="flex mt">
+            <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru" onkeydown="if(event.key==='Enter')addDomain('direct')">
+            <button class="btn btn-ghost btn-sm" onclick="addDomain('direct')">Добавить</button>
+          </div>
         </div>
-        <div class="card">
-          <div class="card-title"><span>Принудительно через VPN</span><span class="badge" id="vpnCount">0</span></div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Домены, которые всегда должны идти через VPN, даже если они в списке RU-доменов</p>
-          <div id="vpnDomains"></div>
-          <div class="flex mt"><input class="input flex-1" id="addVpnInput" placeholder="например: chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')"><button class="btn btn-g btn-sm" onclick="addDomain('vpn')">Добавить</button></div>
+
+        <div class="card card-accent card-accent-vpn">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Принудительно через VPN</div>
+              <p class="card-desc" style="margin:3px 0 0">Всегда шифровать эти сайты, даже если они в списке РФ</p>
+            </div>
+            <div class="stat-num" id="vpnCount" style="color:var(--accent);font-size:13px">0</div>
+          </div>
+          <div class="domains" id="vpnDomains"></div>
+          <div class="flex mt">
+            <input class="input flex-1" id="addVpnInput" placeholder="например: chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
+            <button class="btn btn-ghost btn-sm" onclick="addDomain('vpn')">Добавить</button>
+          </div>
         </div>
-        <div class="card">
-          <div class="card-title">Настройки DNS</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">DNS-запросы к заблокированным сайтам идут через VPN, чтобы провайдер не мог их подменить</p>
-          <div class="row"><span class="row-label">DNS через VPN</span><span class="row-value">tls://1.1.1.1</span></div>
-          <div class="row"><span class="row-label">DNS напрямую</span><span class="row-value">udp://1.1.1.1</span></div>
-          <div class="row"><span class="row-label">DNS-over-TLS заблокирован</span><span class="row-value" style="color:var(--green)">Да</span></div>
+
+        <div class="card card-accent card-accent-dns">
+          <div class="card-title">DNS защита</div>
+          <p class="card-desc">DNS-запросы защищены от подмены провайдером</p>
+          <div class="row"><span class="row-label">Через VPN</span><span class="row-val">tls://1.1.1.1</span></div>
+          <div class="row"><span class="row-label">Напрямую</span><span class="row-val">udp://1.1.1.1</span></div>
+          <div class="row"><span class="row-label">DoT заблокирован</span><span class="row-val" style="color:var(--green)">да</span></div>
         </div>
       </div>
 
       <!-- Devices -->
       <div class="section" id="sec-devices">
         <div class="card">
-          <div class="card-title"><span>Подключённые устройства</span><button class="btn btn-g btn-sm" onclick="loadDevices()">Обновить</button></div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Нажмите на устройство чтобы переключить режим: VPN (весь трафик через VPN) или Direct (напрямую, без VPN).</p>
-          <div id="deviceList"><div style="color:var(--dim);font-size:13px;padding:24px;text-align:center">Загрузка...</div></div>
+          <div class="card-head">
+            <div class="card-title">Подключённые устройства<span class="log-count-badge" id="devCount">0</span></div>
+            <button class="btn btn-ghost btn-sm" onclick="loadDevices()">Обновить</button>
+          </div>
+          <p class="card-desc">Клик по устройству переключает режим: через VPN или напрямую</p>
+          <div class="dev-search">
+            <input id="devSearch" placeholder="Поиск по имени, IP или MAC…" oninput="filterDevices()">
+          </div>
+          <div id="deviceList">
+            <div class="dev-empty">Загрузка…</div>
+          </div>
         </div>
         <div class="card">
-          <div class="card-title">Статистика трафика</div>
-          <div style="display:flex;gap:12px">
-            <div class="stat-item" style="flex:1;text-align:center">
+          <div class="card-title">Статистика</div>
+          <div class="stats">
+            <div class="stat">
               <div class="stat-label">Через VPN</div>
-              <div class="stat-value" id="trafficVpn" style="font-size:14px;color:var(--accent)">—</div>
+              <div class="stat-num" id="trafficVpn" style="color:var(--accent)">—</div>
             </div>
-            <div class="stat-item" style="flex:1;text-align:center">
-              <div class="stat-label">Соединений VPN</div>
-              <div class="stat-value" id="connVpn" style="font-size:14px">—</div>
+            <div class="stat">
+              <div class="stat-label">Соединения VPN</div>
+              <div class="stat-num" id="connVpn">—</div>
             </div>
-            <div class="stat-item" style="flex:1;text-align:center">
-              <div class="stat-label">Соединений Direct</div>
-              <div class="stat-value" id="connDirect" style="font-size:14px">—</div>
+            <div class="stat">
+              <div class="stat-label">Напрямую</div>
+              <div class="stat-num" id="connDirect" style="color:var(--green)">—</div>
             </div>
           </div>
         </div>
@@ -264,22 +1227,29 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
       <!-- Logs -->
       <div class="section" id="sec-logs">
         <div class="card">
-          <div class="card-title"><span>Журнал соединений</span><button class="btn btn-g btn-sm" onclick="loadLogs()">Обновить</button></div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Показывает куда идёт трафик с устройств. Полезно для отладки — если сайт не открывается, проверьте через какой outbound идёт соединение.</p>
-          <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">
-            <button class="btn btn-sm log-filter active" data-filter="all" onclick="setLogFilter('all',this)">Все</button>
-            <button class="btn btn-sm log-filter" data-filter="vpn" onclick="setLogFilter('vpn',this)" style="color:var(--accent)">VPN</button>
-            <button class="btn btn-sm log-filter" data-filter="direct" onclick="setLogFilter('direct',this)" style="color:var(--green)">Direct</button>
-            <button class="btn btn-sm log-filter" data-filter="error" onclick="setLogFilter('error',this)" style="color:var(--red)">Ошибки</button>
-            <button class="btn btn-sm log-filter" data-filter="dns" onclick="setLogFilter('dns',this)" style="color:var(--yellow)">DNS</button>
-            <button class="btn btn-sm log-filter" data-filter="flow" onclick="setLogFilter('flow',this)" style="color:var(--accent2)">FlowVPN</button>
+          <div class="card-head">
+            <div class="card-title">Журнал<span class="log-count-badge" id="logCount">0</span></div>
+            <div class="flex" style="gap:6px">
+              <button class="log-live" id="liveBtn" onclick="toggleLive()" title="Обновление в реальном времени">Live</button>
+            </div>
           </div>
-          <div id="logList" style="max-height:500px;overflow-y:auto"><div style="color:var(--dim);font-size:13px;padding:24px;text-align:center">Загрузка...</div></div>
-          <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center">
-            <span style="color:var(--dim);font-size:11px" id="logStats"></span>
-            <div class="flex" style="gap:4px">
-              <button class="btn btn-g btn-sm" onclick="exportLog()">Экспорт</button>
-              <button class="btn btn-g btn-sm" onclick="clearLog()">Очистить</button>
+          <p class="card-desc">Куда идёт каждое соединение. Дубликаты сгруппированы по количеству.</p>
+          <div class="log-filters">
+            <button class="log-filter active" data-filter="all" onclick="setLogFilter('all',this)">Все</button>
+            <button class="log-filter" data-filter="vpn" onclick="setLogFilter('vpn',this)">VPN</button>
+            <button class="log-filter" data-filter="direct" onclick="setLogFilter('direct',this)">Direct</button>
+            <button class="log-filter" data-filter="error" onclick="setLogFilter('error',this)">Ошибки</button>
+            <button class="log-filter" data-filter="dns" onclick="setLogFilter('dns',this)">DNS</button>
+            <button class="log-filter" data-filter="flow" onclick="setLogFilter('flow',this)">FlowVPN</button>
+          </div>
+          <div class="log-entries" id="logList">
+            <div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Загрузка журнала…</div>
+          </div>
+          <div class="log-stats">
+            <div class="log-stats-inline" id="logStats"></div>
+            <div class="flex">
+              <button class="btn btn-ghost btn-sm" onclick="exportLog()">Скачать</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearLog()">Очистить</button>
             </div>
           </div>
         </div>
@@ -288,358 +1258,999 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
       <!-- Diagnose -->
       <div class="section" id="sec-diagnose">
         <div class="card">
-          <div class="card-title"><span>Полная проверка системы</span><button class="btn btn-a btn-sm" onclick="runHealthcheck()" id="hcBtn">Запустить</button></div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:12px">Проверяет все компоненты: процессы, порты, nftables, DNS, VPN-туннель, доступность заблокированных и RU-сайтов, geosite, ресурсы. Занимает ~30 секунд.</p>
-          <div id="hcResults"><div style="color:var(--dim);font-size:13px;padding:24px;text-align:center">Нажмите «Запустить» для полной проверки</div></div>
+          <div class="card-head">
+            <div class="card-title">Быстрые метрики</div>
+            <button class="btn btn-ghost btn-sm" onclick="loadQuickDiag()">Обновить</button>
+          </div>
+          <p class="card-desc">Текущее состояние VPN и ключевые параметры подключения</p>
+          <div class="metric-grid" id="quickMetrics">
+            <div class="metric"><div class="metric-icon"><svg><use href="#i-shield"/></svg></div><div class="metric-body"><div class="metric-label">Статус</div><div class="metric-value">—</div></div></div>
+            <div class="metric"><div class="metric-icon"><svg><use href="#i-globe"/></svg></div><div class="metric-body"><div class="metric-label">Сервер</div><div class="metric-value">—</div></div></div>
+            <div class="metric"><div class="metric-icon"><svg><use href="#i-link"/></svg></div><div class="metric-body"><div class="metric-label">Видимый IP</div><div class="metric-value mono">—</div></div></div>
+            <div class="metric"><div class="metric-icon"><svg><use href="#i-gear"/></svg></div><div class="metric-body"><div class="metric-label">Время работы</div><div class="metric-value">—</div></div></div>
+          </div>
+          <div class="flex">
+            <button class="btn btn-secondary flex-1" onclick="measureServerPing()" id="pingCurBtn">Измерить ping текущего сервера</button>
+          </div>
         </div>
         <div class="card">
-          <div class="card-title"><span>Быстрая диагностика</span><button class="btn btn-g btn-sm" onclick="runDiagnose()" id="diagBtn">Проверить</button></div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:12px">Быстрая проверка основных компонентов без тестирования сайтов. ~5 секунд.</p>
-          <div id="diagResults"></div>
+          <div class="card-head">
+            <div class="card-title">Полная проверка</div>
+            <button class="btn btn-primary btn-sm" onclick="runHealthcheck()" id="hcBtn">Запустить</button>
+          </div>
+          <p class="card-desc">25 проверок: процессы, сеть, VPN-туннель, доступность сайтов. Занимает ~30 секунд.</p>
+          <div id="hcResults">
+            <div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center">Нажмите «Запустить» для проверки</div>
+          </div>
         </div>
       </div>
 
       <!-- Settings -->
       <div class="section" id="sec-settings">
         <div class="card">
-          <div class="card-title">Подписка на серверы</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Ссылка на подписку из вашего VPN-провайдера (Remnawave и др.). Серверы обновляются автоматически.</p>
-          <div class="flex"><input class="input flex-1" id="subUrl" placeholder="https://ваш-провайдер.com/api/sub/..."><button class="btn btn-a btn-sm" onclick="saveSubUrl()">Сохранить</button></div>
-          <button class="btn btn-g mt" style="width:100%" onclick="doUpdate()" id="updateBtn">Обновить список серверов</button>
+          <div class="card-title">Подписка</div>
+          <p class="card-desc">Ссылка на список VPN-серверов от вашего провайдера</p>
+          <div class="flex">
+            <input class="input flex-1" id="subUrl" placeholder="https://…">
+            <button class="btn btn-primary btn-sm" onclick="saveSubUrl()">Сохранить</button>
+          </div>
+          <button class="btn btn-secondary mt" style="width:100%" onclick="doUpdate()" id="updateBtn">Обновить список серверов</button>
         </div>
         <div class="card">
-          <div class="card-title">Расписание</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">VPN будет включаться и выключаться автоматически в заданное время</p>
-          <div class="flex mb">
-            <input class="input" id="schedOn" type="time" value="07:00" style="flex:1">
-            <span style="color:var(--dim);align-self:center">—</span>
-            <input class="input" id="schedOff" type="time" value="23:00" style="flex:1">
+          <div class="setting-row">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Расписание</div>
+              <div class="setting-row-desc">VPN автоматически включится и отключится в указанное время</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="schedToggle" onchange="toggleSchedule(this.checked)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
           </div>
-          <div class="flex">
-            <button class="btn btn-a flex-1" onclick="setSchedule()">Установить расписание</button>
-            <button class="btn btn-g" onclick="disableSchedule()">Выкл</button>
+          <div class="setting-body disabled" id="schedBody">
+            <div class="flex">
+              <input class="input" id="schedOn" type="time" value="07:00" style="flex:1" onchange="saveSchedule()">
+              <span style="color:var(--text-dim);align-self:center;padding:0 4px">—</span>
+              <input class="input" id="schedOff" type="time" value="23:00" style="flex:1" onchange="saveSchedule()">
+            </div>
+            <div class="setting-status" id="schedStatus">Выключено</div>
           </div>
-          <div style="color:var(--dim);font-size:11px;margin-top:6px" id="schedStatus"></div>
         </div>
         <div class="card">
-          <div class="card-title">Автообновление</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Автоматически обновлять серверы и списки доменов каждый день в 3:00</p>
-          <div class="flex">
-            <button class="btn btn-a flex-1" onclick="setAutoUpdate('enable')">Включить</button>
-            <button class="btn btn-g flex-1" onclick="setAutoUpdate('disable')">Выключить</button>
+          <div class="setting-row">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Автообновление</div>
+              <div class="setting-row-desc">Каждый день в 3:00 обновлять серверы и списки доменов</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="autoUpdateToggle" onchange="setAutoUpdate(this.checked?'enable':'disable')">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
           </div>
-          <div style="color:var(--dim);font-size:11px;margin-top:6px" id="autoUpdateStatus"></div>
+          <div class="setting-status" id="autoUpdateStatus" style="margin-top:14px">Выключено</div>
         </div>
         <div class="card">
-          <div class="card-title">Бэкап настроек</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Скачать или восстановить все настройки FlowVPN</p>
+          <div class="card-title">Настройки FlowVPN</div>
+          <p class="card-desc">Экспортировать настройки для бэкапа или перенести на другой роутер</p>
           <div class="flex">
-            <button class="btn btn-g flex-1" onclick="downloadBackup()">Скачать бэкап</button>
-            <label class="btn btn-g flex-1" style="text-align:center;cursor:pointer">Восстановить<input type="file" accept=".json" onchange="restoreBackup(event)" style="display:none"></label>
+            <button class="btn btn-ghost flex-1" onclick="downloadBackup()">Скачать бэкап</button>
+            <label class="btn btn-ghost flex-1" style="cursor:pointer;justify-content:center">
+              Восстановить<input type="file" accept=".json" onchange="restoreBackup(event)" style="display:none">
+            </label>
           </div>
         </div>
         <div class="card">
           <div class="card-title">Управление</div>
-          <p style="color:var(--dim);font-size:12px;margin-bottom:10px">Перезапуск применит все изменения. Остановка отключит VPN — трафик пойдёт напрямую.</p>
           <div class="flex">
-            <button class="btn btn-g flex-1" onclick="doRestart()">Перезапустить VPN</button>
-            <button class="btn btn-d flex-1" onclick="doStop()">Остановить VPN</button>
+            <button class="btn btn-ghost flex-1" onclick="doRestart()">Перезапустить</button>
+            <button class="btn btn-danger flex-1" onclick="doStop()">Остановить</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">О системе</div>
+            <button class="btn btn-ghost btn-sm" onclick="loadSystemInfo()">Обновить</button>
+          </div>
+          <div id="sysInfo" class="sys-info">
+            <div style="color:var(--text-dim);font-size:12px;padding:12px 0">Загрузка…</div>
           </div>
         </div>
       </div>
     </div>
   </div>
+
+  <footer class="footer">
+    <div class="footer-left">
+      <span class="footer-brand">FlowVPN</span>
+      <span class="footer-dim">v4 · OpenWrt</span>
+    </div>
+    <div class="footer-right">
+      <a href="https://github.com/1eningrad/flowvpn" target="_blank" rel="noopener" class="footer-link">GitHub</a>
+      <span class="footer-dim">·</span>
+      <a href="https://github.com/1eningrad/flowvpn#readme" target="_blank" rel="noopener" class="footer-link">Документация</a>
+      <span class="footer-dim">·</span>
+      <a href="https://github.com/1eningrad/flowvpn/issues/new" target="_blank" rel="noopener" class="footer-link">Сообщить об ошибке</a>
+    </div>
+  </footer>
 </div>
-<div class="toast" id="toast"></div>
+
+<div class="onboard" id="onboardOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
+  <div class="onboard-backdrop" onclick="skipOnboard()"></div>
+  <div class="onboard-card">
+    <div class="onboard-head">
+      <div class="onboard-steps">
+        <div class="step active" data-step="1"><span class="step-num">1</span><span class="step-name">Подписка</span></div>
+        <div class="step" data-step="2"><span class="step-num">2</span><span class="step-name">Серверы</span></div>
+        <div class="step" data-step="3"><span class="step-num">3</span><span class="step-name">Готово</span></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="skipOnboard()">Пропустить</button>
+    </div>
+
+    <div class="onboard-body">
+      <div class="onboard-pane active" id="onboardStep1">
+        <h2 id="onboardTitle">Добро пожаловать в FlowVPN</h2>
+        <p>Вставьте ссылку на подписку от вашего VPN-провайдера. Это URL, который заканчивается на <code>/sub</code> или содержит <code>?id=</code>.</p>
+        <input class="input" id="onboardSubUrl" placeholder="https://example.com/api/sub/…" autocomplete="off">
+        <div class="onboard-hint">Где взять ссылку? В панели вашего VPN-провайдера (Remnawave, Marzban, x-ui) — раздел «Подписка» / «Subscription».</div>
+        <div class="onboard-actions">
+          <button class="btn btn-primary" onclick="onboardNext1()">Далее</button>
+        </div>
+      </div>
+
+      <div class="onboard-pane" id="onboardStep2">
+        <h2>Загружаем серверы…</h2>
+        <p id="onboardStep2Desc">Проверяем подписку и скачиваем список серверов.</p>
+        <div class="onboard-loader"><div class="spinner" style="width:24px;height:24px;border-width:3px"></div></div>
+        <div class="onboard-hint" id="onboardServersList" style="display:none"></div>
+      </div>
+
+      <div class="onboard-pane" id="onboardStep3">
+        <div style="font-size:48px;line-height:1;color:var(--green);margin-bottom:14px"><svg style="width:56px;height:56px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></div>
+        <h2>Всё готово!</h2>
+        <p>FlowVPN настроен. Нажмите «Включить VPN», выберите сервер и открывайте заблокированные сайты.</p>
+        <div class="onboard-actions">
+          <button class="btn btn-primary" onclick="finishOnboard()">Начать пользоваться</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<nav class="bottom-nav" id="bottomNav">
+  <button class="bn-item active" data-tab="routing" onclick="showTabMobile('routing')">
+    <svg class="icon"><use href="#i-globe"/></svg><span>Маршрут</span>
+  </button>
+  <button class="bn-item" data-tab="devices" onclick="showTabMobile('devices')">
+    <svg class="icon"><use href="#i-phone"/></svg><span>Устройства</span>
+  </button>
+  <button class="bn-item" data-tab="logs" onclick="showTabMobile('logs')">
+    <svg class="icon"><use href="#i-search"/></svg><span>Журнал</span>
+  </button>
+  <button class="bn-item" data-tab="diagnose" onclick="showTabMobile('diagnose')">
+    <svg class="icon"><use href="#i-shield"/></svg><span>Диагностика</span>
+  </button>
+  <button class="bn-item" data-tab="settings" onclick="showTabMobile('settings')">
+    <svg class="icon"><use href="#i-gear"/></svg><span>Настройки</span>
+  </button>
+</nav>
+
+<div class="toasts" id="toasts"></div>
 
 <script>
 const API='/cgi-bin/flowvpn';
-let state={},pings={};
+let state={},pings={},currentLogFilter='all';
 
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
-function fmtUp(s){if(!s||s<=0)return'—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+'h '+m+'m';if(m>0)return m+'m';return s+'s'}
-function esc(s){if(!s)return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function pc(ms){return ms<0?'pu':ms<150?'pg':ms<400?'pm':'pb'}
+const TOAST_ICONS={
+  success:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
+  error:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>',
+  info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>',
+  loading:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-dasharray="40 16"/></svg>'
+};
+const TOAST_CLOSE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M6 18L18 6"/></svg>';
+let _toastId=0;
+function toast(msg,opts){
+  if(typeof opts==='string')opts={type:opts};
+  opts=opts||{};
+  const type=opts.type||'info';
+  const duration=opts.duration!==undefined?opts.duration:(type==='error'?4500:type==='loading'?0:2800);
+  const id='t'+(++_toastId);
+  const container=document.getElementById('toasts');
+  if(!container)return id;
+  const el=document.createElement('div');
+  el.className='toast '+type;
+  el.id=id;
+  const iconCls='toast-icon'+(type==='loading'?' spin':'');
+  const titleEsc=esc(typeof msg==='string'?msg:(msg.title||''));
+  const descEsc=msg&&msg.desc?esc(msg.desc):'';
+  el.innerHTML=
+    '<div class="'+iconCls+'">'+TOAST_ICONS[type]+'</div>'+
+    '<div class="toast-body"><div class="toast-title">'+titleEsc+'</div>'+
+    (descEsc?'<div class="toast-desc">'+descEsc+'</div>':'')+'</div>'+
+    '<div class="toast-close" onclick="dismissToast(\''+id+'\')">'+TOAST_CLOSE+'</div>';
+  container.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+  if(duration>0)setTimeout(()=>dismissToast(id),duration);
+  return id;
+}
+function dismissToast(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.classList.remove('show');el.classList.add('hide');
+  setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el)},250);
+}
+function updateToast(id,msg,opts){
+  dismissToast(id);
+  return toast(msg,opts);
+}
+toast.success=(m,d)=>toast(d?{title:m,desc:d}:m,'success');
+toast.error=(m,d)=>toast(d?{title:m,desc:d}:m,'error');
+toast.info=(m,d)=>toast(d?{title:m,desc:d}:m,'info');
+toast.loading=(m)=>toast(m,{type:'loading',duration:0});
+function fmtUp(s){if(!s||s<=0)return'—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+' ч '+m+' мин';if(m>0)return m+' мин';return s+' сек'}
+function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(2)+' MB';return(b/1073741824).toFixed(2)+' GB'}
+function fmtSpeed(bps){bps=+bps||0;if(bps<1024)return(bps/1024).toFixed(2)+' KB/с';if(bps<1048576)return(bps/1024).toFixed(1)+' KB/с';return(bps/1048576).toFixed(2)+' MB/с'}
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function pingClass(ms){return ms<0?'ping-none':ms<150?'ping-good':ms<400?'ping-mid':'ping-bad'}
 
 function showTab(name,el){
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.bn-item').forEach(t=>t.classList.remove('active'));
   document.getElementById('sec-'+name).classList.add('active');
-  el.classList.add('active');
+  document.querySelectorAll('.tab[data-tab="'+name+'"],.bn-item[data-tab="'+name+'"]').forEach(e=>e.classList.add('active'));
+  stopLive();
   if(name==='devices')loadDevices();
-  if(name==='logs')loadLogs();
+  if(name==='logs'){loadLogs();if(liveMode)startLive()}
   if(name==='routing')loadDomains();
+  if(name==='diagnose')loadQuickDiag();
+  if(name==='settings'){loadSchedule();loadAutoUpdate();loadSystemInfo()}
+  // On mobile, scroll to the section (since left column is above it); on desktop stay in place
+  if(window.matchMedia('(max-width:840px)').matches){
+    const sec=document.getElementById('sec-'+name);
+    if(sec){
+      const headerH=document.getElementById('appHeader').offsetHeight||0;
+      const y=sec.getBoundingClientRect().top+window.pageYOffset-headerH-8;
+      window.scrollTo({top:Math.max(0,y),behavior:'smooth'});
+    }
+  }
+}
+function showTabMobile(name){
+  const desktopTab=document.querySelector('.tabs .tab[data-tab="'+name+'"]');
+  showTab(name,desktopTab||document.createElement('div'));
+}
+
+function isMeteredServer(name){
+  // Must match _is_metered_server() in /usr/bin/flowvpn
+  return /МТС|мтс|MTS|mts|Т2|т2|Tele2|tele2|\bБи\b|Билайн|билайн|Beeline|beeline|Мегафон|мегафон|Megafon|megafon/.test(name||'');
 }
 
 function renderServers(servers,sel){
   const el=document.getElementById('serverList');
-  if(!servers||!servers.length){el.innerHTML='<div style="color:var(--dim);font-size:13px;padding:20px;text-align:center">No servers</div>';return}
+  if(!servers||!servers.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Серверы не загружены</div>';return}
   el.innerHTML=servers.map((s,i)=>{
     const a=i===sel?' active':'';
-    const p=pings[i],ps=p!==undefined?(p<0?'timeout':p+'ms'):'—',cls=p!==undefined?pc(p):'pu';
-    return`<div class="server${a}" onclick="selectServer(${i})"><span class="server-name">${esc(s.name)}</span><span class="server-ping ${cls}">${ps}</span></div>`
+    const p=pings[i];
+    const pingStr=p!==undefined?(p<0?'нет':p+' мс'):'—';
+    const cls=p!==undefined?pingClass(p):'ping-none';
+    const flagMatch=s.name.match(/^(\p{RI}\p{RI})\s*(.*)/u);
+    const flag=flagMatch?flagMatch[1]:'';
+    const name=flagMatch?flagMatch[2]:s.name;
+    const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
+    const metered=isMeteredServer(s.name);
+    const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
+    return `<div class="server${a}${metered?' server-metered':''}" onclick="selectServer(${i})">
+      <span class="server-flag">${flag}</span>
+      <span class="server-name">${esc(name)}</span>
+      ${meterTag}
+      <span class="server-ping-box ${cls}">${bars}<span class="server-ping">${pingStr}</span></span>
+    </div>`;
   }).join('');
 }
 
+let _lastSwitchSeen=null;
 async function fetchStatus(){
   try{
     const r=await fetch(API+'?action=status');state=await r.json();
-    document.getElementById('vpnToggle').checked=state.running;
-    document.getElementById('connStatus').innerHTML=state.running?'<span class="dot dot-g"></span> Подключено':'<span class="dot dot-r"></span> Отключено';
-    document.getElementById('headerStatus').innerHTML=state.running?'<span class="dot dot-g"></span> '+state.server:'<span class="dot dot-r"></span> Выкл';
-    document.getElementById('curServer').textContent=state.server||'—';
-    document.getElementById('vpnIp').textContent=state.vpn_ip||'—';
-    document.getElementById('uptime').textContent=fmtUp(state.uptime);
-    document.getElementById('curMode').textContent=state.mode==='all_vpn'?'Всё через VPN':'По списку';
-    document.getElementById('modeHint').innerHTML=state.mode==='all_vpn'?'<svg class="icon" style="width:10px;height:10px"><use href="#i-shield"/></svg> Весь трафик защищён, кроме RU сайтов':'Только заблокированные сайты через VPN';
+    // Detect watchdog failover: if last_switch.time is newer than what we've seen, show a toast.
+    if(state.last_switch&&state.last_switch.time){
+      const t=state.last_switch.time;
+      if(_lastSwitchSeen===null){
+        _lastSwitchSeen=t; // initial load — don't toast
+      }else if(t>_lastSwitchSeen){
+        _lastSwitchSeen=t;
+        const from=state.last_switch.from||'—',to=state.last_switch.to||'—';
+        toast.info('Сервер переключён',from+' → '+to+' (watchdog)');
+      }
+    }
+    const on=state.running;
+    document.getElementById('vpnToggle').checked=on;
+    const orb=document.getElementById('statusOrb');
+    orb.classList.toggle('off',!on);
+
+    if(on){
+      document.getElementById('statusTitle').textContent='Защищено';
+      const modeText=state.mode==='all_vpn'?'Весь трафик кроме РФ':'Только по списку';
+      document.getElementById('statusMeta').innerHTML=
+        `<span><b>${esc(state.server||'—')}</b></span>`+
+        `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
+        `<span>${fmtUp(state.uptime)}</span>`+
+        `<span>${modeText}</span>`;
+      const hi=document.getElementById('headerInfo');
+      hi.className='header-info on';
+      hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green)"></span> '
+        +esc(state.server||'')+'<span style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
+      document.getElementById('vpnMiniToggle').checked=true;
+    }else{
+      document.getElementById('statusTitle').textContent='Отключено';
+      document.getElementById('statusMeta').innerHTML='<span>Нажмите переключатель, чтобы подключиться</span>';
+      const hi=document.getElementById('headerInfo');
+      hi.className='header-info off';
+      hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--red)"></span> Выключено';
+      document.getElementById('vpnMiniToggle').checked=false;
+    }
+
     document.getElementById('subUrl').value=state.subscription_url||'';
     document.getElementById('mode-all').classList.toggle('active',state.mode==='all_vpn');
     document.getElementById('mode-block').classList.toggle('active',state.mode==='blocklist');
     renderServers(state.servers,state.selected);
+    if(!state._onboardChecked){state._onboardChecked=true;maybeShowOnboard()}
   }catch(e){}
 }
 
-async function toggleVPN(){const on=document.getElementById('vpnToggle').checked;toast(on?'Запускаем...':'Останавливаем...');try{const r=await fetch(API+'?action='+(on?'start':'stop'));const d=await r.json();toast(d.error?'Ошибка: '+d.error:on?'VPN подключён':'VPN отключён')}catch(e){toast('Ошибка соединения')}setTimeout(fetchStatus,2000)}
-async function selectServer(i){toast('Переключаем сервер...');try{await fetch(API+'?action=set-server&index='+i)}catch(e){}setTimeout(fetchStatus,3000)}
-async function doPing(){const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем...';try{const r=await fetch(API+'?action=ping');const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}b.disabled=false;b.textContent='Пинг'}
-async function setMode(m){toast('Переключаем режим...');try{await fetch(API+'?action=set-mode&mode='+m)}catch(e){}setTimeout(fetchStatus,3000)}
-async function saveSubUrl(){const u=document.getElementById('subUrl').value.trim();if(!u){toast('Введите ссылку на подписку');return}try{await fetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(u));toast('Подписка сохранена')}catch(e){toast('Ошибка сохранения')}}
-async function doUpdate(){const b=document.getElementById('updateBtn');b.disabled=true;b.textContent='Обновляем...';try{const r=await fetch(API+'?action=update');const d=await r.json();toast(d.error?'Ошибка: '+d.error:'Обновлено серверов: '+d.servers)}catch(e){toast('Ошибка обновления')}b.disabled=false;b.textContent='Обновить список серверов';setTimeout(fetchStatus,2000)}
-async function doRestart(){toast('Перезапускаем VPN...');try{await fetch(API+'?action=restart')}catch(e){}setTimeout(fetchStatus,3000)}
-async function doStop(){toast('Останавливаем VPN...');try{await fetch(API+'?action=stop')}catch(e){}setTimeout(fetchStatus,2000)}
+async function toggleVPN(){
+  const on=document.getElementById('vpnToggle').checked;
+  const tid=toast.loading(on?'Подключаемся…':'Отключаем…');
+  try{
+    const r=await fetch(API+'?action='+(on?'start':'stop'));const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка',{type:'error',duration:4500});
+    else updateToast(tid,on?'VPN подключён':'VPN отключён',{type:'success'});
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
+  setTimeout(fetchStatus,2000);
+}
+
+async function selectServer(i){
+  const name=(state.servers&&state.servers[i])?state.servers[i].name:'сервер';
+  const tid=toast.loading('Переключаем на '+name+'…');
+  try{await fetch(API+'?action=set-server&index='+i);updateToast(tid,'Сервер переключён',{type:'success',duration:2000})}
+  catch(e){updateToast(tid,'Ошибка переключения',{type:'error'})}
+  setTimeout(fetchStatus,3000);
+}
+async function doPing(){
+  const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';
+  try{const r=await fetch(API+'?action=ping');const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}
+  b.disabled=false;b.textContent='Проверить пинг'
+}
+async function setMode(m){
+  const name=m==='all_vpn'?'«Всё через VPN»':'«По списку»';
+  const tid=toast.loading('Применяем режим…');
+  try{await fetch(API+'?action=set-mode&mode='+m);updateToast(tid,'Режим: '+name,{type:'success'})}
+  catch(e){updateToast(tid,'Ошибка',{type:'error'})}
+  setTimeout(fetchStatus,3000);
+}
+async function saveSubUrl(){
+  const u=document.getElementById('subUrl').value.trim();
+  if(!u){toast.error('Введите ссылку');return}
+  const tid=toast.loading('Сохраняем подписку…');
+  try{await fetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(u));updateToast(tid,'Подписка сохранена',{type:'success'})}
+  catch(e){updateToast(tid,'Ошибка сохранения',{type:'error'})}
+}
+async function doUpdate(){
+  const b=document.getElementById('updateBtn');b.disabled=true;b.textContent='Обновляем…';
+  const tid=toast.loading('Обновляем список серверов…');
+  try{
+    const r=await fetch(API+'?action=update');const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка обновления',{type:'error',desc:d.error});
+    else updateToast(tid,'Список обновлён',{type:'success',desc:'Найдено серверов: '+d.servers});
+  }catch(e){updateToast(tid,'Ошибка',{type:'error'})}
+  b.disabled=false;b.textContent='Обновить список серверов';
+  setTimeout(fetchStatus,2000);
+}
+async function doRestart(){
+  const tid=toast.loading('Перезапускаем FlowVPN…');
+  try{await fetch(API+'?action=restart');updateToast(tid,'FlowVPN перезапущен',{type:'success'})}
+  catch(e){updateToast(tid,'Ошибка',{type:'error'})}
+  setTimeout(fetchStatus,3000);
+}
+async function doStop(){
+  const tid=toast.loading('Останавливаем…');
+  try{await fetch(API+'?action=stop');updateToast(tid,'VPN остановлен',{type:'success'})}
+  catch(e){updateToast(tid,'Ошибка',{type:'error'})}
+  setTimeout(fetchStatus,2000);
+}
 
 async function loadDomains(){
   try{const r=await fetch(API+'?action=get-domains');const d=await r.json();
     document.getElementById('directCount').textContent=(d.ru_domains_count||0)+(d.custom_direct?d.custom_direct.length:0);
     document.getElementById('vpnCount').textContent=d.custom_vpn?d.custom_vpn.length:0;
-    const tags=(arr,list)=>arr.map(d=>`<span class="domain-tag">${esc(d)}<span class="domain-x" onclick="removeDomain('${esc(d)}','${list}')">&times;</span></span>`).join('');
-    document.getElementById('directDomains').innerHTML=d.custom_direct&&d.custom_direct.length?tags(d.custom_direct,'direct'):'<div style="color:var(--dim);font-size:12px;padding:8px">Используется стандартный список RU-доменов</div>';
-    document.getElementById('vpnDomains').innerHTML=d.custom_vpn&&d.custom_vpn.length?tags(d.custom_vpn,'vpn'):'<div style="color:var(--dim);font-size:12px;padding:8px">Нет пользовательских доменов</div>';
+    const tags=(arr,list)=>arr.map(d=>`<span class="tag">${esc(d)}<span class="tag-remove" onclick="removeDomain('${esc(d)}','${list}')">×</span></span>`).join('');
+    document.getElementById('directDomains').innerHTML=d.custom_direct&&d.custom_direct.length?tags(d.custom_direct,'direct'):'<div style="color:var(--text-dim);font-size:11px;padding:6px 2px">Используется стандартный список (~5000 российских доменов)</div>';
+    document.getElementById('vpnDomains').innerHTML=d.custom_vpn&&d.custom_vpn.length?tags(d.custom_vpn,'vpn'):'<div style="color:var(--text-dim);font-size:11px;padding:6px 2px">Ничего не добавлено</div>';
   }catch(e){}
 }
-async function addDomain(list){const inp=document.getElementById(list==='direct'?'addDirectInput':'addVpnInput');const d=inp.value.trim();if(!d)return;try{await fetch(API+'?action=add-domain&domain='+encodeURIComponent(d)+'&list='+list);inp.value='';toast('Добавлен: '+d);loadDomains()}catch(e){toast('Ошибка')}}
-async function removeDomain(d,list){try{await fetch(API+'?action=remove-domain&domain='+encodeURIComponent(d)+'&list='+list);toast('Удалён: '+d);loadDomains()}catch(e){}}
+async function addDomain(list){
+  const inp=document.getElementById(list==='direct'?'addDirectInput':'addVpnInput');
+  const d=inp.value.trim();if(!d)return;
+  try{await fetch(API+'?action=add-domain&domain='+encodeURIComponent(d)+'&list='+list);inp.value='';
+    toast.success('Домен добавлен',d+(list==='direct'?' → напрямую':' → через VPN'));loadDomains()}
+  catch(e){toast.error('Ошибка добавления')}
+}
+async function removeDomain(d,list){
+  try{await fetch(API+'?action=remove-domain&domain='+encodeURIComponent(d)+'&list='+list);toast.success('Удалён',d);loadDomains()}
+  catch(e){toast.error('Ошибка')}
+}
+
+function detectDeviceType(name){
+  const n=(name||'').toLowerCase();
+  if(!n||n==='*')return{icon:'#i-device',label:''};
+  if(/iphone/.test(n))return{icon:'#i-phone',label:'iPhone'};
+  if(/ipad/.test(n))return{icon:'#i-tablet',label:'iPad'};
+  if(/mac ?book|imac|\bmac\b/.test(n))return{icon:'#i-laptop',label:'Mac'};
+  if(/\bwatch\b/.test(n))return{icon:'#i-watch',label:'Watch'};
+  if(/nothing-?phone|pixel|galaxy|oneplus|redmi|xiaomi-phone|poco|realme|oppo-|vivo-/.test(n))return{icon:'#i-phone',label:'Phone'};
+  if(/^hp[a-z0-9]{4,}|canon|epson|brother|kyocera|officejet|laserjet/.test(n))return{icon:'#i-printer',label:'Printer'};
+  if(/vacuum|roborock|dreame|xiaomi-vacuum/.test(n))return{icon:'#i-vacuum',label:'Vacuum'};
+  if(/yeelink|yeelight|bulb|lamp|\blight\b/.test(n))return{icon:'#i-bulb',label:'Light'};
+  if(/doorbell|ring-|videodoorbell/.test(n))return{icon:'#i-doorbell',label:'Doorbell'};
+  if(/homepod|sonos|speaker|audio|gostina|echo-|alexa|yandex-station/.test(n))return{icon:'#i-speaker',label:'Speaker'};
+  if(/\btv\b|bravia|aquos|webos|smarttv|samsung-tv|lg-tv/.test(n))return{icon:'#i-tv',label:'TV'};
+  if(/router|ax\d|ac\d\d\d\d|asus-wifi|keenetic|mikrotik|mesh|orbi/.test(n))return{icon:'#i-router',label:'Router'};
+  if(/laptop|thinkpad|xps|ideapad|desktop|workstation|pc-/.test(n))return{icon:'#i-laptop',label:'PC'};
+  if(/android/.test(n))return{icon:'#i-phone',label:'Android'};
+  return{icon:'#i-device',label:''};
+}
+
+let _devicesCache=[];
 
 async function loadDevices(){
   try{const r=await fetch(API+'?action=get-devices');const d=await r.json();
-    document.getElementById('deviceList').innerHTML=d.length?d.map(dev=>`<div class="device"><div class="device-icon">📱</div><div class="device-info"><div class="device-name">${dev.name==='*'?'Неизвестное устройство':esc(dev.name)}</div><div class="device-ip">${esc(dev.ip)} · ${esc(dev.mac)}</div></div></div>`).join(''):'<div style="color:var(--dim);font-size:13px;padding:24px;text-align:center">Нет подключённых устройств</div>';
+    _devicesCache=d||[];
+    renderDevices();
+    loadTraffic();
   }catch(e){}
 }
 
-let currentLogFilter='all';
+function filterDevices(){renderDevices()}
+
+function renderDevices(){
+  const rules=(state&&state.device_rules)||{};
+  const list=document.getElementById('deviceList');
+  const q=(document.getElementById('devSearch')?.value||'').toLowerCase().trim();
+  document.getElementById('devCount').textContent=_devicesCache.length;
+  const filtered=_devicesCache.filter(dev=>{
+    if(!q)return true;
+    return (dev.name||'').toLowerCase().includes(q)
+      ||(dev.ip||'').includes(q)
+      ||(dev.mac||'').toLowerCase().includes(q);
+  });
+  if(!filtered.length){
+    list.innerHTML=q?'<div class="dev-empty">Не найдено по запросу "<b>'+esc(q)+'</b>"</div>':'<div class="dev-empty">Нет подключённых устройств</div>';
+    return;
+  }
+  const groups={direct:[],vpn:[]};
+  for(const dev of filtered){
+    const r=rules[dev.ip]||'vpn';
+    (r==='direct'?groups.direct:groups.vpn).push(dev);
+  }
+  const renderOne=(dev)=>{
+    const r=rules[dev.ip]||'vpn';const isVpn=r!=='direct';
+    const t=detectDeviceType(dev.name);
+    const badge=isVpn
+      ?'<span class="badge badge-vpn">VPN</span>'
+      :'<span class="badge badge-direct">Direct</span>';
+    const isUnknown=!dev.name||dev.name==='*';
+    const avatarCls=isUnknown?'unknown':(isVpn?'vpn':'direct');
+    const title=isUnknown?'Неизвестное устройство':esc(dev.name);
+    const typeHint=t.label?` <span style="color:var(--text-dim);font-weight:500">· ${t.label}</span>`:'';
+    return `<div class="device" onclick="toggleDeviceRoute('${dev.ip}','${isVpn?'direct':'vpn'}')">
+      <div class="device-avatar ${avatarCls}"><svg class="icon icon-lg"><use href="${t.icon}"/></svg></div>
+      <div class="device-info">
+        <div class="device-name">${title}${typeHint}</div>
+        <div class="device-meta">${esc(dev.ip)} · ${esc(dev.mac)}</div>
+      </div>
+      ${badge}
+    </div>`;
+  };
+  let html='';
+  if(groups.vpn.length){
+    html+=`<div class="dev-group-header">Через VPN<span class="dev-group-count">${groups.vpn.length}</span></div>`;
+    html+=groups.vpn.map(renderOne).join('');
+  }
+  if(groups.direct.length){
+    html+=`<div class="dev-group-header">Напрямую<span class="dev-group-count">${groups.direct.length}</span></div>`;
+    html+=groups.direct.map(renderOne).join('');
+  }
+  list.innerHTML=html;
+}
+async function toggleDeviceRoute(ip,route){
+  try{
+    if(route==='vpn')await fetch(API+'?action=remove-device-route&ip='+ip);
+    else await fetch(API+'?action=set-device&ip='+ip+'&route='+route);
+    toast.success('Маршрут изменён',ip+' → '+(route==='direct'?'напрямую':'через VPN'));
+  }catch(e){toast.error('Ошибка')}
+  setTimeout(loadDevices,1000);
+}
+async function loadTraffic(){
+  try{const r=await fetch(API+'?action=get-traffic');const d=await r.json();
+    const nowBytes=document.getElementById('nowVpnBytes');
+    if(nowBytes)nowBytes.textContent=fmtBytes(d.vpn_bytes||0);
+    const conns=(d.vpn_connections||0)+(d.direct_connections||0);
+    const nowConns=document.getElementById('nowConns');
+    if(nowConns)nowConns.textContent=conns;
+    const tv=document.getElementById('trafficVpn');if(tv)tv.textContent=fmtBytes(d.vpn_bytes||0);
+    const cv=document.getElementById('connVpn');if(cv)cv.textContent=d.vpn_connections||0;
+    const cd=document.getElementById('connDirect');if(cd)cd.textContent=d.direct_connections||0;
+  }catch(e){}
+}
+
+// Speed history + sparkline
+const SPARK_POINTS=60;
+const speedHistory={down:new Array(SPARK_POINTS).fill(0),up:new Array(SPARK_POINTS).fill(0)};
+function pushSpeed(down,up){
+  speedHistory.down.shift();speedHistory.down.push(down);
+  speedHistory.up.shift();speedHistory.up.push(up);
+  drawSpark();
+}
+function drawSpark(){
+  const c=document.getElementById('speedSpark');if(!c)return;
+  const dpr=window.devicePixelRatio||1;
+  const rect=c.getBoundingClientRect();
+  const w=rect.width,h=rect.height;
+  if(c.width!==w*dpr||c.height!==h*dpr){c.width=w*dpr;c.height=h*dpr}
+  const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  const max=Math.max(1,...speedHistory.down,...speedHistory.up);
+  const drawLine=(arr,stroke,fill)=>{
+    ctx.beginPath();
+    arr.forEach((v,i)=>{
+      const x=i*(w/(SPARK_POINTS-1));
+      const y=h-(v/max)*(h-4)-2;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    });
+    if(fill){
+      const grad=ctx.createLinearGradient(0,0,0,h);
+      grad.addColorStop(0,fill);grad.addColorStop(1,'transparent');
+      const x2=(SPARK_POINTS-1)*(w/(SPARK_POINTS-1));
+      ctx.lineTo(x2,h);ctx.lineTo(0,h);ctx.closePath();
+      ctx.fillStyle=grad;ctx.fill();
+      ctx.beginPath();
+      arr.forEach((v,i)=>{
+        const x=i*(w/(SPARK_POINTS-1));
+        const y=h-(v/max)*(h-4)-2;
+        if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+      });
+    }
+    ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.lineJoin='round';ctx.stroke();
+  };
+  drawLine(speedHistory.down,'#34d399','rgba(52,211,153,0.25)');
+  drawLine(speedHistory.up,'#f472b6',null);
+}
+
+let speedWs=null,wsBackoff=5000;
+function startSpeedMonitor(){
+  try{
+    speedWs=new WebSocket('ws://'+location.hostname+':9090/traffic?token=flowvpn');
+    speedWs.onopen=function(){wsBackoff=5000};
+    speedWs.onmessage=function(e){
+      const d=JSON.parse(e.data);
+      const down=d.down||0,up=d.up||0;
+      document.getElementById('speedDown').textContent=fmtSpeed(down);
+      document.getElementById('speedUp').textContent=fmtSpeed(up);
+      pushSpeed(down,up);
+    };
+    speedWs.onclose=function(){
+      wsBackoff=Math.min(wsBackoff*1.5,60000);
+      setTimeout(startSpeedMonitor,wsBackoff);
+    };
+    speedWs.onerror=function(){speedWs.close()};
+  }catch(e){}
+}
+setInterval(loadTraffic,5000);
+
+// Logs
 function setLogFilter(f,el){
   currentLogFilter=f;
-  document.querySelectorAll('.log-filter').forEach(b=>{b.classList.remove('active');b.style.background='rgba(255,255,255,0.06)'});
-  el.classList.add('active');el.style.background='var(--accent)';
-  loadLogs();
+  _lastLogSig='';
+  document.querySelectorAll('.log-filter').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  const list=document.getElementById('logList');
+  if(list)list.classList.add('updating');
+  loadLogs().finally(()=>{if(list)list.classList.remove('updating')});
 }
+let liveMode=true,liveTimer=null;
+function toggleLive(){
+  liveMode=!liveMode;
+  const b=document.getElementById('liveBtn');
+  b.classList.toggle('paused',!liveMode);
+  b.textContent=liveMode?'Live':'Pause';
+  if(liveMode){startLive()}else{stopLive()}
+}
+function startLive(){
+  stopLive();
+  if(!document.getElementById('sec-logs').classList.contains('active'))return;
+  liveTimer=setInterval(loadLogs,2500);
+}
+function stopLive(){if(liveTimer){clearInterval(liveTimer);liveTimer=null}}
+
+function groupLogs(entries){
+  // Merge consecutive identical entries (same route + dst)
+  const groups=[];
+  for(const e of entries){
+    const last=groups[groups.length-1];
+    if(last&&last.route===e.route&&last.dst===e.dst){
+      last.count++;last.time=e.time;
+    }else{
+      groups.push({...e,count:1});
+    }
+  }
+  return groups;
+}
+
+let _lastLogSig='',_logLoading=false;
 async function loadLogs(){
+  if(_logLoading)return;
+  _logLoading=true;
   try{
-    const r=await fetch(API+'?action=get-log&lines=100&filter='+currentLogFilter);
+    const r=await fetch(API+'?action=get-log&lines=200&filter='+currentLogFilter);
     const d=await r.json();
+    const list=document.getElementById('logList');
+    if(!list){_logLoading=false;return}
+
+    // Empty case — render once, skip repeat
     if(!d.length){
-      document.getElementById('logList').innerHTML='<div style="color:var(--dim);font-size:13px;padding:24px;text-align:center">Журнал пока пуст</div>';
-      document.getElementById('logStats').textContent='';
+      const emptySig='EMPTY:'+currentLogFilter;
+      if(_lastLogSig!==emptySig){
+        list.innerHTML='<div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Журнал пуст. Включите VPN — здесь появятся соединения.</div>';
+        _lastLogSig=emptySig;
+      }
+      const ls=document.getElementById('logStats');if(ls&&ls.innerHTML!=='')ls.innerHTML='';
+      const lc=document.getElementById('logCount');if(lc&&lc.textContent!=='0')lc.textContent='0';
+      _logLoading=false;
       return;
     }
-    let vpnCount=0,directCount=0,errCount=0;
-    document.getElementById('logList').innerHTML=d.map(e=>{
-      const cls=e.route==='vpn'?'log-vpn':e.route==='direct'?'log-direct':e.route==='error'?'log-err':e.route==='flow'?' log-flow':e.route==='xray'?' log-xray':'';
-      const icons={vpn:'<svg class="icon"><use href="#i-lock"/></svg>',direct:'<svg class="icon"><use href="#i-globe"/></svg>',error:'<svg class="icon"><use href="#i-x"/></svg>',dns:'<svg class="icon"><use href="#i-search"/></svg>',flow:'<svg class="icon"><use href="#i-gear"/></svg>',xray:'<svg class="icon"><use href="#i-link"/></svg>'};
-      const icon=icons[e.route]||'•';
-      const label=e.route==='vpn'?'VPN':e.route==='direct'?'Direct':e.route==='error'?'Error':e.route==='dns'?'DNS':e.route==='flow'?'Flow':e.route==='xray'?'xray':'?';
-      if(e.route==='vpn')vpnCount++;
-      if(e.route==='direct')directCount++;
-      if(e.route==='error')errCount++;
-      const time=e.time?e.time.split(' ')[1]||e.time:'';
-      return`<div class="log-line ${cls}"><span style="opacity:.4;min-width:60px;display:inline-block">${time}</span> ${icon} <span style="font-weight:600;min-width:45px;display:inline-block">${label}</span> ${e.dst||''}</div>`;
+
+    const grouped=groupLogs(d);
+    // Signature: filter + (route|dst|count) for each grouped line. Time excluded so second-by-second ticks don't cause redraws.
+    const sig=currentLogFilter+'|'+grouped.length+':'+grouped.map(e=>e.route+e.dst+e.count).join('~');
+    if(sig===_lastLogSig){
+      // Data identical — only update total count badge (cheap)
+      const lc=document.getElementById('logCount');
+      if(lc&&lc.textContent!==String(d.length))lc.textContent=d.length;
+      _logLoading=false;
+      return;
+    }
+    _lastLogSig=sig;
+
+    let vpn=0,direct=0,err=0;
+    const icons={vpn:'#i-lock',direct:'#i-globe',error:'#i-x',dns:'#i-search',flow:'#i-gear',xray:'#i-link'};
+    const labels={vpn:'VPN',direct:'DIRECT',error:'ERROR',dns:'DNS',flow:'FLOW',xray:'XRAY'};
+    const wasAtBottom=list.scrollTop+list.clientHeight>=list.scrollHeight-40;
+    const html=grouped.map(e=>{
+      if(e.route==='vpn')vpn+=e.count;if(e.route==='direct')direct+=e.count;if(e.route==='error')err+=e.count;
+      const time=e.time?(e.time.includes(' ')?e.time.split(' ').pop():e.time):'';
+      const dup=e.count>1?`<span class="log-dup-count">×${e.count}</span>`:'';
+      return `<div class="log-line log-${e.route}${e.count>1?' log-dup':''}">`
+        +`<span class="log-time">${esc(time.slice(0,8))}</span>`
+        +`<span class="log-icon"><svg class="icon icon-sm"><use href="${icons[e.route]||'#i-globe'}"/></svg></span>`
+        +`<span class="log-label">${labels[e.route]||'?'}</span>`
+        +`<span class="log-msg">${esc(e.dst||'')}</span>`
+        +`${dup}</div>`;
     }).join('');
-    document.getElementById('logStats').textContent='VPN: '+vpnCount+' | Direct: '+directCount+(errCount?' | Ошибки: '+errCount:'');
+    list.innerHTML=html;
+    if(wasAtBottom)list.scrollTop=list.scrollHeight;
+    document.getElementById('logCount').textContent=d.length;
+    document.getElementById('logStats').innerHTML=`<span>VPN <b>${vpn}</b></span><span>Direct <b>${direct}</b></span>${err?`<span style="color:var(--red)">Ошибок <b>${err}</b></span>`:''}`;
   }catch(e){}
+  finally{_logLoading=false}
 }
-async function clearLog(){
-  try{await fetch(API+'?action=clear-log');toast('Журнал очищен');loadLogs()}catch(e){}
-}
+async function clearLog(){try{await fetch(API+'?action=clear-log');_lastLogSig='';toast.success('Журнал очищен');loadLogs()}catch(e){toast.error('Ошибка')}}
 async function exportLog(){
-  try{
-    const r=await fetch(API+'?action=get-log&lines=1000&filter=all');
-    const d=await r.json();
-    let txt='FlowVPN Log Export — '+new Date().toLocaleString()+'\n';
-    txt+='='.repeat(60)+'\n\n';
-    d.forEach(e=>{
-      const label=e.route==='vpn'?'[VPN]   ':e.route==='direct'?'[DIRECT]':e.route==='error'?'[ERROR] ':'[DNS]   ';
-      txt+=`${e.time||''} ${label} ${e.dst||''}\n`;
-    });
-    txt+='\nВсего записей: '+d.length;
-    const blob=new Blob([txt],{type:'text/plain'});
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-    a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';a.click();
-    toast('Журнал экспортирован');
-  }catch(e){toast('Ошибка экспорта')}
+  try{const r=await fetch(API+'?action=get-log&lines=1000&filter=all');const d=await r.json();
+    let txt='FlowVPN — журнал — '+new Date().toLocaleString('ru')+'\n'+'='.repeat(60)+'\n\n';
+    const labels={vpn:'[VPN]    ',direct:'[DIRECT] ',error:'[ERROR]  ',dns:'[DNS]    ',flow:'[FLOW]   ',xray:'[XRAY]   '};
+    d.forEach(e=>{txt+=`${e.time||''} ${labels[e.route]||''}${e.dst||''}\n`});
+    txt+=`\nВсего записей: ${d.length}`;
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';a.click();
+    toast.success('Журнал скачан');
+  }catch(e){toast.error('Ошибка скачивания')}
 }
 
-async function setWifi(){const s=document.getElementById('wifiSsid').value.trim(),p=document.getElementById('wifiPass').value.trim();if(!p){toast('Введите пароль');return}try{await fetch(API+'?action=set-wifi&ssid='+encodeURIComponent(s)+'&password='+encodeURIComponent(p));toast('WiFi обновлён — переподключитесь к сети')}catch(e){toast('Ошибка')}}
+// Quick diagnose
+function loadQuickDiag(){
+  const grid=document.getElementById('quickMetrics');
+  if(!grid)return;
+  const on=state.running;
+  const statusMetric=on
+    ?{cls:'ok',icon:'#i-shield',label:'Статус',value:'Защищено',sub:state.mode==='all_vpn'?'Весь трафик кроме РФ':'По списку блокировок'}
+    :{cls:'err',icon:'#i-shield',label:'Статус',value:'Отключено',sub:'Включите VPN в верхнем блоке'};
+  const serverName=state.server||'—';
+  const cachedPing=(state.selected!==undefined&&pings[state.selected]!==undefined)?pings[state.selected]:null;
+  const pingTxt=cachedPing!==null?(cachedPing<0?'нет связи':cachedPing+' мс'):'—';
+  const pingCls=cachedPing===null?'':(cachedPing<0?'err':cachedPing<150?'ok':cachedPing<400?'warn':'err');
+  const serverMetric={cls:on?pingCls||'info':'',icon:'#i-globe',label:'Сервер',value:serverName,sub:'Ping: '+pingTxt};
+  const ipMetric={cls:on?'info':'',icon:'#i-link',label:'Видимый IP',value:state.vpn_ip||'—',sub:on?'Так вас видят сайты':'Нет подключения',mono:true};
+  const uptime=state.uptime||0;
+  const uptimeMetric={cls:on?'ok':'',icon:'#i-gear',label:'Время работы',value:on?fmtUp(uptime):'—',sub:on?'Без разрывов':'Не запущено'};
+  const build=(m)=>`<div class="metric ${m.cls}"><div class="metric-icon"><svg><use href="${m.icon}"/></svg></div><div class="metric-body"><div class="metric-label">${m.label}</div><div class="metric-value${m.mono?' mono':''}">${esc(m.value)}</div><div class="metric-sub">${esc(m.sub)}</div></div></div>`;
+  grid.innerHTML=[statusMetric,serverMetric,ipMetric,uptimeMetric].map(build).join('');
+}
 
-async function runHealthcheck(){
-  const b=document.getElementById('hcBtn');
-  b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем...';
-  document.getElementById('hcResults').innerHTML='<div style="color:var(--dim);font-size:13px;padding:24px;text-align:center"><span class="spinner"></span> Полная проверка: процессы, сеть, VPN, сайты... ~30 сек</div>';
+async function measureServerPing(){
+  if(!state.servers||!state.servers.length){toast.error('Серверы не загружены');return}
+  const idx=state.selected||0;
+  const b=document.getElementById('pingCurBtn');
+  b.disabled=true;b.innerHTML='<span class="spinner"></span> Измеряем…';
   try{
-    const r=await fetch(API+'?action=healthcheck');const d=await r.json();
+    const r=await fetch(API+'?action=ping');const d=await r.json();
+    if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});
+    const p=pings[idx];
+    if(p===undefined||p<0)toast.error('Сервер недоступен');
+    else if(p<150)toast.success('Отличный ping',p+' мс');
+    else if(p<400)toast.info('Приемлемый ping',p+' мс');
+    else toast.error('Высокий ping',p+' мс');
+    loadQuickDiag();renderServers(state.servers,state.selected);
+  }catch(e){toast.error('Ошибка измерения')}
+  b.disabled=false;b.textContent='Измерить ping текущего сервера';
+}
+
+// Diagnostics
+function checkAction(c){
+  // Map a healthcheck row to a fix-action when it's warn/error
+  if(c.status==='ok')return null;
+  const n=(c.name||'').toLowerCase();
+  if(n==='лог')return{label:'Очистить журнал',fn:'hcClearLog()'};
+  if(n==='ошибки')return{label:'Открыть журнал ошибок',fn:'hcOpenErrors()'};
+  if(n==='xray'||n==='sing-box')return{label:'Перезапустить FlowVPN',fn:'doRestart()'};
+  return null;
+}
+async function hcClearLog(){
+  try{await fetch(API+'?action=clear-log');toast.success('Журнал очищен');_lastLogSig='';runHealthcheck()}
+  catch(e){toast.error('Ошибка очистки')}
+}
+function hcOpenErrors(){
+  const tab=document.querySelector('.tab[data-tab="logs"]');
+  showTab('logs',tab);
+  const errFilter=document.querySelector('.log-filter[data-filter="error"]');
+  if(errFilter)setLogFilter('error',errFilter);
+}
+async function runHealthcheck(){
+  const b=document.getElementById('hcBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем…';
+  document.getElementById('hcResults').innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center"><span class="spinner"></span> Выполняем 25 проверок, это займёт ~30 секунд</div>';
+  try{const r=await fetch(API+'?action=healthcheck');const d=await r.json();
     let ok=0,warn=0,err=0;
-    document.getElementById('hcResults').innerHTML=d.map(c=>{
+    const html=d.map(c=>{
       if(c.status==='ok')ok++;else if(c.status==='warn')warn++;else err++;
-      const icon=c.status==='ok'?'<svg class="icon" style="color:var(--green)"><use href="#i-check"/></svg>':c.status==='warn'?'<svg class="icon" style="color:var(--yellow)"><use href="#i-alert"/></svg>':'<svg class="icon" style="color:var(--red)"><use href="#i-x"/></svg>';
-      const bg=c.status==='ok'?'rgba(34,197,94,0.05)':c.status==='warn'?'rgba(234,179,8,0.05)':'rgba(239,68,68,0.05)';
-      const border=c.status==='ok'?'rgba(34,197,94,0.15)':c.status==='warn'?'rgba(234,179,8,0.15)':'rgba(239,68,68,0.15)';
-      return`<div style="display:flex;align-items:start;gap:10px;padding:10px 14px;margin-bottom:6px;border-radius:10px;background:${bg};border:1px solid ${border}">
-        <div style="font-size:16px;flex-shrink:0;margin-top:1px">${icon}</div>
-        <div><div style="font-weight:600;font-size:13px">${c.name}</div><div style="color:var(--dim);font-size:12px;margin-top:2px">${c.detail}</div></div>
-      </div>`
-    }).join('')+'<div style="margin-top:12px;padding:10px;border-radius:10px;background:rgba(255,255,255,0.03);font-size:13px;text-align:center"><svg class="icon" style="color:var(--green)"><use href="#i-check"/></svg> '+ok+' ok &nbsp; <svg class="icon" style="color:var(--yellow)"><use href="#i-alert"/></svg> '+warn+' предупр. &nbsp; <svg class="icon" style="color:var(--red)"><use href="#i-x"/></svg> '+err+' ошибок</div>';
+      const icon=c.status==='ok'?'#i-check':c.status==='warn'?'#i-alert':'#i-x';
+      const act=checkAction(c);
+      const clickable=act?' check-action':'';
+      const clickAttr=act?` onclick="event.stopPropagation();${act.fn}"`:'';
+      const btn=act?`<button class="check-act-btn" onclick="event.stopPropagation();${act.fn}">${esc(act.label)} →</button>`:'';
+      return `<div class="check check-${c.status}${clickable}"${clickAttr}>`
+        +`<div class="check-icon"><svg class="icon icon-sm"><use href="${icon}"/></svg></div>`
+        +`<div class="check-body"><div class="check-name">${esc(c.name)}</div>`
+        +`<div class="check-detail">${esc(c.detail)}</div>`
+        +btn+`</div></div>`;
+    }).join('')+`<div class="check-summary">
+      <div class="summary-item" style="color:var(--green)"><svg class="icon"><use href="#i-check"/></svg> <span class="summary-num">${ok}</span> успешно</div>
+      <div class="summary-item" style="color:var(--yellow)"><svg class="icon"><use href="#i-alert"/></svg> <span class="summary-num">${warn}</span> предупр.</div>
+      <div class="summary-item" style="color:var(--red)"><svg class="icon"><use href="#i-x"/></svg> <span class="summary-num">${err}</span> ошибок</div>
+    </div>`;
+    document.getElementById('hcResults').innerHTML=html;
   }catch(e){document.getElementById('hcResults').innerHTML='<div style="color:var(--red);padding:16px;text-align:center">Ошибка проверки</div>'}
   b.disabled=false;b.textContent='Запустить';
 }
 
-async function runDiagnose(){
-  const b=document.getElementById('diagBtn');
-  b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем...';
-  document.getElementById('diagResults').innerHTML='<div style="color:var(--dim);font-size:13px;padding:24px;text-align:center"><span class="spinner"></span> Выполняем 12 проверок, подождите ~15 секунд...</div>';
-  try{
-    const r=await fetch(API+'?action=diagnose');
-    const d=await r.json();
-    document.getElementById('diagResults').innerHTML=d.map(c=>{
-      const icon=c.status==='ok'?'<svg class="icon" style="color:var(--green)"><use href="#i-check"/></svg>':c.status==='warn'?'<svg class="icon" style="color:var(--yellow)"><use href="#i-alert"/></svg>':'<svg class="icon" style="color:var(--red)"><use href="#i-x"/></svg>';
-      const bg=c.status==='ok'?'rgba(34,197,94,0.05)':c.status==='warn'?'rgba(234,179,8,0.05)':'rgba(239,68,68,0.05)';
-      const border=c.status==='ok'?'rgba(34,197,94,0.15)':c.status==='warn'?'rgba(234,179,8,0.15)':'rgba(239,68,68,0.15)';
-      return`<div style="display:flex;align-items:start;gap:10px;padding:10px 14px;margin-bottom:6px;border-radius:10px;background:${bg};border:1px solid ${border}">
-        <div style="font-size:16px;flex-shrink:0;margin-top:1px">${icon}</div>
-        <div><div style="font-weight:600;font-size:13px">${c.name}</div><div style="color:var(--dim);font-size:12px;margin-top:2px">${c.detail}</div></div>
-      </div>`
-    }).join('');
-  }catch(e){
-    document.getElementById('diagResults').innerHTML='<div style="color:var(--red);padding:16px;text-align:center">Ошибка диагностики</div>';
-  }
-  b.disabled=false;b.textContent='Запустить проверку';
-}
-
-// Per-device routing
-async function loadDevicesV2(){
-  try{
-    const[devR,statusR]=await Promise.all([fetch(API+'?action=get-devices'),fetch(API+'?action=status')]);
-    const devs=await devR.json();const st=await statusR.json();
-    const rules=(st&&st.device_rules)||{};
-    // Read device_rules from config
-    let cfgRules={};
-    try{const cr=await fetch(API+'?action=status');const crd=await cr.json();cfgRules=crd.device_rules||{}}catch(e){}
-    document.getElementById('deviceList').innerHTML=devs.length?devs.map(dev=>{
-      const r=rules[dev.ip]||'vpn';
-      const isVpn=r!=='direct';
-      const badge=isVpn?'<span style="color:var(--accent);font-size:11px;font-weight:600">VPN</span>':'<span style="color:var(--green);font-size:11px;font-weight:600">Direct</span>';
-      return`<div class="device" style="cursor:pointer" onclick="toggleDeviceRoute('${dev.ip}','${isVpn?'direct':'vpn'}')">
-        <div class="device-icon">${isVpn?'<svg class="icon-lg" style="color:var(--accent)"><use href="#i-lock"/></svg>':'<svg class="icon-lg" style="color:var(--green)"><use href="#i-globe"/></svg>'}</div>
-        <div class="device-info"><div class="device-name">${dev.name==='*'?'Неизвестное устройство':esc(dev.name)}</div><div class="device-ip">${esc(dev.ip)} · ${esc(dev.mac)}</div></div>
-        ${badge}
-      </div>`
-    }).join(''):'<div style="color:var(--dim);font-size:13px;padding:24px;text-align:center">Нет подключённых устройств</div>';
-  }catch(e){}
-}
-async function toggleDeviceRoute(ip,route){
-  toast(route==='direct'?'Устройство '+ip+' → напрямую':'Устройство '+ip+' → VPN');
-  try{
-    if(route==='vpn'){await fetch(API+'?action=remove-device-route&ip='+ip)}
-    else{await fetch(API+'?action=set-device&ip='+ip+'&route='+route)}
-  }catch(e){}
-  setTimeout(loadDevicesV2,1000);
-}
-
-// Traffic stats
-async function loadTraffic(){
-  try{const r=await fetch(API+'?action=get-traffic');const d=await r.json();
-    document.getElementById('trafficVpn').textContent=fmtBytes(d.vpn_bytes||0);
-    document.getElementById('connVpn').textContent=d.vpn_connections||0;
-    document.getElementById('connDirect').textContent=d.direct_connections||0;
-  }catch(e){}
-}
-function fmtBytes(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';if(b<1073741824)return(b/1048576).toFixed(1)+'MB';return(b/1073741824).toFixed(2)+'GB'}
-
-// Real-time speed via Clash API
-let speedWs=null;
-function startSpeedMonitor(){
-  try{
-    const wsUrl='ws://'+location.hostname+':9090/traffic?token=flowvpn';
-    speedWs=new WebSocket(wsUrl);
-    speedWs.onmessage=function(e){
-      const d=JSON.parse(e.data);
-      document.getElementById('speedDown').textContent=fmtSpeed(d.down||0);
-      document.getElementById('speedUp').textContent=fmtSpeed(d.up||0);
-    };
-    speedWs.onclose=function(){setTimeout(startSpeedMonitor,5000)};
-    speedWs.onerror=function(){speedWs.close()};
-  }catch(e){}
-}
-function fmtSpeed(bps){if(bps<1024)return bps+'B/s';if(bps<1048576)return(bps/1024).toFixed(0)+'KB/s';return(bps/1048576).toFixed(1)+'MB/s'}
-
 // Schedule
-async function setSchedule(){
-  const on=document.getElementById('schedOn').value;
-  const off=document.getElementById('schedOff').value;
-  if(!on||!off){toast('Укажите время');return}
-  try{await fetch(API+'?action=schedule&on='+on+'&off='+off);toast('Расписание установлено: '+on+' — '+off);loadSchedule()}catch(e){toast('Ошибка')}
+async function toggleSchedule(enable){
+  const body=document.getElementById('schedBody');
+  body.classList.toggle('disabled',!enable);
+  if(enable){await saveSchedule()}
+  else{try{await fetch(API+'?action=schedule&mode=disable');toast.info('Расписание отключено');loadSchedule()}catch(e){toast.error('Ошибка')}}
 }
-async function disableSchedule(){
-  try{await fetch(API+'?action=schedule&mode=disable');toast('Расписание отключено');loadSchedule()}catch(e){}
+async function saveSchedule(){
+  if(!document.getElementById('schedToggle').checked)return;
+  const on=document.getElementById('schedOn').value,off=document.getElementById('schedOff').value;
+  if(!on||!off){toast.error('Укажите время');return}
+  try{await fetch(API+'?action=schedule&on='+on+'&off='+off);toast.success('Расписание обновлено',on+' — '+off);loadSchedule()}
+  catch(e){toast.error('Ошибка сохранения')}
 }
 async function loadSchedule(){
   try{const r=await fetch(API+'?action=schedule');const d=await r.json();
-    document.getElementById('schedStatus').textContent=d.enabled?'Активно: '+d.on+' — '+d.off:'Отключено';
+    const st=document.getElementById('schedStatus');
+    const tg=document.getElementById('schedToggle');
+    const body=document.getElementById('schedBody');
+    tg.checked=!!d.enabled;body.classList.toggle('disabled',!d.enabled);
+    if(d.enabled){st.className='setting-status on';st.textContent='Активно: '+d.on+' — '+d.off}
+    else{st.className='setting-status';st.textContent='Выключено'}
     if(d.on)document.getElementById('schedOn').value=d.on;
     if(d.off)document.getElementById('schedOff').value=d.off;
   }catch(e){}
 }
+async function loadSystemInfo(){
+  try{const r=await fetch(API+'?action=system-info');const d=await r.json();
+    const el=document.getElementById('sysInfo');if(!el)return;
+    const fmtKB=(kb)=>kb<1024?kb+' KB':(kb/1024)>=1024?(kb/1048576).toFixed(2)+' GB':(kb/1024).toFixed(1)+' MB';
+    const memUsedKB=(d.mem_total_kb||0)-(d.mem_avail_kb||0);
+    const memPct=d.mem_total_kb?Math.round(memUsedKB/d.mem_total_kb*100):0;
+    const flashPct=d.flash_total_kb?Math.round((d.flash_used_kb||0)/d.flash_total_kb*100):0;
+    const memCls=memPct>90?'err':memPct>70?'warn':'';
+    const flashCls=flashPct>90?'err':flashPct>80?'warn':'';
+    const rows=[
+      ['FlowVPN','v'+(d.flowvpn||'—')],
+      ['xray',d.xray||'—'],
+      ['sing-box',d.singbox||'—'],
+      ['Прошивка',d.openwrt||'—'],
+      ['Архитектура',d.arch||'—'],
+      ['Load average',d.load||'—'],
+      ['Uptime системы',fmtUp(d.sys_uptime||0)]
+    ];
+    const rowsHtml=rows.map(([l,v])=>`<div class="sys-row"><span class="sys-row-label">${esc(l)}</span><span class="sys-row-val" title="${esc(v)}">${esc(v)}</span></div>`).join('');
+    el.innerHTML=rowsHtml
+      +`<div class="sys-bar" style="grid-column:1/-1">
+          <div class="sys-bar-label"><span>Память</span><span><b>${fmtKB(memUsedKB)}</b> / ${fmtKB(d.mem_total_kb||0)}</span></div>
+          <div class="sys-bar-track"><div class="sys-bar-fill ${memCls}" style="width:${memPct}%"></div></div>
+        </div>`
+      +`<div class="sys-bar" style="grid-column:1/-1">
+          <div class="sys-bar-label"><span>Flash</span><span><b>${fmtKB(d.flash_used_kb||0)}</b> / ${fmtKB(d.flash_total_kb||0)}</span></div>
+          <div class="sys-bar-track"><div class="sys-bar-fill ${flashCls}" style="width:${flashPct}%"></div></div>
+        </div>`;
+  }catch(e){
+    const el=document.getElementById('sysInfo');
+    if(el)el.innerHTML='<div style="color:var(--red);font-size:12px;padding:12px 0">Ошибка загрузки</div>';
+  }
+}
 
-// Auto-update
 async function setAutoUpdate(mode){
-  try{await fetch(API+'?action=auto-update&mode='+mode);toast(mode==='enable'?'Автообновление включено':'Автообновление выключено');loadAutoUpdate()}catch(e){}
+  try{await fetch(API+'?action=auto-update&mode='+mode);toast.success(mode==='enable'?'Автообновление включено':'Автообновление выключено');loadAutoUpdate()}
+  catch(e){toast.error('Ошибка')}
 }
 async function loadAutoUpdate(){
   try{const r=await fetch(API+'?action=auto-update');const d=await r.json();
-    document.getElementById('autoUpdateStatus').textContent=d.auto_update?'Включено (ежедневно в 3:00)':'Выключено';
+    const st=document.getElementById('autoUpdateStatus');
+    const tg=document.getElementById('autoUpdateToggle');
+    tg.checked=!!d.auto_update;
+    if(d.auto_update){st.className='setting-status on';st.textContent='Включено — каждый день в 3:00'}
+    else{st.className='setting-status';st.textContent='Выключено'}
   }catch(e){}
 }
 
 // Backup
-async function downloadBackup(){
-  try{const r=await fetch(API+'?action=backup');const d=await r.json();
-    const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='flowvpn-backup.json';a.click();
-    toast('Бэкап скачан')
-  }catch(e){toast('Ошибка')}
-}
-async function restoreBackup(event){
-  const file=event.target.files[0];if(!file)return;
-  const text=await file.text();
-  try{await fetch(API+'?action=restore',{method:'POST',body:text});toast('Настройки восстановлены! Перезапустите VPN.');fetchStatus()}catch(e){toast('Ошибка')}
-}
+async function downloadBackup(){try{const r=await fetch(API+'?action=backup');const d=await r.json();const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}));a.download='flowvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();toast.success('Бэкап скачан')}catch(e){toast.error('Ошибка скачивания')}}
+async function restoreBackup(event){const f=event.target.files[0];if(!f)return;const t=await f.text();try{await fetch(API+'?action=restore',{method:'POST',body:t});toast.success('Настройки восстановлены');fetchStatus()}catch(e){toast.error('Ошибка восстановления')}}
 
-// Override loadDevices to use v2
-loadDevices=loadDevicesV2;
-
-// Theme
+// Theme — 3-state: auto → light → dark → auto
+const THEME_ORDER=['auto','light','dark'];
+const THEME_ICONS={auto:'#i-auto',light:'#i-sun',dark:'#i-moon'};
+const THEME_LABELS={auto:'Авто',light:'Светлая',dark:'Тёмная'};
+function applyTheme(pref){
+  const sysLight=window.matchMedia('(prefers-color-scheme: light)').matches;
+  const effective=pref==='auto'?(sysLight?'light':'dark'):pref;
+  if(effective==='light')document.documentElement.setAttribute('data-theme','light');
+  else document.documentElement.removeAttribute('data-theme');
+  const btn=document.getElementById('themeBtn');
+  if(btn){btn.innerHTML='<svg class="icon"><use href="'+THEME_ICONS[pref]+'"/></svg>';btn.title='Тема: '+THEME_LABELS[pref]+' (клик: переключить)'}
+}
 function toggleTheme(){
-  const current=document.documentElement.getAttribute('data-theme');
-  const next=current==='light'?'dark':'light';
-  if(next==='dark'){document.documentElement.removeAttribute('data-theme')}
-  else{document.documentElement.setAttribute('data-theme','light')}
-  document.getElementById('themeBtn').innerHTML=next==='light'?'<svg class="icon"><use href="#i-moon"/></svg>':'<svg class="icon"><use href="#i-sun"/></svg>';
+  const cur=localStorage.getItem('flowvpn-theme')||'auto';
+  const next=THEME_ORDER[(THEME_ORDER.indexOf(cur)+1)%THEME_ORDER.length];
   localStorage.setItem('flowvpn-theme',next);
+  applyTheme(next);
+  toast.info('Тема: '+THEME_LABELS[next]);
 }
 (function(){
   const saved=localStorage.getItem('flowvpn-theme');
-  if(saved==='light'){document.documentElement.setAttribute('data-theme','light');document.getElementById('themeBtn').innerHTML='<svg class="icon"><use href="#i-moon"/></svg>'}
-  else if(!saved&&window.matchMedia('(prefers-color-scheme: light)').matches){document.documentElement.setAttribute('data-theme','light');document.getElementById('themeBtn').innerHTML='<svg class="icon"><use href="#i-moon"/></svg>'}
-  else{document.getElementById('themeBtn').innerHTML='<svg class="icon"><use href="#i-sun"/></svg>'}
+  // Migrate legacy 'light'/'dark'/null → auto
+  if(saved!=='auto'&&saved!=='light'&&saved!=='dark')localStorage.setItem('flowvpn-theme','auto');
+  applyTheme(localStorage.getItem('flowvpn-theme')||'auto');
+  // React to system changes in auto mode
+  try{window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{
+    if((localStorage.getItem('flowvpn-theme')||'auto')==='auto')applyTheme('auto');
+  });}catch(e){}
 })();
+
+function syncMiniToggle(el){
+  const main=document.getElementById('vpnToggle');
+  main.checked=el.checked;
+  toggleVPN();
+}
+
+// Collapsible header: shade on scroll
+(function initScrollHeader(){
+  const header=document.getElementById('appHeader');
+  let ticking=false;
+  function update(){
+    const y=window.scrollY||document.documentElement.scrollTop||0;
+    header.classList.toggle('scrolled',y>40);
+    ticking=false;
+  }
+  window.addEventListener('scroll',()=>{
+    if(!ticking){requestAnimationFrame(update);ticking=true}
+  },{passive:true});
+  update();
+})();
+
+// Onboarding
+function showOnboard(){
+  const o=document.getElementById('onboardOverlay');
+  if(!o)return;
+  o.classList.add('show');
+  setOnboardStep(1);
+  setTimeout(()=>document.getElementById('onboardSubUrl').focus(),300);
+}
+function skipOnboard(){
+  const o=document.getElementById('onboardOverlay');
+  if(o)o.classList.remove('show');
+  localStorage.setItem('flowvpn-onboarded','1');
+}
+function setOnboardStep(n){
+  document.querySelectorAll('.onboard-pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById('onboardStep'+n).classList.add('active');
+  document.querySelectorAll('.onboard-steps .step').forEach(s=>{
+    const sn=parseInt(s.dataset.step,10);
+    s.classList.toggle('active',sn===n);
+    s.classList.toggle('done',sn<n);
+  });
+}
+async function onboardNext1(){
+  const url=document.getElementById('onboardSubUrl').value.trim();
+  if(!url){toast.error('Вставьте ссылку');return}
+  if(!/^https?:\/\//.test(url)){toast.error('Ссылка должна начинаться с http:// или https://');return}
+  setOnboardStep(2);
+  try{
+    await fetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(url));
+    const r=await fetch(API+'?action=update');const d=await r.json();
+    if(d.error){
+      document.getElementById('onboardStep2Desc').textContent='Ошибка: '+(d.error||'не удалось загрузить');
+      document.getElementById('onboardStep2Desc').style.color='var(--red)';
+      setTimeout(()=>setOnboardStep(1),2500);
+      return;
+    }
+    document.getElementById('onboardStep2Desc').textContent='Найдено серверов: '+d.servers;
+    await fetchStatus();
+    setTimeout(()=>setOnboardStep(3),1000);
+  }catch(e){
+    document.getElementById('onboardStep2Desc').textContent='Ошибка связи';
+    setTimeout(()=>setOnboardStep(1),2500);
+  }
+}
+function finishOnboard(){
+  localStorage.setItem('flowvpn-onboarded','1');
+  document.getElementById('onboardOverlay').classList.remove('show');
+  toast.success('FlowVPN готов к работе','Нажмите переключатель, чтобы подключиться');
+}
+function maybeShowOnboard(){
+  if(localStorage.getItem('flowvpn-onboarded')==='1')return;
+  if(!state||!state.subscription_url)showOnboard();
+  else localStorage.setItem('flowvpn-onboarded','1');
+}
+
+// Keyboard shortcuts: 1..5 tabs, / search focus, Esc clear filter/close
+document.addEventListener('keydown',(e)=>{
+  const tag=(e.target.tagName||'').toLowerCase();
+  const typing=tag==='input'||tag==='textarea'||tag==='select'||e.target.isContentEditable;
+  if(e.key==='Escape'){
+    // close any open overlay (onboarding) or blur input
+    const ob=document.getElementById('onboardOverlay');
+    if(ob&&ob.classList.contains('show')){ob.classList.remove('show');return}
+    if(typing){e.target.blur();return}
+  }
+  if(typing)return;
+  if(e.key>='1'&&e.key<='5'){
+    const btns=document.querySelectorAll('.tabs .tab');
+    const idx=parseInt(e.key,10)-1;
+    if(btns[idx]){btns[idx].click();e.preventDefault()}
+  }else if(e.key==='/'){
+    const cur=document.querySelector('.section.active');
+    if(cur){
+      const inp=cur.querySelector('input[type="text"],input:not([type]),input[type="search"],input[placeholder*="Поиск"],input[placeholder*="Добавить"],input[placeholder*="например"]');
+      if(inp){inp.focus();e.preventDefault()}
+    }
+  }else if(e.key==='?'){
+    toast.info('Горячие клавиши','1–5 вкладки · / поиск · Esc сброс');
+  }
+});
 
 fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();startSpeedMonitor();
 setInterval(fetchStatus,5000);

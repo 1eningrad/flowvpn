@@ -31,14 +31,18 @@ save_config() {
 # ============================================================
 
 _rotate_log() {
+    # Size-based rotation: when file exceeds MAX_LINES, truncate to KEEP_LINES.
+    # Keeps enough history for UI/diagnose without letting logs grow unbounded.
+    local max_lines=5000 keep_lines=1500
     for logfile in "$FLOWVPN_TMP/singbox.log" "$FLOWVPN_TMP/xray.log"; do
         [ -f "$logfile" ] || continue
-        local lines=$(wc -l < "$logfile")
-        [ "$lines" -gt 2000 ] && {
-            tail -500 "$logfile" > "${logfile}.tmp"
-            mv "${logfile}.tmp" "$logfile"
-            flog "Rotated log: $logfile ($lines → 500 lines)"
-        }
+        local lines=$(wc -l < "$logfile" 2>/dev/null)
+        [ -z "$lines" ] && continue
+        if [ "$lines" -gt "$max_lines" ]; then
+            tail -n "$keep_lines" "$logfile" > "${logfile}.tmp" 2>/dev/null && \
+            mv "${logfile}.tmp" "$logfile" && \
+            flog "Rotated log: $logfile ($lines → $keep_lines lines)"
+        fi
     done
 }
 
@@ -168,9 +172,11 @@ cmd_status() {
         --argjson devices "$device_count" \
         --argjson auto_start "$([ "$(get_config_val auto_start true)" = "true" ] && echo true || echo false)" \
         --argjson device_rules "$device_rules" \
+        --argjson last_switch "$([ -f "$FLOWVPN_TMP/last_switch.json" ] && cat "$FLOWVPN_TMP/last_switch.json" || echo null)" \
         '{running:$running, server:$server, uptime:$uptime, selected:$selected,
           servers:$servers, subscription_url:$sub_url, vpn_ip:$vpn_ip, mode:$mode,
-          devices:$devices, auto_start:$auto_start, device_rules:$device_rules}'
+          devices:$devices, auto_start:$auto_start, device_rules:$device_rules,
+          last_switch:$last_switch}'
 }
 
 # ============================================================
@@ -572,18 +578,46 @@ cmd_diagnose() {
 # Watchdog — auto-failover
 # ============================================================
 
+# A server is "metered" (RU-safe, mobile-carrier) when its name contains
+# carrier markers. Such servers give a Russian IP, so watchdog must NEVER
+# auto-switch to them — doing so defeats the purpose of a VPN.
+_is_metered_server() {
+    local name="$1"
+    case "$name" in
+        *МТС*|*мтс*|*MTS*|*mts*) return 0 ;;
+        *Т2*|*т2*|*Tele2*|*tele2*|*Би*) return 0 ;;
+        *Билайн*|*билайн*|*Beeline*|*beeline*) return 0 ;;
+        *Мегафон*|*мегафон*|*Megafon*|*megafon*) return 0 ;;
+    esac
+    return 1
+}
+
+_record_switch() {
+    local from_idx="$1" to_idx="$2" reason="$3"
+    local from_name=$(jq -r ".[$from_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    local to_name=$(jq -r ".[$to_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    jq -n --arg from "$from_name" --arg to "$to_name" --arg reason "$reason" \
+        --argjson ts "$(date +%s)" \
+        '{time:$ts, from:$from, to:$to, reason:$reason}' \
+        > "$FLOWVPN_TMP/last_switch.json" 2>/dev/null
+}
+
 cmd_watchdog() {
-    local interval="${1:-60}" max_fails=3 fail_count=0
+    local interval="${1:-20}" max_fails=2 fail_count=0 tick=0
     trap 'flog "Watchdog stopped"; exit 0' TERM INT
 
     while true; do
         sleep "$interval"
+        tick=$((tick + 1))
+
+        # Rotate logs every ~10 minutes (30 ticks × 20s)
+        [ $((tick % 30)) -eq 0 ] && _rotate_log
 
         # Skip if not running
         is_xray_running || continue
 
-        # Test VPN connectivity
-        local ok=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 -o /dev/null -w "%{http_code}" https://cp.cloudflare.com/generate_204 2>/dev/null)
+        # Test VPN connectivity via current SOCKS
+        local ok=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 4 -o /dev/null -w "%{http_code}" https://cp.cloudflare.com/generate_204 2>/dev/null)
         if [ "$ok" = "204" ] || [ "$ok" = "200" ]; then
             fail_count=0
             continue
@@ -596,17 +630,24 @@ cmd_watchdog() {
             logger -t flowvpn "Watchdog: switching server"
             fail_count=0
 
-            local selected=$(get_config_val selected_server 0)
+            local current=$(get_config_val selected_server 0)
+            local selected="$current"
             local total=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
             [ -z "$total" ] && continue
 
-            # Try next servers
+            # Try next servers (skip metered/RU-safe ones)
             local tried=0
             while [ "$tried" -lt "$total" ]; do
                 selected=$(( (selected + 1) % total ))
                 tried=$((tried + 1))
 
-                # Quick test this server
+                local cand_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
+                if _is_metered_server "$cand_name"; then
+                    logger -t flowvpn "Watchdog: skip metered server $cand_name"
+                    continue
+                fi
+
+                # Quick test this server via a temporary probe xray
                 generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray_test.json"
                 jq '.inbounds=[{tag:"t",port:1081,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
                     "$FLOWVPN_TMP/xray_test.json" > "$FLOWVPN_TMP/xray_probe.json"
@@ -614,13 +655,13 @@ cmd_watchdog() {
                 local probe_pid=$!
                 sleep 3
 
-                local test_ip=$(curl -s --socks5-hostname 127.0.0.1:1081 --max-time 5 https://ifconfig.me 2>/dev/null)
+                local test_ip=$(curl -s --socks5-hostname 127.0.0.1:1081 --max-time 5 https://api.ipify.org 2>/dev/null)
                 kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null
                 rm -f "$FLOWVPN_TMP/xray_test.json" "$FLOWVPN_TMP/xray_probe.json"
 
                 if [ -n "$test_ip" ]; then
-                    local name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
-                    logger -t flowvpn "Watchdog: switched to $name ($test_ip)"
+                    logger -t flowvpn "Watchdog: switched to $cand_name ($test_ip)"
+                    _record_switch "$current" "$selected" "failover"
                     local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
                     save_config "$tmp"
                     cmd_restart >/dev/null 2>&1
@@ -788,6 +829,42 @@ cmd_remove_device_route() {
     echo "{\"status\":\"device route removed\",\"ip\":\"$ip\"}"
 }
 
+cmd_system_info() {
+    local fw_ver="" xray_ver="" sb_ver=""
+    [ -f /etc/openwrt_release ] && fw_ver=$(awk -F"'" '/DISTRIB_DESCRIPTION/{print $2}' /etc/openwrt_release)
+    xray_ver=$(/usr/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')
+    sb_ver=$(/usr/bin/sing-box version 2>/dev/null | head -1 | awk '{print $3}')
+    local sys_uptime=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
+    local mem_total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+    local mem_avail=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)
+    local load=$(awk '{print $1}' /proc/loadavg 2>/dev/null)
+    local flash_info=$(df -Pk /overlay 2>/dev/null | awk 'NR==2{print $2","$3","$4}')
+    local flash_total=$(echo "$flash_info" | cut -d, -f1)
+    local flash_used=$(echo "$flash_info" | cut -d, -f2)
+    local flash_avail=$(echo "$flash_info" | cut -d, -f3)
+    local cpu_model=$(awk -F: '/model name|Hardware/{print $2;exit}' /proc/cpuinfo 2>/dev/null | sed 's/^ //')
+    local arch=$(uname -m)
+    jq -n \
+        --arg flowvpn "4.0.0" \
+        --arg xray "$xray_ver" \
+        --arg singbox "$sb_ver" \
+        --arg openwrt "$fw_ver" \
+        --arg arch "$arch" \
+        --arg cpu "$cpu_model" \
+        --arg load "$load" \
+        --argjson sys_uptime "${sys_uptime:-0}" \
+        --argjson mem_total_kb "${mem_total:-0}" \
+        --argjson mem_avail_kb "${mem_avail:-0}" \
+        --argjson flash_total_kb "${flash_total:-0}" \
+        --argjson flash_used_kb "${flash_used:-0}" \
+        --argjson flash_avail_kb "${flash_avail:-0}" \
+        '{flowvpn:$flowvpn, xray:$xray, singbox:$singbox, openwrt:$openwrt,
+          arch:$arch, cpu:$cpu, load:$load, sys_uptime:$sys_uptime,
+          mem_total_kb:$mem_total_kb, mem_avail_kb:$mem_avail_kb,
+          flash_total_kb:$flash_total_kb, flash_used_kb:$flash_used_kb,
+          flash_avail_kb:$flash_avail_kb}'
+}
+
 cmd_healthcheck() {
     local results="[]"
     _hc() {
@@ -923,6 +1000,7 @@ case "$1" in
     clear-log)      > "$FLOWVPN_TMP/singbox.log"; echo '{"status":"cleared"}' ;;
     diagnose)       cmd_diagnose ;;
     healthcheck)    cmd_healthcheck ;;
+    system-info)    cmd_system_info ;;
     watchdog)       cmd_watchdog "$2" ;;
     get-traffic)    cmd_get_traffic ;;
     schedule)       cmd_schedule "$2" "$3" "$4" ;;

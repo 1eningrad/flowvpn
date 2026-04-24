@@ -17,7 +17,7 @@ start() {
     if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
         /usr/bin/flowvpn start >/dev/null 2>&1 &
         # Start watchdog in background (non-blocking)
-        (sleep 10; /usr/bin/flowvpn watchdog 60 >/dev/null 2>&1 & echo $! > /tmp/flowvpn/watchdog.pid) &
+        (sleep 10; /usr/bin/flowvpn watchdog >/dev/null 2>&1 & echo $! > /tmp/flowvpn/watchdog.pid) &
     else
         logger -t flowvpn "Network not ready, skipping autostart"
     fi

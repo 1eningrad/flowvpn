@@ -81,7 +81,9 @@ parse_vless_url() {
 parse_subscription_file() {
     local file="$1" output="$2"
     local servers="[]"
-    while IFS= read -r line; do
+    # `|| [ -n "$line" ]` ensures the last line is processed even when the
+    # file has no trailing newline (common for base64-decoded subscriptions).
+    while IFS= read -r line || [ -n "$line" ]; do
         [ -z "$line" ] && continue
         case "$line" in
             vless://*)
