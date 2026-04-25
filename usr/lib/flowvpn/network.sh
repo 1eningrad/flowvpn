@@ -43,8 +43,14 @@ setup_network() {
                     nft add rule ip flowvpn prerouting ip daddr "$host" return 2>/dev/null
                     ;;
                 *)
-                    # Resolve hostname to IP
-                    local resolved=$(nslookup "$host" 2>/dev/null | grep "Address" | tail -1 | awk '{print $2}')
+                    # Resolve hostname to IPv4 only — busybox nslookup also
+                    # returns the resolver's own address and any IPv6 records.
+                    # Adding an IPv6 to an `ip` (v4) table fails silently and
+                    # leaves the VPN server without a bypass rule, so the
+                    # outbound connection ends up tproxied to itself (loop).
+                    local resolved
+                    resolved=$(nslookup "$host" 2>/dev/null | awk '/^Address/{print $NF}' | \
+                               grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | tail -1)
                     [ -n "$resolved" ] && nft add rule ip flowvpn prerouting ip daddr "$resolved" return 2>/dev/null
                     ;;
             esac
@@ -59,7 +65,13 @@ setup_network() {
         for dev_key in $(jq -r '.device_rules // {} | to_entries[] | select(.value == "direct") | .key' "$FLOWVPN_CONFIG" 2>/dev/null); do
             case "$dev_key" in
                 [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:*)
-                    nft add rule ip flowvpn prerouting ether saddr "$dev_key" return 2>/dev/null
+                    # ether saddr in `ip` table requires the packet to enter
+                    # via a bridge port. Works for br-lan but fails on VLAN /
+                    # PPPoE setups — log so the user knows when it doesn't.
+                    if ! nft add rule ip flowvpn prerouting ether saddr "$dev_key" return 2>/tmp/flowvpn/nft_err; then
+                        logger -t flowvpn "WARN: failed to add MAC rule for $dev_key — $(cat /tmp/flowvpn/nft_err 2>/dev/null | head -1)"
+                    fi
+                    rm -f /tmp/flowvpn/nft_err
                     ;;
                 [0-9]*.[0-9]*.[0-9]*.[0-9]*)
                     nft add rule ip flowvpn prerouting ip saddr "$dev_key" return 2>/dev/null

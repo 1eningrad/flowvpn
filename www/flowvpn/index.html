@@ -349,7 +349,7 @@ html,body{max-width:100vw}
 .server:focus-visible,.device:focus-visible,.mode-option:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px
 }
-.server.active{
+.server.active:not(.switching){
   background:linear-gradient(135deg, rgba(167,139,250,0.1), rgba(96,165,250,0.05));
   border-color:rgba(167,139,250,0.3);
 }
@@ -1724,9 +1724,10 @@ async function selectServer(i){
     tid=updateToast(tid,'Не удалось переключить',{type:'error',desc:humanReason,duration:4500});
   }finally{
     _switchPending=false;
-    list.classList.remove('locked');
-    // Re-render without switching class (next status fetch will catch up)
+    // Render first, then unlock — avoids a microsecond gap where stale DOM
+    // is interactive after the lock is removed.
     renderServers(state.servers,state.selected);
+    list.classList.remove('locked');
     scheduleStatus(2000);
   }
 }
@@ -1842,10 +1843,12 @@ function renderDevices(){
     return;
   }
   // Match a device against device_rules either by MAC (preferred — survives
-  // DHCP changes) or by IP (legacy/fallback).
+  // DHCP changes) or by IP (legacy rules from before MAC support landed).
+  // Backend always normalizes MAC to uppercase, so we only need to check
+  // the uppercase form.
   const ruleFor=(dev)=>{
     const macUp=(dev.mac||'').toUpperCase();
-    return rules[macUp]||rules[dev.mac]||rules[dev.ip]||'vpn';
+    return rules[macUp]||rules[dev.ip]||'vpn';
   };
   const groups={direct:[],vpn:[]};
   for(const dev of filtered){
@@ -1884,13 +1887,17 @@ function renderDevices(){
   }
   list.innerHTML=html;
 }
+let _devReloadTimer=null;
 async function toggleDeviceRoute(ip,route){
   try{
     if(route==='vpn')await apiFetch(API+'?action=remove-device-route&ip='+ip);
     else await apiFetch(API+'?action=set-device&ip='+ip+'&route='+route);
     toast.success('Маршрут изменён',ip+' → '+(route==='direct'?'напрямую':'через VPN'));
   }catch(e){toast.error('Ошибка')}
-  setTimeout(loadDevices,1000);
+  // Coalesce rapid toggles into a single reload — was firing N times for
+  // N quick clicks on different devices.
+  if(_devReloadTimer)clearTimeout(_devReloadTimer);
+  _devReloadTimer=setTimeout(()=>{_devReloadTimer=null;loadDevices()},1000);
 }
 async function loadTraffic(){
   try{const r=await apiFetch(API+'?action=get-traffic');const d=await r.json();
@@ -1948,11 +1955,16 @@ function drawSpark(){
   drawLine(speedHistory.up,'#f472b6',null);
 }
 
-let speedWs=null,wsBackoff=5000;
+let speedWs=null,wsBackoff=5000,_wsReconnectTimer=null;
 function startSpeedMonitor(){
+  _wsReconnectTimer=null;
   // Wait for clash_secret from /status before opening WebSocket
   const tok=(state&&state.clash_secret)||'';
-  if(!tok){setTimeout(startSpeedMonitor,1000);return}
+  if(!tok){
+    if(_wsReconnectTimer)clearTimeout(_wsReconnectTimer);
+    _wsReconnectTimer=setTimeout(startSpeedMonitor,1000);
+    return;
+  }
   try{
     const proto=location.protocol==='https:'?'wss://':'ws://';
     speedWs=new WebSocket(proto+location.hostname+':9090/traffic?token='+encodeURIComponent(tok));
@@ -1966,7 +1978,10 @@ function startSpeedMonitor(){
     };
     speedWs.onclose=function(){
       wsBackoff=Math.min(wsBackoff*1.5,60000);
-      setTimeout(startSpeedMonitor,wsBackoff);
+      // Guard against duplicate reconnect loops if startSpeedMonitor is
+      // called externally while we're already scheduled.
+      if(_wsReconnectTimer)clearTimeout(_wsReconnectTimer);
+      _wsReconnectTimer=setTimeout(startSpeedMonitor,wsBackoff);
     };
     speedWs.onerror=function(){speedWs.close()};
   }catch(e){}
@@ -2079,7 +2094,12 @@ async function exportLog(){
     const labels={vpn:'[VPN]    ',direct:'[DIRECT] ',error:'[ERROR]  ',dns:'[DNS]    ',flow:'[FLOW]   ',xray:'[XRAY]   '};
     d.forEach(e=>{txt+=`${e.time||''} ${labels[e.route]||''}${e.dst||''}\n`});
     txt+=`\nВсего записей: ${d.length}`;
-    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';a.click();URL.revokeObjectURL(a.href);
+    // Safari needs the link in the DOM and a deferred revoke; otherwise the
+    // download may race with revoke and produce an empty file.
+    const a=document.createElement('a'),u=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));
+    a.href=u;a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),1000);
     toast.success('Журнал скачан');
   }catch(e){toast.error('Ошибка скачивания')}
 }
@@ -2244,7 +2264,16 @@ async function loadAutoUpdate(){
 }
 
 // Backup
-async function downloadBackup(){try{const r=await apiFetch(API+'?action=backup');const d=await r.json();const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}));a.download='flowvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(a.href);toast.success('Бэкап скачан')}catch(e){toast.error('Ошибка скачивания')}}
+async function downloadBackup(){
+  try{
+    const r=await apiFetch(API+'?action=backup');const d=await r.json();
+    const a=document.createElement('a'),u=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}));
+    a.href=u;a.download='flowvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),1000);
+    toast.success('Бэкап скачан');
+  }catch(e){toast.error('Ошибка скачивания')}
+}
 async function restoreBackup(event){
   const f=event.target.files[0];if(!f)return;
   if(f.size>65536){toast.error('Файл слишком большой');event.target.value='';return}
