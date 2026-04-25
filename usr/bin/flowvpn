@@ -31,7 +31,7 @@ _get_clash_secret() {
 # Atomic config write — validates JSON before overwriting
 save_config() {
     local data="$1"
-    echo "$data" > "${FLOWVPN_CONFIG}.tmp"
+    printf '%s\n' "$data" > "${FLOWVPN_CONFIG}.tmp"
     if jq '.' "${FLOWVPN_CONFIG}.tmp" >/dev/null 2>&1; then
         mv "${FLOWVPN_CONFIG}.tmp" "$FLOWVPN_CONFIG"
     else
@@ -188,12 +188,20 @@ cmd_restart() {
        cmp -s "$new_xray" "$FLOWVPN_TMP/xray.json" && \
        cmp -s "$new_singbox" "$FLOWVPN_TMP/singbox.json"; then
         rm -f "$new_xray" "$new_singbox"
-        local sn vi
-        sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
-        vi=$(cat "$FLOWVPN_TMP/vpn_ip" 2>/dev/null)
-        # Quiet — don't log the no-op (avoids syslog spam from UI auto-actions)
-        echo "{\"status\":\"unchanged\",\"server\":\"$sn\",\"vpn_ip\":\"$vi\",\"mode\":\"$mode\"}"
-        return 0
+        # Configs are identical, but is the tunnel actually carrying traffic?
+        # If xray hung (process alive, socket dead), watchdog would fix it
+        # in 40s, but the user clicking Restart expects an immediate kick.
+        # Quick health probe — 4s timeout — falls through to real restart on miss.
+        if [ -z "$(test_xray)" ]; then
+            flog "Restart: configs unchanged but tunnel is dead — forcing restart"
+            # fallthrough to the real restart below
+        else
+            local sn vi
+            sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
+            vi=$(cat "$FLOWVPN_TMP/vpn_ip" 2>/dev/null)
+            echo "{\"status\":\"unchanged\",\"server\":\"$sn\",\"vpn_ip\":\"$vi\",\"mode\":\"$mode\"}"
+            return 0
+        fi
     fi
     rm -f "$new_xray" "$new_singbox"
 
@@ -1287,7 +1295,7 @@ case "$1" in
     set-config)     cmd_set_config "$2" "$3" ;;
     set-wifi)       cmd_set_wifi "$2" "$3" ;;
     *)
-        echo "FlowVPN v3 — VPN for OpenWrt"
+        echo "FlowVPN v4 — VPN for OpenWrt"
         echo "Usage: flowvpn {start|stop|restart|status|set-server N|update|ping}"
         echo "       flowvpn {set-mode all_vpn|blocklist}"
         echo "       flowvpn {add-domain DOMAIN direct|vpn}"
