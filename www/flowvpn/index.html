@@ -1152,9 +1152,14 @@ html,body{max-width:100vw}
       <div class="card">
         <div class="card-head">
           <div class="card-title">Серверы</div>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn" title="Измерить TCP RTT до каждого сервера">Проверить RTT</button>
-            <button class="btn btn-primary btn-sm" onclick="doAutoSelect()" id="autoBtn" title="Авто-выбор сервера с минимальной задержкой (метеред пропускаются)">Авто</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn" title="Измерить TCP RTT до каждого сервера">RTT</button>
+            <label class="toggle toggle-sm" title="Авто-режим: выбирает сервер с минимальным RTT (метеред пропускаются). Клик по серверу вручную выключает авто.">
+              <input type="checkbox" id="autoModeToggle" onchange="toggleAutoMode(this.checked)" aria-label="Авто-выбор лучшего сервера">
+              <span class="toggle-track"></span>
+              <span class="toggle-knob"></span>
+            </label>
+            <span style="font-size:13px;color:var(--text-muted)">Авто</span>
           </div>
         </div>
         <div id="serverList" class="server-list">
@@ -1634,6 +1639,9 @@ async function fetchStatus(){
     }
     const on=state.running;
     document.getElementById('vpnToggle').checked=on;
+    // Sync persistent auto_mode toggle from backend state
+    const am=document.getElementById('autoModeToggle');
+    if(am&&am.checked!==!!state.auto_mode)am.checked=!!state.auto_mode;
     const orb=document.getElementById('statusOrb');
     orb.classList.toggle('off',!on);
 
@@ -1709,6 +1717,15 @@ async function selectServer(i){
   if(_switchPending)return;
   if(i===state.selected)return;  // already selected — ignore noise click
   if(!state.servers||!state.servers[i])return;
+
+  // Manual click while auto-mode is on counts as user opting into manual.
+  // Drop the flag silently — both the UI toggle and the persisted config.
+  if(state.auto_mode){
+    state.auto_mode=false;
+    const am=document.getElementById('autoModeToggle');
+    if(am)am.checked=false;
+    apiFetch(API+'?action=set-config&key=auto_mode&value=false').catch(()=>{});
+  }
 
   _switchPending=true;
   const oldSelected=state.selected;
@@ -1786,10 +1803,26 @@ function _formatAttempts(attempts){
     return (a.name||'?')+rtt+' — '+(_AUTO_STATUS_RU[a.status]||a.status);
   }).join('\n');
 }
+// Toggle persistent auto-mode preference. ON also kicks off an immediate
+// auto-select; OFF just clears the flag (current selection stays).
+async function toggleAutoMode(enabled){
+  try{
+    await apiFetch(API+'?action=set-config&key=auto_mode&value='+(enabled?'true':'false'));
+    state.auto_mode=enabled;
+    if(enabled){
+      // Immediately optimize on enable. doAutoSelect handles UI/toast.
+      doAutoSelect();
+    }else{
+      toast.info('Ручной режим','Сервер сменится только при сбое (watchdog)');
+    }
+  }catch(e){
+    // Revert toggle visual on failure
+    const t=document.getElementById('autoModeToggle');
+    if(t)t.checked=!enabled;
+    toast.error('Ошибка','Не удалось сохранить режим');
+  }
+}
 async function doAutoSelect(){
-  const b=document.getElementById('autoBtn');
-  if(b.disabled)return;
-  b.disabled=true;b.innerHTML='<span class="spinner"></span> Подбираем';
   let tid=toast.loading('Измеряем все серверы и выбираем лучший…');
   try{
     const r=await apiFetch(API+'?action=auto-select');const d=await r.json();
@@ -1808,7 +1841,6 @@ async function doAutoSelect(){
     const desc=log?(reason+'\n\n'+log):reason;
     tid=updateToast(tid,'Не удалось подобрать',{type:'error',desc,duration:7000});
   }
-  b.disabled=false;b.textContent='Авто';
 }
 async function setMode(m){
   const name=m==='all_vpn'?'«Всё через VPN»':'«По списку»';
