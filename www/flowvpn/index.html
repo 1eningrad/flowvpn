@@ -1671,7 +1671,11 @@ async function selectServer(i){
   const list=document.getElementById('serverList');
   list.classList.add('locked');
 
-  const tid=toast.loading('Тестируем '+name+'…');
+  // Single toast id reused across phases. updateToast dismisses+recreates,
+  // so we must capture its returned id each time — otherwise the second
+  // call dismisses an already-gone toast and the loading toast on screen
+  // becomes orphaned (visible forever).
+  let tid=toast.loading('Тестируем '+name+'…');
 
   try{
     // Phase 1: probe — temporary xray, no production impact if it fails
@@ -1679,14 +1683,14 @@ async function selectServer(i){
     const pd=await pr.json();
     if(pd.error)throw new Error(pd.error);
 
-    updateToast(tid,'Сервер работает ('+pd.ip+') — переключаемся…',{type:'loading'});
+    tid=updateToast(tid,'Сервер работает ('+pd.ip+') — переключаемся…',{type:'loading',duration:0});
 
     // Phase 2: actual switch — soft restart with new selected_server
     const sr=await apiFetch(API+'?action=set-server&index='+i);
     const sd=await sr.json();
     if(sd.error)throw new Error(sd.error);
 
-    updateToast(tid,name,{type:'success',desc:'IP: '+(sd.vpn_ip||pd.ip),duration:2500});
+    tid=updateToast(tid,name,{type:'success',desc:'IP: '+(sd.vpn_ip||pd.ip),duration:2500});
   }catch(e){
     // Roll back: target couldn't be activated, return UI to previous state.
     // Production VPN was untouched (probe runs in isolation).
@@ -1696,7 +1700,7 @@ async function selectServer(i){
     let humanReason=reason;
     if(/unreachable/i.test(reason))humanReason='Сервер не отвечает';
     else if(/HTTP 5/.test(reason))humanReason='Ошибка роутера';
-    updateToast(tid,'Не удалось переключить',{type:'error',desc:humanReason,duration:4500});
+    tid=updateToast(tid,'Не удалось переключить',{type:'error',desc:humanReason,duration:4500});
   }finally{
     _switchPending=false;
     list.classList.remove('locked');
