@@ -51,10 +51,20 @@ setup_network() {
         done
     fi
 
-    # Per-device direct rules (bypass VPN)
+    # Per-device direct rules (bypass VPN). Keys can be either:
+    # - IPv4 address (e.g. "192.168.1.50") — matches by source IP
+    # - MAC address (e.g. "AA:BB:CC:DD:EE:FF") — matches by source MAC
+    # MAC is preferred since DHCP can hand a different IP across reboots.
     if [ -f "$FLOWVPN_CONFIG" ]; then
-        for dev_ip in $(jq -r '.device_rules // {} | to_entries[] | select(.value == "direct") | .key' "$FLOWVPN_CONFIG" 2>/dev/null); do
-            nft add rule ip flowvpn prerouting ip saddr "$dev_ip" return 2>/dev/null
+        for dev_key in $(jq -r '.device_rules // {} | to_entries[] | select(.value == "direct") | .key' "$FLOWVPN_CONFIG" 2>/dev/null); do
+            case "$dev_key" in
+                [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:*)
+                    nft add rule ip flowvpn prerouting ether saddr "$dev_key" return 2>/dev/null
+                    ;;
+                [0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                    nft add rule ip flowvpn prerouting ip saddr "$dev_key" return 2>/dev/null
+                    ;;
+            esac
         done
     fi
 

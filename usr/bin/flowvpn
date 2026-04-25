@@ -968,13 +968,32 @@ _validate_ipv4() {
     return 0
 }
 
+# Accept "AA:BB:CC:DD:EE:FF" form (case-insensitive). Returns the MAC
+# normalized to uppercase so config storage is consistent.
+_normalize_mac() {
+    local m="$1"
+    case "$m" in
+        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+            printf '%s' "$m" | tr 'a-f' 'A-F'
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 cmd_set_device_route() {
-    local ip="$1" route="$2"
-    [ -z "$ip" ] || [ -z "$route" ] && { echo '{"error":"need ip and route (vpn/direct)"}'; return 1; }
-    _validate_ipv4 "$ip" || { echo '{"error":"invalid ip"}'; return 1; }
+    local id="$1" route="$2"
+    [ -z "$id" ] || [ -z "$route" ] && { echo '{"error":"need id (ip or mac) and route (vpn/direct)"}'; return 1; }
     case "$route" in vpn|direct) ;; *) echo '{"error":"route must be vpn or direct"}'; return 1;; esac
-    local tmp=$(jq --arg ip "$ip" --arg r "$route" \
-        '.device_rules[$ip] = $r' "$FLOWVPN_CONFIG")
+    # Accept either IPv4 or MAC. MAC is preferred — survives DHCP changes.
+    local mac
+    if mac=$(_normalize_mac "$id"); then
+        id="$mac"
+    elif ! _validate_ipv4 "$id"; then
+        echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
+    fi
+    local tmp=$(jq --arg id "$id" --arg r "$route" \
+        '.device_rules[$id] = $r' "$FLOWVPN_CONFIG")
     save_config "$tmp"
     # Rebuild nftables if running
     if is_singbox_running; then
@@ -985,10 +1004,15 @@ cmd_set_device_route() {
 }
 
 cmd_remove_device_route() {
-    local ip="$1"
-    [ -z "$ip" ] && { echo '{"error":"need ip"}'; return 1; }
-    _validate_ipv4 "$ip" || { echo '{"error":"invalid ip"}'; return 1; }
-    local tmp=$(jq --arg ip "$ip" 'del(.device_rules[$ip])' "$FLOWVPN_CONFIG")
+    local id="$1"
+    [ -z "$id" ] && { echo '{"error":"need id"}'; return 1; }
+    local mac
+    if mac=$(_normalize_mac "$id"); then
+        id="$mac"
+    elif ! _validate_ipv4 "$id"; then
+        echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
+    fi
+    local tmp=$(jq --arg id "$id" 'del(.device_rules[$id])' "$FLOWVPN_CONFIG")
     save_config "$tmp"
     if is_singbox_running; then
         local iface=$(get_config_val interface "br-lan")
