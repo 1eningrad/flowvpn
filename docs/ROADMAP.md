@@ -84,6 +84,15 @@
 **Что:** сейчас auto-update раз в день hardcoded. Сделать "каждый час / раз в день / раз в неделю".
 **Оценка:** ~50 строк, расширить cron логику.
 
+### 13. Gaming bypass — пресет + per-port исключения
+**Откуда:** реальная боль (lag в Steam-играх через VPN).
+**Что:**
+- Пресет "Игры напрямую" — добавляет в Direct список домены: `steamcontent.com`, `steamserver.net`, `steamstatic.com`, `steampowered.com`, `csgo.com`, `dota2.com`, `epicgames.com`, `riotgames.com`, `battle.net`, `discord.gg/discord.media` (для голоса).
+- Опционально: nft-правило bypass tproxy для UDP портов 27000-27100 (Steam) — экономит ~5-10мс на хоп sing-box даже когда домен не определён.
+- Quick-toggle "Gaming mode" на главной — ставит роутер в `blocklist` или конкретный девайс в Direct на 1/2/4 часа, потом вернуть.
+**Польза:** не приходится каждый раз в Devices ходить.
+**Оценка:** ~150 строк (пресет ~50, nft port bypass ~50, gaming-mode timer ~50).
+
 ---
 
 ## Tier 3 — большая работа, продумать
