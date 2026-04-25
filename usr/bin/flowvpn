@@ -155,6 +155,13 @@ cmd_start() {
     date +%s > "$FLOWVPN_TMP/start_time"
     echo "$vpn_ip" > "$FLOWVPN_TMP/vpn_ip"
 
+    # Mark intent: VPN should be running. Watchdog uses this to revive
+    # the tunnel if processes get killed externally (OOM, manual pkill,
+    # crash). Distinct from auto_start (which is only consulted at boot).
+    local cfg_tmp
+    cfg_tmp=$(jq '.running_intent = true' "$FLOWVPN_CONFIG")
+    save_config "$cfg_tmp"
+
     local server_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
     flog "FlowVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
     echo "{\"status\":\"started\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
@@ -162,6 +169,11 @@ cmd_start() {
 
 cmd_stop() {
     flog "Stopping FlowVPN"
+    # Clear intent first — watchdog runs every 20s and would otherwise
+    # see processes-down + intent=true and revive the VPN we just stopped.
+    local cfg_tmp
+    cfg_tmp=$(jq '.running_intent = false' "$FLOWVPN_CONFIG")
+    save_config "$cfg_tmp"
     teardown_network
     stop_singbox
     stop_xray
@@ -238,6 +250,14 @@ cmd_restart() {
     date +%s > "$FLOWVPN_TMP/start_time"
     echo "$vpn_ip" > "$FLOWVPN_TMP/vpn_ip"
 
+    # Restart implies user wants VPN running — keep intent flag in sync.
+    # Without this a soft restart (UI button, set-server, set-mode, watchdog
+    # failover) wouldn't carry the intent, and an external kill afterwards
+    # wouldn't trigger auto-recovery.
+    local cfg_tmp
+    cfg_tmp=$(jq '.running_intent = true' "$FLOWVPN_CONFIG")
+    save_config "$cfg_tmp"
+
     local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
     flog "FlowVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
     echo "{\"status\":\"restarted\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
@@ -295,6 +315,7 @@ cmd_status() {
           devices:$devices,
           auto_start: ($c.auto_start // true),
           auto_mode: ($c.auto_mode // false),
+          running_intent: ($c.running_intent // false),
           device_rules: ($c.device_rules // {}),
           last_switch:$last_switch,
           last_update:$last_update,
@@ -1126,7 +1147,22 @@ cmd_watchdog() {
             [ "$_am" = "true" ] && cmd_auto_eval >/dev/null 2>&1
         fi
 
-        # Skip if not running
+        # Auto-recovery: if user wanted VPN on (running_intent=true) but
+        # processes died externally — kernel OOM-killer, manual pkill, an
+        # xray crash — bring them back. Without this, after any external
+        # kill the user has to manually re-toggle in UI.
+        if ! is_xray_running || ! is_singbox_running; then
+            local _intent
+            _intent=$(get_config_val running_intent false)
+            if [ "$_intent" = "true" ]; then
+                flog "Watchdog: VPN was killed externally, reviving"
+                cmd_start >/dev/null 2>&1
+                # Skip the connectivity check this tick — let it stabilize
+            fi
+            continue
+        fi
+
+        # Skip if not running (intent=false — user wanted VPN off)
         is_xray_running || continue
 
         # Test VPN connectivity via current SOCKS
