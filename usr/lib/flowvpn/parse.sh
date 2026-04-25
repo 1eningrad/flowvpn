@@ -8,8 +8,14 @@ url_decode() {
 
 fetch_subscription() {
     local url="$1" out="$2"
+    # Whitelist schemes — prevents SSRF (file://, ftp://, gopher://) since the
+    # URL comes from user config and the call runs as root on the router.
+    case "$url" in
+        https://*|http://*) ;;
+        *) return 1 ;;
+    esac
     local raw
-    raw=$(curl -s --max-time 15 "$url") || return 1
+    raw=$(curl -s --max-time 15 --proto '=http,https' "$url") || return 1
     echo "$raw" | base64 -d 2>/dev/null > "$out"
     [ -s "$out" ] || return 1
 }
