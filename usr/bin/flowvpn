@@ -418,88 +418,102 @@ cmd_ping() {
 # port answers TCP but whose Reality keys have rotated — UI would say
 # "switched" while VPN is broken. With it, we either confirm the switch
 # really worked or report failure honestly.
+# Helper to append an attempt entry to the running list. Used purely to
+# keep the auto_select function readable.
+_attempt_add() {
+    # $1 = jq array string, $2 = name, $3 = idx, $4 = rtt (or -1), $5 = status
+    echo "$1" | jq --arg n "$2" --argjson i "$3" --argjson ms "$4" --arg s "$5" \
+        '. + [{name:$n, index:$i, rtt_ms:(if $ms < 0 then null else $ms end), status:$s}]'
+}
+
 cmd_auto_select() {
     [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
     local total i=0 name host ms
     total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
-    # Collect (idx, rtt) pairs for non-metered reachable servers, sort by rtt.
+
+    # attempts collects an ordered audit trail of every server we considered:
+    # what status (skipped_metered / unreachable / probe_failed / selected /
+    # already_active) and its RTT. This is what powers the "why X and not Y"
+    # explanation in the UI toast.
+    local attempts="[]"
     local candidates=""
     while [ "$i" -lt "$total" ]; do
         name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
         host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
-        if ! _is_metered_server "$name"; then
+        if _is_metered_server "$name"; then
+            attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "skipped_metered")
+        else
             ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
             [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
             if [ "$ms" -gt 0 ] 2>/dev/null; then
                 candidates="$candidates$ms $i\n"
+            else
+                attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "unreachable")
             fi
         fi
         i=$((i + 1))
     done
+
     if [ -z "$candidates" ]; then
-        echo '{"error":"no reachable servers"}'; return 1
+        jq -n --argjson att "$attempts" '{error:"no reachable servers", attempts:$att}'
+        return 1
     fi
-    # Sort by RTT ascending — try fastest first
     local sorted
     sorted=$(printf '%b' "$candidates" | sort -n)
 
     local cur best_idx best_ms best_name
     cur=$(get_config_val selected_server 0)
 
-    # Walk candidates from fastest until one passes the VLESS probe.
     while IFS=' ' read -r ms idx; do
         [ -z "$idx" ] && continue
         name=$(jq -r --argjson i "$idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
-        # If we're already on this server and the tunnel is alive, no need
-        # to probe — just confirm and exit.
         if [ "$idx" = "$cur" ] && is_xray_running && [ -n "$(test_xray)" ]; then
-            jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" \
-                '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false}'
+            attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "already_active")
+            jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" \
+                '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
             return 0
         fi
         flog "Auto-select: probing $name (idx=$idx rtt=${ms}ms)"
         local probe
         probe=$(cmd_probe_server "$idx" 2>/dev/null)
         if echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+            attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "selected")
             best_idx="$idx"; best_ms="$ms"; best_name="$name"
             break
         fi
+        attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "probe_failed")
         flog "Auto-select: $name failed VLESS probe — trying next"
     done <<EOF
 $sorted
 EOF
 
     if [ -z "$best_idx" ]; then
-        echo '{"error":"no working servers (all failed VLESS probe)"}'; return 1
+        jq -n --argjson att "$attempts" '{error:"no working servers (all failed VLESS probe)", attempts:$att}'
+        return 1
     fi
 
     flog "Auto-select: chose $best_name idx=$best_idx rtt=${best_ms}ms"
     if [ "$cur" = "$best_idx" ]; then
-        # Same server, just confirm
-        jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" \
-            '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false}'
+        jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
+            '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
         return 0
     fi
 
-    # Switch — write config, restart, rollback on failure
     local tmp
     tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
     save_config "$tmp"
     if is_xray_running; then
         if ! cmd_restart >/dev/null 2>&1; then
-            # Restart failed somehow despite the probe passing. Roll the
-            # config back so the user isn't stuck on a broken server, and
-            # try to bring the old one back up.
             flog "Auto-select: restart failed — rolling back to idx=$cur"
             tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$FLOWVPN_CONFIG")
             save_config "$tmp"
             cmd_restart >/dev/null 2>&1
-            jq -n --arg n "$best_name" '{error:"restart failed", server:$n}'
+            jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"restart failed", server:$n, attempts:$att}'
             return 1
         fi
     fi
-    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" \
-        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true}'
+    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
+        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true, attempts:$att}'
 }
 
 # ============================================================
