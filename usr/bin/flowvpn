@@ -253,6 +253,8 @@ cmd_status() {
 
     local last_switch='null'
     [ -f "$FLOWVPN_TMP/last_switch.json" ] && last_switch=$(cat "$FLOWVPN_TMP/last_switch.json")
+    local last_update='null'
+    [ -f "$FLOWVPN_TMP/last_update.json" ] && last_update=$(cat "$FLOWVPN_TMP/last_update.json")
 
     jq -n \
         --slurpfile cfg "$FLOWVPN_CONFIG" \
@@ -262,6 +264,7 @@ cmd_status() {
         --arg vpn_ip "$vpn_ip" \
         --argjson devices "$device_count" \
         --argjson last_switch "$last_switch" \
+        --argjson last_update "$last_update" \
         --arg clash_secret "$(_get_clash_secret)" \
         '$cfg[0] as $c |
          ($c.selected_server // 0) as $sel |
@@ -277,6 +280,7 @@ cmd_status() {
           auto_start: ($c.auto_start // true),
           device_rules: ($c.device_rules // {}),
           last_switch:$last_switch,
+          last_update:$last_update,
           clash_secret:$clash_secret}'
 }
 
@@ -364,13 +368,25 @@ cmd_probe_server() {
 }
 
 cmd_update() {
+    # Capture previous server count so the UI can detect whether this run
+    # actually changed anything (cron auto-update fires every N hours and
+    # most of the time returns the same list — we don't want to spam toasts).
+    local prev=0
+    [ -f "$FLOWVPN_TMP/servers.json" ] && prev=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    [ -z "$prev" ] && prev=0
+
     local count
     count=$(update_subscription "$FLOWVPN_CONFIG")
     local mode=$(get_config_val mode "all_vpn")
     rm -rf "$FLOWVPN_TMP/rules"
     fetch_rules "$mode"
     if [ "$count" -gt 0 ] 2>/dev/null; then
-        echo "{\"status\":\"updated\",\"servers\":$count}"
+        # Record the run for the UI's status polling — last_update lets the
+        # frontend show a toast only when prev != count (avoids "updated:
+        # same 7 servers" noise on cron-driven refresh).
+        jq -n --argjson t "$(date +%s)" --argjson c "$count" --argjson p "$prev" \
+            '{time:$t, count:$c, prev_count:$p}' > "$FLOWVPN_TMP/last_update.json"
+        echo "{\"status\":\"updated\",\"servers\":$count,\"prev\":$prev}"
         is_xray_running && cmd_restart >/dev/null
     else
         echo '{"error":"update failed"}'
@@ -390,6 +406,47 @@ cmd_ping() {
         i=$((i + 1))
     done
     echo "$results" | jq '.'
+}
+
+# Find the lowest-RTT non-metered server and switch to it. Used by the
+# "Auto" button — picks a sensible default for the user without making
+# them squint at numbers. Skips metered (МТС/Т2/etc) since they hand back
+# Russian IPs and would defeat the VPN.
+cmd_auto_select() {
+    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total best_idx=-1 best_ms=99999 i=0 name host ms
+    total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    while [ "$i" -lt "$total" ]; do
+        name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
+        host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+        if _is_metered_server "$name"; then
+            i=$((i + 1)); continue
+        fi
+        ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+        [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+        if [ "$ms" -gt 0 ] 2>/dev/null && [ "$ms" -lt "$best_ms" ]; then
+            best_ms="$ms"; best_idx="$i"
+        fi
+        i=$((i + 1))
+    done
+    if [ "$best_idx" -lt 0 ] 2>/dev/null; then
+        echo '{"error":"no reachable servers"}'; return 1
+    fi
+    local best_name
+    best_name=$(jq -r --argjson i "$best_idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
+    flog "Auto-select: best=$best_name idx=$best_idx rtt=${best_ms}ms"
+    # Only switch if it's actually different — saves the soft-restart cost
+    # if user is already on the best server.
+    local cur
+    cur=$(get_config_val selected_server 0)
+    if [ "$cur" != "$best_idx" ]; then
+        local tmp
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+        save_config "$tmp"
+        is_xray_running && cmd_restart >/dev/null 2>&1
+    fi
+    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson sw "$([ "$cur" != "$best_idx" ] && echo true || echo false)" \
+        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:$sw}'
 }
 
 # ============================================================
@@ -1282,6 +1339,25 @@ cmd_healthcheck() {
         _hc "geoip-ru" "error" "Не загружен"
     fi
 
+    # IP-leak check: simulate a LAN client by going through the xray socks
+    # (the same path tproxied client packets take). Cloudflare's trace
+    # endpoint reports our exit IP — it must match the current VPN IP.
+    # Doing this from the router directly would always see the WAN IP
+    # (router itself isn't tproxied — that would cause a routing loop).
+    if is_xray_running; then
+        local cur_vpn_ip trace seen_ip
+        cur_vpn_ip=$(cat "$FLOWVPN_TMP/vpn_ip" 2>/dev/null)
+        trace=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://1.1.1.1/cdn-cgi/trace 2>/dev/null)
+        seen_ip=$(echo "$trace" | awk -F= '/^ip=/{print $2;exit}')
+        if [ -z "$seen_ip" ]; then
+            _hc "IP-leak" "warn" "Не удалось проверить (нет связи через VPN)"
+        elif [ -n "$cur_vpn_ip" ] && [ "$seen_ip" = "$cur_vpn_ip" ]; then
+            _hc "IP-leak" "ok" "Клиенты выходят через $seen_ip (VPN)"
+        else
+            _hc "IP-leak" "error" "Клиенты выходят через $seen_ip — VPN IP $cur_vpn_ip не совпадает"
+        fi
+    fi
+
     # 10. Errors
     local sb_err=$(grep -c "ERROR" /tmp/flowvpn/singbox.log 2>/dev/null)
     local xr_err=$(grep -ciE "error|fail" /tmp/flowvpn/xray.log 2>/dev/null)
@@ -1340,6 +1416,7 @@ case "$1" in
     probe-server)   cmd_probe_server "$2" ;;
     update)         cmd_update ;;
     ping)           cmd_ping ;;
+    auto-select)    cmd_auto_select ;;
     set-mode)       cmd_set_mode "$2" ;;
     add-domain)     cmd_add_domain "$2" "$3" ;;
     remove-domain)  cmd_remove_domain "$2" "$3" ;;
