@@ -412,41 +412,94 @@ cmd_ping() {
 # "Auto" button — picks a sensible default for the user without making
 # them squint at numbers. Skips metered (МТС/Т2/etc) since they hand back
 # Russian IPs and would defeat the VPN.
+#
+# Two-stage selection: TCP RTT to filter candidates fast, then real VLESS
+# probe on the winner. Without the probe, we'd happily pick a server whose
+# port answers TCP but whose Reality keys have rotated — UI would say
+# "switched" while VPN is broken. With it, we either confirm the switch
+# really worked or report failure honestly.
 cmd_auto_select() {
     [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
-    local total best_idx=-1 best_ms=99999 i=0 name host ms
+    local total i=0 name host ms
     total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    # Collect (idx, rtt) pairs for non-metered reachable servers, sort by rtt.
+    local candidates=""
     while [ "$i" -lt "$total" ]; do
         name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
         host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
-        if _is_metered_server "$name"; then
-            i=$((i + 1)); continue
-        fi
-        ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
-        [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
-        if [ "$ms" -gt 0 ] 2>/dev/null && [ "$ms" -lt "$best_ms" ]; then
-            best_ms="$ms"; best_idx="$i"
+        if ! _is_metered_server "$name"; then
+            ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+            [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+            if [ "$ms" -gt 0 ] 2>/dev/null; then
+                candidates="$candidates$ms $i\n"
+            fi
         fi
         i=$((i + 1))
     done
-    if [ "$best_idx" -lt 0 ] 2>/dev/null; then
+    if [ -z "$candidates" ]; then
         echo '{"error":"no reachable servers"}'; return 1
     fi
-    local best_name
-    best_name=$(jq -r --argjson i "$best_idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
-    flog "Auto-select: best=$best_name idx=$best_idx rtt=${best_ms}ms"
-    # Only switch if it's actually different — saves the soft-restart cost
-    # if user is already on the best server.
-    local cur
+    # Sort by RTT ascending — try fastest first
+    local sorted
+    sorted=$(printf '%b' "$candidates" | sort -n)
+
+    local cur best_idx best_ms best_name
     cur=$(get_config_val selected_server 0)
-    if [ "$cur" != "$best_idx" ]; then
-        local tmp
-        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-        save_config "$tmp"
-        is_xray_running && cmd_restart >/dev/null 2>&1
+
+    # Walk candidates from fastest until one passes the VLESS probe.
+    while IFS=' ' read -r ms idx; do
+        [ -z "$idx" ] && continue
+        name=$(jq -r --argjson i "$idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
+        # If we're already on this server and the tunnel is alive, no need
+        # to probe — just confirm and exit.
+        if [ "$idx" = "$cur" ] && is_xray_running && [ -n "$(test_xray)" ]; then
+            jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" \
+                '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false}'
+            return 0
+        fi
+        flog "Auto-select: probing $name (idx=$idx rtt=${ms}ms)"
+        local probe
+        probe=$(cmd_probe_server "$idx" 2>/dev/null)
+        if echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+            best_idx="$idx"; best_ms="$ms"; best_name="$name"
+            break
+        fi
+        flog "Auto-select: $name failed VLESS probe — trying next"
+    done <<EOF
+$sorted
+EOF
+
+    if [ -z "$best_idx" ]; then
+        echo '{"error":"no working servers (all failed VLESS probe)"}'; return 1
     fi
-    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson sw "$([ "$cur" != "$best_idx" ] && echo true || echo false)" \
-        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:$sw}'
+
+    flog "Auto-select: chose $best_name idx=$best_idx rtt=${best_ms}ms"
+    if [ "$cur" = "$best_idx" ]; then
+        # Same server, just confirm
+        jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" \
+            '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false}'
+        return 0
+    fi
+
+    # Switch — write config, restart, rollback on failure
+    local tmp
+    tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    if is_xray_running; then
+        if ! cmd_restart >/dev/null 2>&1; then
+            # Restart failed somehow despite the probe passing. Roll the
+            # config back so the user isn't stuck on a broken server, and
+            # try to bring the old one back up.
+            flog "Auto-select: restart failed — rolling back to idx=$cur"
+            tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+            save_config "$tmp"
+            cmd_restart >/dev/null 2>&1
+            jq -n --arg n "$best_name" '{error:"restart failed", server:$n}'
+            return 1
+        fi
+    fi
+    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" \
+        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true}'
 }
 
 # ============================================================
