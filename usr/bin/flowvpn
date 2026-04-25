@@ -283,14 +283,18 @@ cmd_status() {
     local device_count=0
     [ -f /tmp/dhcp.leases ] && device_count=$(wc -l < /tmp/dhcp.leases)
 
-    # Read both via jq so a corrupt/half-written file (truncated by power loss
-    # on /tmp) doesn't make --argjson choke and break the entire status response.
+    # Read meta-files via jq so a corrupt/half-written file (truncated by
+    # power loss on /tmp) doesn't make --argjson choke and break the whole
+    # status response.
     local last_switch='null'
     [ -f "$FLOWVPN_TMP/last_switch.json" ] && \
         last_switch=$(jq '.' "$FLOWVPN_TMP/last_switch.json" 2>/dev/null || echo null)
     local last_update='null'
     [ -f "$FLOWVPN_TMP/last_update.json" ] && \
         last_update=$(jq '.' "$FLOWVPN_TMP/last_update.json" 2>/dev/null || echo null)
+    local sub_meta='null'
+    [ -f "$FLOWVPN_TMP/subscription_meta.json" ] && \
+        sub_meta=$(jq '.' "$FLOWVPN_TMP/subscription_meta.json" 2>/dev/null || echo null)
 
     jq -n \
         --slurpfile cfg "$FLOWVPN_CONFIG" \
@@ -301,6 +305,7 @@ cmd_status() {
         --argjson devices "$device_count" \
         --argjson last_switch "$last_switch" \
         --argjson last_update "$last_update" \
+        --argjson sub_meta "$sub_meta" \
         --arg clash_secret "$(_get_clash_secret)" \
         '$cfg[0] as $c |
          ($c.selected_server // 0) as $sel |
@@ -319,6 +324,7 @@ cmd_status() {
           device_rules: ($c.device_rules // {}),
           last_switch:$last_switch,
           last_update:$last_update,
+          subscription_meta:$sub_meta,
           clash_secret:$clash_secret}'
 }
 

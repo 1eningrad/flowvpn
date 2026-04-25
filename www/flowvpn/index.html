@@ -1340,6 +1340,7 @@ html,body{max-width:100vw}
             <button class="btn btn-primary btn-sm" onclick="saveSubUrl()">Сохранить</button>
           </div>
           <button class="btn btn-secondary mt" style="width:100%" onclick="doUpdate()" id="updateBtn">Обновить список серверов</button>
+          <div id="subMetaCard" style="display:none;margin-top:12px"></div>
         </div>
         <div class="card">
           <div class="setting-row">
@@ -1535,7 +1536,58 @@ toast.error=(m,d)=>toast(d?{title:m,desc:d}:m,'error');
 toast.info=(m,d)=>toast(d?{title:m,desc:d}:m,'info');
 toast.loading=(m)=>toast(m,{type:'loading',duration:0});
 function fmtUp(s){if(!s||s<=0)return'—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+' ч '+m+' мин';if(m>0)return m+' мин';return s+' сек'}
-function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(2)+' MB';return(b/1073741824).toFixed(2)+' GB'}
+function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(2)+' MB';if(b<1099511627776)return(b/1073741824).toFixed(2)+' GB';return(b/1099511627776).toFixed(2)+' TB'}
+
+// Render the subscription meta card: title, quota bar, expire date,
+// provider announce message. Hidden if no metadata yet (first run).
+function renderSubscriptionMeta(meta){
+  const card=document.getElementById('subMetaCard');
+  if(!card)return;
+  if(!meta||!meta.fetched_at){card.style.display='none';return}
+  card.style.display='block';
+  const NOW=Math.floor(Date.now()/1000);
+  // Heuristic for "fake-infinite" total/expire that providers use for
+  // unlimited tariffs (1PB total, year-2055 expire, etc.).
+  const total=+meta.total||0, used=(+meta.upload||0)+(+meta.download||0);
+  const totalUnlimited = total > 1099511627776 * 100;  // > 100 TB → unlimited
+  const expire=+meta.expire||0;
+  const expireUnlimited = expire > NOW + 86400*3650; // > 10 years away → unlimited
+  const expireLeft = expire - NOW;
+  let html='';
+  if(meta.title){
+    html+='<div style="font-size:14px;font-weight:600;margin-bottom:6px">'+esc(meta.title)+'</div>';
+  }
+  // Quota line
+  if(totalUnlimited){
+    html+='<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Использовано: '+fmtBytes(used)+' · безлимит</div>';
+  }else if(total>0){
+    const pct=Math.min(100,Math.round(used/total*100));
+    const barColor=pct>90?'var(--red)':pct>70?'var(--warn,#f59e0b)':'var(--accent)';
+    html+='<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">'+fmtBytes(used)+' / '+fmtBytes(total)+' ('+pct+'%)</div>';
+    html+='<div style="height:4px;background:var(--card-hover);border-radius:2px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:'+pct+'%;background:'+barColor+';transition:width .3s"></div></div>';
+  }else if(used>0){
+    html+='<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Использовано: '+fmtBytes(used)+'</div>';
+  }
+  // Expire line
+  if(expireUnlimited){
+    html+='<div style="font-size:12px;color:var(--text-muted)">Срок действия: бессрочно</div>';
+  }else if(expire>0){
+    const d=new Date(expire*1000);
+    const dateStr=d.toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
+    if(expireLeft<0){
+      html+='<div style="font-size:12px;color:var(--red)">⚠ Срок истёк '+esc(dateStr)+'</div>';
+    }else{
+      const daysLeft=Math.floor(expireLeft/86400);
+      const color=daysLeft<7?'var(--red)':daysLeft<30?'var(--warn,#f59e0b)':'var(--text-muted)';
+      html+='<div style="font-size:12px;color:'+color+'">До '+esc(dateStr)+' ('+daysLeft+' дн.)</div>';
+    }
+  }
+  // Announce — provider message, often multi-line with emoji
+  if(meta.announce){
+    html+='<div style="font-size:12px;color:var(--text);margin-top:10px;padding:10px;background:var(--card-hover);border-radius:8px;white-space:pre-line;line-height:1.45">'+esc(meta.announce)+'</div>';
+  }
+  card.innerHTML=html;
+}
 function fmtSpeed(bps){bps=+bps||0;if(bps<1024)return bps.toFixed(0)+' B/с';if(bps<1048576)return(bps/1024).toFixed(1)+' KB/с';return(bps/1048576).toFixed(2)+' MB/с'}
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function pingClass(ms){return ms<0?'ping-none':ms<150?'ping-good':ms<400?'ping-mid':'ping-bad'}
@@ -1639,6 +1691,7 @@ async function fetchStatus(){
     }
     const on=state.running;
     document.getElementById('vpnToggle').checked=on;
+    renderSubscriptionMeta(state.subscription_meta);
     // Sync persistent auto_mode toggle from backend state, but stay out of
     // the way while a toggle/auto-select op is in flight — otherwise this
     // 5s poll can flip the visual back to OFF before the operation has
