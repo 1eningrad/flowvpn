@@ -1127,8 +1127,24 @@ html,body{max-width:100vw}
           </div>
         </div>
         <div class="mini-stats" id="miniStats">
-          <div class="mini-stat"><div class="mini-stat-label">Соединений</div><div class="mini-stat-val" id="nowConns">—</div></div>
-          <div class="mini-stat"><div class="mini-stat-label">Через VPN</div><div class="mini-stat-val" id="nowVpnBytes" style="color:var(--accent)">—</div></div>
+          <div class="mini-stat" title="Активные соединения через VPN">
+            <div class="mini-stat-label">VPN</div>
+            <div class="mini-stat-val" id="statVpn" style="color:var(--accent)">—</div>
+          </div>
+          <div class="mini-stat" title="Активные соединения напрямую (RU-сайты, Steam и т.д.)">
+            <div class="mini-stat-label">Напрямую</div>
+            <div class="mini-stat-val" id="statDirect" style="color:var(--green,#34d399)">—</div>
+          </div>
+        </div>
+        <div class="mini-stats" id="trafficStats" style="margin-top:6px">
+          <div class="mini-stat" title="Трафик через VPN с последнего перезапуска">
+            <div class="mini-stat-label">VPN сессия</div>
+            <div class="mini-stat-val" id="sessionVpn">—</div>
+          </div>
+          <div class="mini-stat" title="Трафик напрямую с последнего перезапуска">
+            <div class="mini-stat-label">Direct сессия</div>
+            <div class="mini-stat-val" id="sessionDirect">—</div>
+          </div>
         </div>
       </div>
 
@@ -1900,15 +1916,21 @@ async function toggleDeviceRoute(ip,route){
   _devReloadTimer=setTimeout(()=>{_devReloadTimer=null;loadDevices()},1000);
 }
 async function loadTraffic(){
-  try{const r=await apiFetch(API+'?action=get-traffic');const d=await r.json();
-    const nowBytes=document.getElementById('nowVpnBytes');
-    if(nowBytes)nowBytes.textContent=fmtBytes(d.vpn_bytes||0);
-    const conns=(d.vpn_connections||0)+(d.direct_connections||0);
-    const nowConns=document.getElementById('nowConns');
-    if(nowConns)nowConns.textContent=conns;
-    const tv=document.getElementById('trafficVpn');if(tv)tv.textContent=fmtBytes(d.vpn_bytes||0);
-    const cv=document.getElementById('connVpn');if(cv)cv.textContent=d.vpn_connections||0;
-    const cd=document.getElementById('connDirect');if(cd)cd.textContent=d.direct_connections||0;
+  try{
+    const r=await apiFetch(API+'?action=get-traffic');const d=await r.json();
+    // "Сейчас активно" — counts of currently-open connections
+    const sv=document.getElementById('statVpn');
+    if(sv)sv.textContent=(d.vpn_conns||0)+' / '+fmtBytes((d.vpn_active||0));
+    const sd=document.getElementById('statDirect');
+    if(sd)sd.textContent=(d.direct_conns||0)+' / '+fmtBytes((d.direct_active||0));
+    // "Сессия" — cumulative since last sing-box restart, properly split by chain
+    const sessionVpn=document.getElementById('sessionVpn');
+    if(sessionVpn)sessionVpn.textContent=fmtBytes((d.vpn_dl||0)+(d.vpn_ul||0));
+    const sessionDirect=document.getElementById('sessionDirect');
+    if(sessionDirect)sessionDirect.textContent=fmtBytes((d.dir_dl||0)+(d.dir_ul||0));
+    // Legacy elements — keep for backward compat with old cached HTML
+    const cv=document.getElementById('connVpn');if(cv)cv.textContent=d.vpn_conns||0;
+    const cd=document.getElementById('connDirect');if(cd)cd.textContent=d.direct_conns||0;
   }catch(e){}
 }
 
