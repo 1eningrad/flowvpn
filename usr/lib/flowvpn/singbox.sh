@@ -135,42 +135,36 @@ _fetch_blocklist_domains() {
 # ============================================================
 
 convert_sr_to_singbox_rule() {
+    # Build the rule via jq so that arbitrary content from the downloaded
+    # rule file (which we don't control — comes from GitHub) cannot break
+    # or inject into the JSON. Values are passed as raw lines and jq does
+    # the string escaping.
     local file="$1"
-    local domain_suffixes="" domain_keywords="" domains="" ip_cidrs=""
-
-    while IFS= read -r line; do
-        case "$line" in "#"*|"") continue ;; esac
-        local type="${line%%,*}"
-        local rest="${line#*,}"
-        local value="${rest%%,*}"
-        case "$type" in
-            DOMAIN-SUFFIX) [ -n "$domain_suffixes" ] && domain_suffixes="$domain_suffixes,"; domain_suffixes="$domain_suffixes\"$value\"" ;;
-            DOMAIN-KEYWORD) [ -n "$domain_keywords" ] && domain_keywords="$domain_keywords,"; domain_keywords="$domain_keywords\"$value\"" ;;
-            DOMAIN) [ -n "$domains" ] && domains="$domains,"; domains="$domains\"$value\"" ;;
-            IP-CIDR|IP-CIDR6) [ -n "$ip_cidrs" ] && ip_cidrs="$ip_cidrs,"; ip_cidrs="$ip_cidrs\"$value\"" ;;
-        esac
-    done < "$file"
-
-    local rule="{" has_field=""
-    if [ -n "$domain_suffixes" ]; then rule="$rule\"domain_suffix\":[$domain_suffixes]"; has_field="1"; fi
-    if [ -n "$domain_keywords" ]; then [ -n "$has_field" ] && rule="$rule,"; rule="$rule\"domain_keyword\":[$domain_keywords]"; has_field="1"; fi
-    if [ -n "$domains" ]; then [ -n "$has_field" ] && rule="$rule,"; rule="$rule\"domain\":[$domains]"; has_field="1"; fi
-    if [ -n "$ip_cidrs" ]; then [ -n "$has_field" ] && rule="$rule,"; rule="$rule\"ip_cidr\":[$ip_cidrs]"; has_field="1"; fi
-    rule="$rule}"
-    [ -n "$has_field" ] && echo "$rule"
+    awk -F, '
+        /^#/ || /^$/ { next }
+        $1 == "DOMAIN-SUFFIX"  { print "ds\t" $2; next }
+        $1 == "DOMAIN-KEYWORD" { print "dk\t" $2; next }
+        $1 == "DOMAIN"         { print "d\t"  $2; next }
+        $1 == "IP-CIDR" || $1 == "IP-CIDR6" { print "ip\t" $2; next }
+    ' "$file" | \
+    jq -R -s '
+        [split("\n")[] | select(length > 0) | split("\t") | {kind: .[0], val: .[1]}] as $items |
+        {
+            domain_suffix:  [$items[] | select(.kind=="ds") | .val],
+            domain_keyword: [$items[] | select(.kind=="dk") | .val],
+            domain:         [$items[] | select(.kind=="d")  | .val],
+            ip_cidr:        [$items[] | select(.kind=="ip") | .val]
+        } |
+        with_entries(select(.value | length > 0)) |
+        if length == 0 then empty else . end
+    '
 }
 
 convert_ip_list() {
     local file="$1"
-    local ip_cidrs=""
-    while IFS= read -r line; do
-        case "$line" in "#"*|"") continue ;; esac
-        local ip="${line#IP-CIDR,}"; ip="${ip%%,*}"
-        case "$ip" in [0-9]*) ;; *) continue ;; esac
-        [ -n "$ip_cidrs" ] && ip_cidrs="$ip_cidrs,"
-        ip_cidrs="$ip_cidrs\"$ip\""
-    done < "$file"
-    [ -n "$ip_cidrs" ] && echo "{\"ip_cidr\":[$ip_cidrs]}"
+    awk -F, '/^IP-CIDR/ { sub(/^IP-CIDR,/,""); split($0,a,","); if(a[1] ~ /^[0-9]/) print a[1] }' "$file" | \
+    jq -R -s '[split("\n")[] | select(length > 0)] |
+              if length == 0 then empty else {ip_cidr: .} end'
 }
 
 # ============================================================
@@ -355,6 +349,10 @@ _build_blocklist_rules() {
 
 start_singbox() {
     local config_file="$1"
+    if [ ! -x /usr/bin/sing-box ]; then
+        logger -t flowvpn "ERROR: /usr/bin/sing-box not found or not executable"
+        return 1
+    fi
     TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/flowvpn >/tmp/flowvpn/singbox.log 2>&1 &
     echo $! > /tmp/flowvpn/singbox.pid
     local tries=0
