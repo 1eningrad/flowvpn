@@ -97,21 +97,56 @@
 
 ## Tier 3 — большая работа, продумать
 
-### 13. Trojan support
-**Откуда:** все конкуренты
-**Что:** парсер `trojan://` + поддержка в xray.sh. Многие подписки идут с Trojan.
-**Стоимость:** ~250 строк parse + xray.sh + UI хинты.
-**Trade-off:** нарушает "только VLESS" принцип — мы получаем больше пользователей, но размываем фокус.
+### 15. Per-device profiles (multi-section)
+**Откуда:** ZeroBlock, реальный пользовательский запрос — "хочу чтобы ПК был по списку для гейминга, а телефон через всё VPN".
+**Что:** для каждого устройства можно выбрать профиль маршрутизации, не только on/off:
+- `global` (по глобальному режиму, как сейчас)
+- `all_vpn` (всё через VPN кроме RU)
+- `blocklist` (только заблокированное через VPN)
+- `direct` (мимо VPN совсем — уже работает)
 
-### 14. Chain proxy
-**Откуда:** ZeroBlock, Passwall
-**Что:** трафик A→B→интернет. Когда сервер A быстрее, но IP сервера B нужен (другая страна).
-**Стоимость:** требует пересборки xray inbound/outbound. Нишевое — единицы пользователей.
+**Архитектура:**
+```
+nft prerouting:
+  ether saddr <MAC1> → tproxy :2155 (профиль blocklist)
+  ether saddr <MAC2> → tproxy :2156 (профиль all_vpn)
+  default            → tproxy :2154 (глобальный)
 
-### 15. Multi-section architecture
-**Откуда:** ZeroBlock
-**Что:** несколько групп правил → разные прокси. "stream → США", "AI → Германия", "RU → direct".
-**Стоимость:** переписать ядро. Это уже другой продукт, не FlowVPN.
+sing-box config:
+  inbounds: [
+    {tag: "global",    type: "tproxy", listen_port: 2154},
+    {tag: "blocklist", type: "tproxy", listen_port: 2155},
+    {tag: "allvpn",    type: "tproxy", listen_port: 2156}
+  ]
+  route.rules: [
+    {inbound: "blocklist", ...правила blocklist...},
+    {inbound: "allvpn",    ...правила all_vpn...},
+    ...правила global (default)...
+  ]
+```
+
+**Что переделать:**
+- `network.sh` — per-MAC nft с `meta mark` + `tproxy to :PORT` вместо просто `return`
+- `singbox.sh` — генерить N inbound'ов и N веток rules с `inbound:` фильтром
+- `cmd_set_device_route` — принимать `direct|vpn|all_vpn|blocklist|global`, расширить storage в config (`device_rules: {"MAC": "blocklist"}`)
+- CGI валидация route + UI выпадающее меню вместо тоггла VPN/Direct
+- В status response добавить per-device profile
+
+**Trade-offs:**
+- +20-40 MB RAM (каждый inbound = handler)
+- CPU незначительно (на aarch64)
+- Random-MAC девайсы (iPhone Private Address) — профиль не "прилипнет" между сменами MAC
+- ~+450 строк кода (200 backend + 150 UI + 100 тестов)
+
+**Оценка:** 5-7 часов реальной работы.
+
+**Когда делать:** когда захочется. Текущая глобальная схема покрывает ~95% юзкейсов: переключение `all_vpn` ↔ `blocklist` решает большинство сценариев на всю сеть.
+
+### 16. Trojan support
+*(было 13, переехало)* — поддержка `trojan://` в подписке. ~250 строк parser + xray.sh.
+
+### 17. Chain proxy
+*(было 14, переехало)* — A→B→exit, когда нужен другой exit IP. Сложно, нишево.
 
 ### 16. QR-импорт подписки
 **Откуда:** v2raya, мобильные клиенты
