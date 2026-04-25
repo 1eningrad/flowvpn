@@ -350,6 +350,24 @@ html,body{max-width:100vw}
   background:linear-gradient(135deg, rgba(167,139,250,0.1), rgba(96,165,250,0.05));
   border-color:rgba(167,139,250,0.3);
 }
+.server.switching{
+  background:linear-gradient(135deg, rgba(167,139,250,0.18), rgba(96,165,250,0.1));
+  border-color:rgba(167,139,250,0.6);
+  animation:switchPulse 1.4s ease-in-out infinite;
+}
+.server.switching::after{
+  content:'';display:inline-block;width:12px;height:12px;
+  border:2px solid rgba(167,139,250,0.4);border-top-color:rgba(167,139,250,1);
+  border-radius:50%;margin-left:8px;
+  animation:spin .7s linear infinite;flex-shrink:0;
+}
+@keyframes switchPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(167,139,250,0.35)}
+  50%{box-shadow:0 0 0 6px rgba(167,139,250,0)}
+}
+.server-list.locked .server:not(.switching){
+  opacity:0.45;pointer-events:none;filter:saturate(0.6)
+}
 .server-flag{font-size:18px;filter:saturate(1.2)}
 .server-name{flex:1;font-size:14px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .server-ping-box{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
@@ -1117,7 +1135,7 @@ html,body{max-width:100vw}
           <div class="card-title">Серверы</div>
           <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn">Проверить пинг</button>
         </div>
-        <div id="serverList">
+        <div id="serverList" class="server-list">
           <div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Загрузка…</div>
         </div>
       </div>
@@ -1526,11 +1544,12 @@ function isMeteredServer(name){
   return /МТС|мтс|MTS|mts|Т2|т2|Tele2|tele2|\bБи\b|Билайн|билайн|Beeline|beeline|Мегафон|мегафон|Megafon|megafon/.test(name||'');
 }
 
-function renderServers(servers,sel){
+function renderServers(servers,sel,switchingIdx){
   const el=document.getElementById('serverList');
   if(!servers||!servers.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Серверы не загружены</div>';return}
   el.innerHTML=servers.map((s,i)=>{
     const a=i===sel?' active':'';
+    const sw=i===switchingIdx?' switching':'';
     const p=pings[i];
     const pingStr=p!==undefined?(p<0?'нет':p+' мс'):'—';
     const cls=p!==undefined?pingClass(p):'ping-none';
@@ -1540,7 +1559,7 @@ function renderServers(servers,sel){
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     const metered=isMeteredServer(s.name);
     const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
-    return `<div class="server${a}${metered?' server-metered':''}" onclick="selectServer(${i})">
+    return `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})">
       <span class="server-flag">${esc(flag)}</span>
       <span class="server-name">${esc(name)}</span>
       ${meterTag}
@@ -1632,12 +1651,59 @@ async function toggleVPN(){
   scheduleStatus(2000);
 }
 
+// Server switch is a 2-phase flow with optimistic UI:
+// 1. Pre-flight probe (3-5s) — verify the target works without touching prod
+// 2. Soft restart (5-7s) — actually switch
+// On any failure we roll back the visual selection so the UI stays honest.
+let _switchPending=false;
 async function selectServer(i){
-  const name=(state.servers&&state.servers[i])?state.servers[i].name:'сервер';
-  const tid=toast.loading('Переключаем на '+name+'…');
-  try{await apiFetch(API+'?action=set-server&index='+i);updateToast(tid,'Сервер переключён',{type:'success',duration:2000})}
-  catch(e){updateToast(tid,'Ошибка переключения',{type:'error'})}
-  scheduleStatus(3000);
+  if(_switchPending)return;
+  if(i===state.selected)return;  // already selected — ignore noise click
+  if(!state.servers||!state.servers[i])return;
+
+  _switchPending=true;
+  const oldSelected=state.selected;
+  const name=state.servers[i].name||'сервер';
+  // Optimistic UI: highlight new server immediately, lock the rest of the list,
+  // mark the target with .switching for the spinner+pulse.
+  state.selected=i;
+  renderServers(state.servers,i,i);
+  const list=document.getElementById('serverList');
+  list.classList.add('locked');
+
+  const tid=toast.loading('Тестируем '+name+'…');
+
+  try{
+    // Phase 1: probe — temporary xray, no production impact if it fails
+    const pr=await apiFetch(API+'?action=probe-server&index='+i);
+    const pd=await pr.json();
+    if(pd.error)throw new Error(pd.error);
+
+    updateToast(tid,'Сервер работает ('+pd.ip+') — переключаемся…',{type:'loading'});
+
+    // Phase 2: actual switch — soft restart with new selected_server
+    const sr=await apiFetch(API+'?action=set-server&index='+i);
+    const sd=await sr.json();
+    if(sd.error)throw new Error(sd.error);
+
+    updateToast(tid,name,{type:'success',desc:'IP: '+(sd.vpn_ip||pd.ip),duration:2500});
+  }catch(e){
+    // Roll back: target couldn't be activated, return UI to previous state.
+    // Production VPN was untouched (probe runs in isolation).
+    state.selected=oldSelected;
+    renderServers(state.servers,oldSelected);
+    const reason=(e&&e.message)||'неизвестная ошибка';
+    let humanReason=reason;
+    if(/unreachable/i.test(reason))humanReason='Сервер не отвечает';
+    else if(/HTTP 5/.test(reason))humanReason='Ошибка роутера';
+    updateToast(tid,'Не удалось переключить',{type:'error',desc:humanReason,duration:4500});
+  }finally{
+    _switchPending=false;
+    list.classList.remove('locked');
+    // Re-render without switching class (next status fetch will catch up)
+    renderServers(state.servers,state.selected);
+    scheduleStatus(2000);
+  }
 }
 async function doPing(){
   const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';

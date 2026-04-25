@@ -56,6 +56,7 @@ case "$action" in
     restart)        /usr/bin/flowvpn restart ;;
     update)         /usr/bin/flowvpn update ;;
     set-server)     /usr/bin/flowvpn set-server "$index" ;;
+    probe-server)   /usr/bin/flowvpn probe-server "$index" ;;
     ping)           /usr/bin/flowvpn ping ;;
     set-mode)       /usr/bin/flowvpn set-mode "$mode" ;;
     add-domain)     /usr/bin/flowvpn add-domain "$domain" "$list" ;;
