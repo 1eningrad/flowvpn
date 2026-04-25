@@ -901,28 +901,95 @@ cmd_watchdog() {
 # ============================================================
 
 cmd_get_traffic() {
-    local vpn_bytes=0 direct_bytes=0 vpn_pkts=0 direct_pkts=0
+    # Honest per-outbound accounting via Clash API /connections.
+    #
+    # The API returns a snapshot of currently-active connections, each with
+    # cumulative upload/download since that connection started, plus a
+    # "chains" array showing which outbound it routed through ("default" =
+    # VPN, "direct" = bypass). Closed connections drop off the list and
+    # their final bytes would be lost.
+    #
+    # We maintain a state file with per-connection-id last-seen counters.
+    # On each poll we compute deltas and add them to per-chain totals;
+    # connections that have closed are simply not in the new snapshot, so
+    # their last-known bytes stay accumulated. Result: cumulative VPN_dl,
+    # VPN_ul, DIR_dl, DIR_ul since tracking started (cleared on sing-box
+    # restart by start_singbox).
+    local state_file="$FLOWVPN_TMP/traffic_state.json"
+    [ -f "$state_file" ] || \
+        printf '%s\n' '{"vpn_dl":0,"vpn_ul":0,"dir_dl":0,"dir_ul":0,"started":0,"seen":{}}' > "$state_file"
 
-    # Read nftables counters
-    local nft_out=$(nft list table ip flowvpn 2>/dev/null)
-    if [ -n "$nft_out" ]; then
-        # tproxy counter = total proxied traffic
-        vpn_bytes=$(echo "$nft_out" | grep "tproxy" | grep -oE "bytes [0-9]+" | head -1 | awk '{print $2}')
-        vpn_pkts=$(echo "$nft_out" | grep "tproxy" | grep -oE "packets [0-9]+" | head -1 | awk '{print $2}')
-        [ -z "$vpn_bytes" ] && vpn_bytes=0
-        [ -z "$vpn_pkts" ] && vpn_pkts=0
+    local conns secret
+    secret=$(_get_clash_secret)
+    conns=$(curl -s --max-time 3 -H "Authorization: Bearer $secret" \
+        http://127.0.0.1:9090/connections 2>/dev/null)
+
+    if [ -z "$conns" ] || ! echo "$conns" | jq -e . >/dev/null 2>&1; then
+        # API unreachable (sing-box down?). Return last-known state with
+        # zeros for the live fields so UI can degrade gracefully.
+        jq '. + {total_dl:0, total_ul:0, vpn_active:0, direct_active:0,
+                 vpn_conns:0, direct_conns:0, api_ok:false} | del(.seen)' "$state_file"
+        return
     fi
 
-    # Direct = total - VPN (approximate from sing-box connections)
-    local direct_conns=0 vpn_conns=0
-    if [ -f "$FLOWVPN_TMP/singbox.log" ]; then
-        vpn_conns=$(grep -c "outbound/socks" "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
-        direct_conns=$(grep -c "outbound/direct" "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+    local new_state
+    new_state=$(jq -n \
+        --slurpfile state "$state_file" \
+        --argjson conns "$conns" '
+        ($state[0]) as $s |
+        ($s.seen // {}) as $seen |
+        ($conns.connections // []) as $active |
+        # Classify each active connection: dir if "direct" appears in chains,
+        # otherwise vpn (covers "default" and any other proxy chain).
+        ($active | map({
+            id: .id,
+            dl: (.download // 0),
+            ul: (.upload // 0),
+            chain: (if (.chains // [] | index("direct")) then "dir" else "vpn" end)
+        })) as $cur |
+        # Compute per-connection deltas. If current < previously-seen (rare:
+        # the connection ID was reused after close), fall back to the full
+        # current value rather than going negative.
+        ($cur | map(
+            . + {
+                dl_delta: (if .dl >= (($seen[.id].dl) // 0) then .dl - (($seen[.id].dl) // 0) else .dl end),
+                ul_delta: (if .ul >= (($seen[.id].ul) // 0) then .ul - (($seen[.id].ul) // 0) else .ul end)
+            }
+        )) as $deltas |
+        ($deltas | map(select(.chain == "vpn"))) as $vpn |
+        ($deltas | map(select(.chain == "dir"))) as $dir |
+        # New seen{}: only currently-active IDs. Closed ones drop out, but
+        # their bytes were already added to vpn_*/dir_* on prior polls.
+        ($cur | map({key: .id, value: {dl: .dl, ul: .ul, chain: .chain}}) | from_entries) as $new_seen |
+        {
+            vpn_dl: ($s.vpn_dl + (($vpn | map(.dl_delta) | add) // 0)),
+            vpn_ul: ($s.vpn_ul + (($vpn | map(.ul_delta) | add) // 0)),
+            dir_dl: ($s.dir_dl + (($dir | map(.dl_delta) | add) // 0)),
+            dir_ul: ($s.dir_ul + (($dir | map(.ul_delta) | add) // 0)),
+            started: (if $s.started > 0 then $s.started else now | floor end),
+            seen: $new_seen
+        }
+    ')
+
+    if [ -n "$new_state" ] && echo "$new_state" | jq -e . >/dev/null 2>&1; then
+        printf '%s\n' "$new_state" > "${state_file}.tmp" && mv "${state_file}.tmp" "$state_file"
     fi
 
-    jq -n --argjson vb "$vpn_bytes" --argjson vp "$vpn_pkts" \
-        --argjson vc "$vpn_conns" --argjson dc "$direct_conns" \
-        '{vpn_bytes:$vb, vpn_packets:$vp, vpn_connections:$vc, direct_connections:$dc}'
+    # Public response — strip the internal seen{} and add live fields.
+    cat "$state_file" | jq \
+        --argjson conns "$conns" \
+        '{
+            vpn_dl, vpn_ul, dir_dl, dir_ul, started,
+            total_dl: ($conns.downloadTotal // 0),
+            total_ul: ($conns.uploadTotal // 0),
+            vpn_active: ([$conns.connections[]? | select(.chains | index("direct") | not)
+                                                | (.upload // 0) + (.download // 0)] | add // 0),
+            direct_active: ([$conns.connections[]? | select(.chains | index("direct"))
+                                                | (.upload // 0) + (.download // 0)] | add // 0),
+            vpn_conns: ([$conns.connections[]? | select(.chains | index("direct") | not)] | length),
+            direct_conns: ([$conns.connections[]? | select(.chains | index("direct"))] | length),
+            api_ok: true
+        }'
 }
 
 # ============================================================

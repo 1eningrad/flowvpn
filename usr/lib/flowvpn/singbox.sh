@@ -399,6 +399,9 @@ start_singbox() {
         logger -t flowvpn "ERROR: /usr/bin/sing-box not found or not executable"
         return 1
     fi
+    # Reset traffic accounting state — connection IDs change across restarts,
+    # and "VPN bytes since session" should mean "since this sing-box came up".
+    rm -f /tmp/flowvpn/traffic_state.json
     TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/flowvpn >/tmp/flowvpn/singbox.log 2>&1 &
     echo $! > /tmp/flowvpn/singbox.pid
     local tries=0
