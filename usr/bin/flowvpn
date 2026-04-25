@@ -145,9 +145,48 @@ cmd_stop() {
 }
 
 cmd_restart() {
-    cmd_stop >/dev/null 2>&1
+    # Soft restart: keeps nftables rules + dnsmasq redirect in place so
+    # that during the process-swap gap, traffic fails closed (no internet
+    # for clients) instead of leaking direct (~5s of plaintext DNS + traffic).
+    # Used by mode change, server switch, watchdog failover, and the UI's
+    # "Restart" button. cmd_stop still does the full teardown when the user
+    # genuinely wants VPN off.
+    if ! is_xray_running && ! is_singbox_running; then
+        cmd_start
+        return $?
+    fi
+
+    flog "Restarting FlowVPN (soft — network rules preserved)"
+    stop_singbox
+    stop_xray
     sleep 1
-    cmd_start
+
+    local selected mode
+    selected=$(get_config_val selected_server 0)
+    mode=$(get_config_val mode "all_vpn")
+    local total
+    total=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    [ -n "$total" ] && [ "$selected" -ge "$total" ] && selected=0
+
+    flog "Starting xray (server index=$selected)"
+    generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray.json"
+    start_xray "$FLOWVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
+
+    local vpn_ip
+    vpn_ip=$(test_xray)
+    [ -z "$vpn_ip" ] && { flog "ERROR: VPN connection test failed after restart"; stop_xray; echo '{"error":"VPN connection failed"}'; return 1; }
+    flog "xray reconnected, VPN IP: $vpn_ip"
+
+    generate_singbox_config "$FLOWVPN_TMP/singbox.json" 1080 "$mode"
+    start_singbox "$FLOWVPN_TMP/singbox.json" || { flog "ERROR: sing-box failed"; stop_xray; echo '{"error":"sing-box failed"}'; return 1; }
+    flog "sing-box restarted"
+
+    date +%s > "$FLOWVPN_TMP/start_time"
+    echo "$vpn_ip" > "$FLOWVPN_TMP/vpn_ip"
+
+    local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
+    flog "FlowVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
+    echo "{\"status\":\"restarted\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
 }
 
 cmd_status() {
