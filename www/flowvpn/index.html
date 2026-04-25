@@ -1690,6 +1690,13 @@ async function selectServer(i){
     const sd=await sr.json();
     if(sd.error)throw new Error(sd.error);
 
+    // Refresh state BEFORE showing success — otherwise header lags 2s
+    // behind because polling kicks in only via scheduleStatus(2000).
+    // The set-server response already contains the new server+vpn_ip,
+    // but other UI bits (uptime, traffic stats card, mini-toggle) read
+    // from `state`, so a fresh fetchStatus updates them all coherently.
+    try{await fetchStatus()}catch(_){}
+
     tid=updateToast(tid,name,{type:'success',desc:'IP: '+(sd.vpn_ip||pd.ip),duration:2500});
   }catch(e){
     // Roll back: target couldn't be activated, return UI to previous state.
