@@ -70,7 +70,9 @@ flowvpn start
 
 Полное руководство (PDF, на русском): [docs/flowvpn_manual.pdf](docs/flowvpn_manual.pdf)
 
-Исходник: [docs/flowvpn_manual.tex](docs/flowvpn_manual.tex). Сборка через [tectonic](https://tectonic-typesetting.github.io/):
+План развития и идеи: [docs/ROADMAP.md](docs/ROADMAP.md)
+
+Исходник мануала: [docs/flowvpn_manual.tex](docs/flowvpn_manual.tex). Сборка через [tectonic](https://tectonic-typesetting.github.io/):
 
 ```bash
 cd docs && tectonic flowvpn_manual.tex
