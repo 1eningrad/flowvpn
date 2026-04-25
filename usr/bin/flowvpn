@@ -348,6 +348,11 @@ cmd_add_domain() {
     esac
     mkdir -p /etc/flowvpn
     grep -qxF "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
+    # For 'direct' adds in all_vpn mode, the actual routing comes from
+    # ru_domains.list which _fetch_ru_domains rebuilds locally (no network).
+    # Without this, the new domain sits in direct_domains.txt but sing-box
+    # never sees it until next full update.
+    [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     echo "{\"status\":\"added\",\"domain\":\"$domain\",\"list\":\"$list\"}"
 }
 
@@ -361,6 +366,7 @@ cmd_remove_domain() {
         *)      echo '{"error":"invalid list"}'; return 1 ;;
     esac
     [ -f "$file" ] && { grep -vxF "$domain" "$file" > "${file}.tmp"; mv "${file}.tmp" "$file"; }
+    [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     echo "{\"status\":\"removed\",\"domain\":\"$domain\",\"list\":\"$list\"}"
 }
 
@@ -547,7 +553,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { echo '{"error":"missing key or value"}'; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source) ;;
         *) echo '{"error":"invalid key"}'; return 1 ;;
     esac
     local tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$FLOWVPN_CONFIG")
