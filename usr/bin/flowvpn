@@ -303,39 +303,56 @@ cmd_probe_server() {
     total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
     [ -x /usr/bin/xray ] || { echo '{"error":"xray binary missing"}'; return 1; }
+    mkdir -p "$FLOWVPN_TMP"
 
-    local probe_port=$((1082 + $$ % 100))
-    local test_cfg="$FLOWVPN_TMP/xray_test.json"
-    local probe_cfg="$FLOWVPN_TMP/xray_probe.json"
-    # Cleanup on any exit path — Ctrl+C from CGI, error in jq, killed probe.
-    trap 'kill $probe_pid 2>/dev/null; rm -f "$test_cfg" "$probe_cfg"' EXIT INT TERM
+    # Run the actual probe in a subshell. In ash `trap EXIT` is process-wide,
+    # not function-scoped — running this body as a function inside e.g. the
+    # watchdog process would clobber the watchdog's own EXIT trap (which
+    # cleans up watchdog.lock). Subshell isolates the trap to the probe.
+    (
+        # Unique filenames so a probe and a concurrent watchdog failover
+        # don't overwrite each other's xray configs. Need a .json suffix
+        # because xray sniffs format from filename (refuses files without).
+        # busybox mktemp doesn't accept a suffix in the template, so:
+        # mktemp → rename.
+        local _t _p test_cfg probe_cfg
+        _t=$(mktemp "$FLOWVPN_TMP/xray_test.XXXXXX") || exit 1
+        _p=$(mktemp "$FLOWVPN_TMP/xray_probe.XXXXXX") || { rm -f "$_t"; exit 1; }
+        test_cfg="${_t}.json"; probe_cfg="${_p}.json"
+        mv "$_t" "$test_cfg"; mv "$_p" "$probe_cfg"
+        local probe_pid=""
+        trap 'kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null; rm -f "$test_cfg" "$probe_cfg"' EXIT INT TERM
 
-    generate_xray_config "$FLOWVPN_TMP/servers.json" "$idx" "$test_cfg"
-    [ -s "$test_cfg" ] || { echo '{"error":"failed to generate xray config"}'; return 1; }
-    jq --argjson p "$probe_port" \
-        '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
-        "$test_cfg" > "$probe_cfg"
+        local probe_port=$((1082 + $$ % 100))
+        generate_xray_config "$FLOWVPN_TMP/servers.json" "$idx" "$test_cfg"
+        [ -s "$test_cfg" ] || { echo '{"error":"failed to generate xray config"}'; exit 1; }
+        jq --argjson p "$probe_port" \
+            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+            "$test_cfg" > "$probe_cfg"
 
-    /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
-    local probe_pid=$!
-    sleep 2  # let xray bind + handshake
+        /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
+        probe_pid=$!
+        sleep 2
 
-    local t0 t1 elapsed test_ip
-    t0=$(date +%s%3N 2>/dev/null)
-    test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
-    t1=$(date +%s%3N 2>/dev/null)
-    elapsed=$((t1 - t0))
-    [ "$elapsed" -lt 0 ] && elapsed=0
+        local t0 t1 elapsed test_ip
+        t0=$(date +%s%3N 2>/dev/null)
+        test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
+        t1=$(date +%s%3N 2>/dev/null)
+        # Fallback: if busybox date doesn't support %3N, both are non-numeric.
+        case "$t0$t1" in *[!0-9]*) elapsed=0;; *) elapsed=$((t1 - t0));; esac
+        [ "$elapsed" -lt 0 ] 2>/dev/null && elapsed=0
 
-    if [ -n "$test_ip" ]; then
-        local name
-        name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
-        jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" \
-            '{status:"ok", ip:$ip, server:$name, latency_ms:$ms}'
-    else
-        echo '{"error":"server unreachable"}'
-        return 1
-    fi
+        if [ -n "$test_ip" ]; then
+            local name
+            name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
+            jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" \
+                '{status:"ok", ip:$ip, server:$name, latency_ms:$ms}'
+            exit 0
+        else
+            echo '{"error":"server unreachable"}'
+            exit 1
+        fi
+    )
 }
 
 cmd_update() {
@@ -467,11 +484,12 @@ cmd_get_log() {
     local TZ_OFFSET=$(echo "$tz_str" | sed 's/[A-Za-z]*//g; s/^-//' | awk '{print int($1)}')
     [ -z "$TZ_OFFSET" ] && TZ_OFFSET=3
 
-    # Collect from multiple sources. mktemp + EXIT trap so parallel polling
-    # doesn't race on a shared filename and orphans don't accumulate.
+    # Collect from multiple sources. mktemp + EXIT trap (in subshell so the
+    # trap doesn't leak to the calling shell, e.g. watchdog).
     mkdir -p "$FLOWVPN_TMP"
+    (
     local tmplog
-    tmplog=$(mktemp "$FLOWVPN_TMP/combined.XXXXXX") || { echo "[]"; return 1; }
+    tmplog=$(mktemp "$FLOWVPN_TMP/combined.XXXXXX") || { echo "[]"; exit 1; }
     trap 'rm -f "$tmplog"' EXIT INT TERM
 
     # Source 1: sing-box log (skip for flow-only filter)
@@ -584,6 +602,7 @@ cmd_get_log() {
         jq -R -s 'split("\n") | map(select(length > 0)) | map(split("|") | {time: .[0], dst: .[1], route: .[2]})'
 
     rm -f "$tmplog"
+    )
 }
 
 cmd_get_dns() {
@@ -824,18 +843,26 @@ cmd_watchdog() {
                     continue
                 fi
 
-                # Quick test this server via a temporary probe xray on a unique port
-                generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray_test.json"
+                # Quick test this server via a temporary probe xray on a unique
+                # port and unique config files so cmd_probe_server (UI) running
+                # at the same time can't clobber our config or vice versa.
+                # xray requires .json suffix; mktemp+rename to get it.
+                local wd_test wd_probe _wt _wp
+                _wt=$(mktemp "$FLOWVPN_TMP/xray_test.XXXXXX")
+                _wp=$(mktemp "$FLOWVPN_TMP/xray_probe.XXXXXX")
+                wd_test="${_wt}.json"; wd_probe="${_wp}.json"
+                mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
+                generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$wd_test"
                 jq --argjson p "$probe_port" \
                     '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
-                    "$FLOWVPN_TMP/xray_test.json" > "$FLOWVPN_TMP/xray_probe.json"
-                /usr/bin/xray run -config "$FLOWVPN_TMP/xray_probe.json" >/dev/null 2>&1 &
+                    "$wd_test" > "$wd_probe"
+                /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
                 local probe_pid=$!
                 sleep 3
 
                 local test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
                 kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null
-                rm -f "$FLOWVPN_TMP/xray_test.json" "$FLOWVPN_TMP/xray_probe.json"
+                rm -f "$wd_test" "$wd_probe"
 
                 if [ -n "$test_ip" ]; then
                     logger -t flowvpn "Watchdog: switched to $cand_name ($test_ip)"
@@ -1047,7 +1074,7 @@ cmd_set_device_route() {
         local iface=$(get_config_val interface "br-lan")
         setup_network 2154 32768 "$iface"
     fi
-    echo "{\"status\":\"device route set\",\"ip\":\"$ip\",\"route\":\"$route\"}"
+    echo "{\"status\":\"device route set\",\"id\":\"$id\",\"route\":\"$route\"}"
 }
 
 cmd_remove_device_route() {
@@ -1065,7 +1092,7 @@ cmd_remove_device_route() {
         local iface=$(get_config_val interface "br-lan")
         setup_network 2154 32768 "$iface"
     fi
-    echo "{\"status\":\"device route removed\",\"ip\":\"$ip\"}"
+    echo "{\"status\":\"device route removed\",\"id\":\"$id\"}"
 }
 
 cmd_system_info() {
