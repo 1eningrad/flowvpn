@@ -38,7 +38,10 @@ unset IFS
 [ -n "$on_time" ]  && case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) _bad on;;     esac
 [ -n "$off_time" ] && case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) _bad off;;    esac
 [ -n "$ip_addr" ]  && case "$ip_addr"  in
+    # IPv4 dotted-quad (digits + dots only)
     [0-9]*.[0-9]*.[0-9]*.[0-9]*) case "$ip_addr" in *[!0-9.]*) _bad ip;; esac ;;
+    # MAC address — six pairs of hex separated by colons
+    [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
     *) _bad ip ;;
 esac
 

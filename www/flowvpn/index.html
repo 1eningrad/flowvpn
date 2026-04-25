@@ -1750,13 +1750,18 @@ function renderDevices(){
     list.innerHTML=q?'<div class="dev-empty">Не найдено по запросу "<b>'+esc(q)+'</b>"</div>':'<div class="dev-empty">Нет подключённых устройств</div>';
     return;
   }
+  // Match a device against device_rules either by MAC (preferred — survives
+  // DHCP changes) or by IP (legacy/fallback).
+  const ruleFor=(dev)=>{
+    const macUp=(dev.mac||'').toUpperCase();
+    return rules[macUp]||rules[dev.mac]||rules[dev.ip]||'vpn';
+  };
   const groups={direct:[],vpn:[]};
   for(const dev of filtered){
-    const r=rules[dev.ip]||'vpn';
-    (r==='direct'?groups.direct:groups.vpn).push(dev);
+    (ruleFor(dev)==='direct'?groups.direct:groups.vpn).push(dev);
   }
   const renderOne=(dev)=>{
-    const r=rules[dev.ip]||'vpn';const isVpn=r!=='direct';
+    const isVpn=ruleFor(dev)!=='direct';
     const t=detectDeviceType(dev.name);
     const badge=isVpn
       ?'<span class="badge badge-vpn">VPN</span>'
@@ -1765,7 +1770,10 @@ function renderDevices(){
     const avatarCls=isUnknown?'unknown':(isVpn?'vpn':'direct');
     const title=isUnknown?'Неизвестное устройство':esc(dev.name);
     const typeHint=t.label?` <span style="color:var(--text-dim);font-weight:500">· ${t.label}</span>`:'';
-    return `<div class="device" onclick="toggleDeviceRoute('${esc(dev.ip)}','${isVpn?'direct':'vpn'}')">
+    // Prefer MAC for the rule key — IP can change across DHCP renewals,
+    // MAC is fixed to the device.
+    const id=esc(dev.mac||dev.ip);
+    return `<div class="device" onclick="toggleDeviceRoute('${id}','${isVpn?'direct':'vpn'}')">
       <div class="device-avatar ${avatarCls}"><svg class="icon icon-lg"><use href="${t.icon}"/></svg></div>
       <div class="device-info">
         <div class="device-name">${title}${typeHint}</div>
