@@ -46,17 +46,29 @@ save_config() {
 # ============================================================
 
 _rotate_log() {
-    # Size-based rotation: when file exceeds MAX_LINES, truncate to KEEP_LINES.
-    # Keeps enough history for UI/diagnose without letting logs grow unbounded.
+    # Size-based rotation with copytruncate semantics.
+    # Earlier version did `tail > tmp && mv tmp file`. Rename swaps inode —
+    # sing-box and xray hold an open fd on the original inode, so the new
+    # file is invisible to them; subsequent log lines get written into the
+    # now-orphaned, unlinked file (`/proc/PID/fd/1 → file (deleted)`) and
+    # never appear in the journal. Effect: UI's log went silent ~1h after
+    # the first rotation.
+    #
+    # Fix: tail-into-temp, then `cat tmp > file` writes through the same
+    # file descriptor that the daemons hold — truncate-then-overwrite
+    # preserves the inode.
     local max_lines=5000 keep_lines=1500
     for logfile in "$FLOWVPN_TMP/singbox.log" "$FLOWVPN_TMP/xray.log"; do
         [ -f "$logfile" ] || continue
         local lines=$(wc -l < "$logfile" 2>/dev/null)
         [ -z "$lines" ] && continue
         if [ "$lines" -gt "$max_lines" ]; then
-            tail -n "$keep_lines" "$logfile" > "${logfile}.tmp" 2>/dev/null && \
-            mv "${logfile}.tmp" "$logfile" && \
-            flog "Rotated log: $logfile ($lines → $keep_lines lines)"
+            local tmp="${logfile}.rot"
+            if tail -n "$keep_lines" "$logfile" > "$tmp" 2>/dev/null; then
+                cat "$tmp" > "$logfile"  # truncate+write — keeps inode, daemons keep writing
+                rm -f "$tmp"
+                flog "Rotated log: $logfile ($lines → $keep_lines lines)"
+            fi
         fi
     done
 }
