@@ -10,7 +10,7 @@
 <title>FlowVPN</title>
 <style>
 /* System font stack — page must work without internet (it's the router admin UI) */
-*{margin:0;padding:0;box-sizing:border-box}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 :root{
   --bg:#0b0b10;
   --bg-gradient:radial-gradient(ellipse 60% 50% at 30% 0%, rgba(124,58,237,0.08), transparent 50%), radial-gradient(ellipse 40% 40% at 80% 100%, rgba(59,130,246,0.05), transparent 50%), #0b0b10;
@@ -58,7 +58,6 @@ body{
   letter-spacing:-0.01em;
   overflow-x:hidden;
 }
-*,*::before,*::after{box-sizing:border-box}
 html,body{max-width:100vw}
 /* Numbers: tabular-nums stabilizes width when values change (speed, ping, uptime) */
 .speed-value,.stat-num,.mini-stat-val,.metric-value,.server-ping,
@@ -572,7 +571,7 @@ html,body{max-width:100vw}
 .log-filter:hover{background:var(--card-hover);color:var(--text)}
 .log-filter.active{background:var(--accent);color:#fff;border-color:transparent}
 
-.log-entries{max-height:500px;overflow-y:auto;padding-right:4px}
+.log-entries{max-height:500px;overflow-y:auto;padding-right:4px;transition:opacity .18s ease}
 .log-entries::-webkit-scrollbar{width:6px}
 .log-entries::-webkit-scrollbar-track{background:transparent}
 .log-entries::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
@@ -631,6 +630,9 @@ html,body{max-width:100vw}
   0%,100%{opacity:1;transform:scale(1)}
   50%{opacity:0.5;transform:scale(1.2)}
 }
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:0.01ms!important;animation-iteration-count:1!important;transition-duration:0.01ms!important}
+}
 .log-count-badge{
   font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:10px;
   color:var(--text-dim);padding:2px 6px;
@@ -650,7 +652,6 @@ html,body{max-width:100vw}
   align-items:center;gap:10px
 }
 .log-empty svg{width:32px;height:32px;opacity:0.4}
-.log-entries{transition:opacity .18s ease}
 .log-entries.updating{opacity:0.6}
 
 /* Diagnostics */
@@ -772,10 +773,10 @@ html,body{max-width:100vw}
 }
 [data-theme="light"] .bottom-nav{background:rgba(248,250,252,0.9)}
 .bn-item{
-  flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
   padding:6px 2px;background:transparent;border:0;cursor:pointer;
   color:var(--text-dim);font-family:inherit;font-size:9.5px;font-weight:500;
-  transition:color .15s;border-radius:10px;min-width:0
+  transition:color .15s;border-radius:10px;min-width:0;min-height:48px
 }
 .bn-item svg{width:22px;height:22px}
 .bn-item span{
@@ -1976,7 +1977,7 @@ async function exportLog(){
     const labels={vpn:'[VPN]    ',direct:'[DIRECT] ',error:'[ERROR]  ',dns:'[DNS]    ',flow:'[FLOW]   ',xray:'[XRAY]   '};
     d.forEach(e=>{txt+=`${e.time||''} ${labels[e.route]||''}${e.dst||''}\n`});
     txt+=`\nВсего записей: ${d.length}`;
-    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';a.click();
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';a.click();URL.revokeObjectURL(a.href);
     toast.success('Журнал скачан');
   }catch(e){toast.error('Ошибка скачивания')}
 }
@@ -2141,7 +2142,7 @@ async function loadAutoUpdate(){
 }
 
 // Backup
-async function downloadBackup(){try{const r=await apiFetch(API+'?action=backup');const d=await r.json();const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}));a.download='flowvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();toast.success('Бэкап скачан')}catch(e){toast.error('Ошибка скачивания')}}
+async function downloadBackup(){try{const r=await apiFetch(API+'?action=backup');const d=await r.json();const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}));a.download='flowvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(a.href);toast.success('Бэкап скачан')}catch(e){toast.error('Ошибка скачивания')}}
 async function restoreBackup(event){
   const f=event.target.files[0];if(!f)return;
   if(f.size>65536){toast.error('Файл слишком большой');event.target.value='';return}
@@ -2211,16 +2212,29 @@ function syncMiniToggle(el){
 })();
 
 // Onboarding
+let _onboardReturnFocus=null;
 function showOnboard(){
   const o=document.getElementById('onboardOverlay');
   if(!o)return;
+  // Save focus owner so we can return to it after dialog closes (a11y).
+  _onboardReturnFocus=document.activeElement;
+  // Reset any leftover error styling from a previous run.
+  const desc=document.getElementById('onboardStep2Desc');
+  if(desc)desc.style.color='';
   o.classList.add('show');
   setOnboardStep(1);
   setTimeout(()=>document.getElementById('onboardSubUrl').focus(),300);
 }
-function skipOnboard(){
+function _closeOnboard(){
   const o=document.getElementById('onboardOverlay');
   if(o)o.classList.remove('show');
+  if(_onboardReturnFocus&&typeof _onboardReturnFocus.focus==='function'){
+    try{_onboardReturnFocus.focus()}catch(e){}
+  }
+  _onboardReturnFocus=null;
+}
+function skipOnboard(){
+  _closeOnboard();
   localStorage.setItem('flowvpn-onboarded','1');
 }
 function setOnboardStep(n){
@@ -2256,7 +2270,7 @@ async function onboardNext1(){
 }
 function finishOnboard(){
   localStorage.setItem('flowvpn-onboarded','1');
-  document.getElementById('onboardOverlay').classList.remove('show');
+  _closeOnboard();
   toast.success('FlowVPN готов к работе','Нажмите переключатель, чтобы подключиться');
 }
 function maybeShowOnboard(){
@@ -2272,7 +2286,7 @@ document.addEventListener('keydown',(e)=>{
   if(e.key==='Escape'){
     // close any open overlay (onboarding) or blur input
     const ob=document.getElementById('onboardOverlay');
-    if(ob&&ob.classList.contains('show')){ob.classList.remove('show');return}
+    if(ob&&ob.classList.contains('show')){_closeOnboard();return}
     if(typing){e.target.blur();return}
   }
   if(typing)return;
