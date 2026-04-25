@@ -1574,8 +1574,11 @@ cmd_healthcheck() {
 
     # 6. VPN connection
     if is_xray_running; then
-        local vpn_ip=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://ifconfig.me 2>/dev/null)
-        local home_ip=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null)
+        # -4 forces IPv4 — sing-box's strategy is ipv4_only but ifconfig.me
+        # serves IPv6 too via Happy Eyeballs, which produced confusing
+        # AAAA records in the "VPN туннель" check.
+        local vpn_ip=$(curl -4 -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://ifconfig.me 2>/dev/null)
+        local home_ip=$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null)
         [ -n "$vpn_ip" ] && _hc "VPN туннель" "ok" "VPN IP: $vpn_ip" \
             || _hc "VPN туннель" "error" "Нет ответа"
         [ -n "$home_ip" ] && [ "$vpn_ip" != "$home_ip" ] && _hc "IP проверка" "ok" "VPN ≠ Home ($home_ip)" \
