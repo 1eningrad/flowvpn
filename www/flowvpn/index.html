@@ -1639,9 +1639,12 @@ async function fetchStatus(){
     }
     const on=state.running;
     document.getElementById('vpnToggle').checked=on;
-    // Sync persistent auto_mode toggle from backend state
+    // Sync persistent auto_mode toggle from backend state, but stay out of
+    // the way while a toggle/auto-select op is in flight — otherwise this
+    // 5s poll can flip the visual back to OFF before the operation has
+    // finished saving and the user sees the toggle bounce.
     const am=document.getElementById('autoModeToggle');
-    if(am&&am.checked!==!!state.auto_mode)am.checked=!!state.auto_mode;
+    if(am&&!_autoModePending&&am.checked!==!!state.auto_mode)am.checked=!!state.auto_mode;
     const orb=document.getElementById('statusOrb');
     orb.classList.toggle('off',!on);
 
@@ -1719,8 +1722,10 @@ async function selectServer(i){
   if(!state.servers||!state.servers[i])return;
 
   // Manual click while auto-mode is on counts as user opting into manual.
-  // Drop the flag silently — both the UI toggle and the persisted config.
-  if(state.auto_mode){
+  // Save prior state so we can restore if the switch fails — otherwise a
+  // failed click silently kills auto-mode without the user knowing.
+  const wasAuto=state.auto_mode;
+  if(wasAuto){
     state.auto_mode=false;
     const am=document.getElementById('autoModeToggle');
     if(am)am.checked=false;
@@ -1769,6 +1774,14 @@ async function selectServer(i){
     // Production VPN was untouched (probe runs in isolation).
     state.selected=oldSelected;
     renderServers(state.servers,oldSelected);
+    // Also restore auto-mode if we silently turned it off — user didn't
+    // actually succeed in their manual override, no reason to lose auto.
+    if(wasAuto){
+      state.auto_mode=true;
+      const am=document.getElementById('autoModeToggle');
+      if(am)am.checked=true;
+      apiFetch(API+'?action=set-config&key=auto_mode&value=true').catch(()=>{});
+    }
     const reason=(e&&e.message)||'неизвестная ошибка';
     let humanReason=reason;
     if(/unreachable/i.test(reason))humanReason='Сервер не отвечает';
@@ -1786,7 +1799,7 @@ async function selectServer(i){
 async function doPing(){
   const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';
   try{const r=await apiFetch(API+'?action=ping');const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}
-  b.disabled=false;b.textContent='Проверить RTT'
+  b.disabled=false;b.textContent='RTT'
 }
 // Maps backend status code to a short Russian phrase for the toast log.
 const _AUTO_STATUS_RU={
@@ -1805,24 +1818,37 @@ function _formatAttempts(attempts){
 }
 // Toggle persistent auto-mode preference. ON also kicks off an immediate
 // auto-select; OFF just clears the flag (current selection stays).
+// _autoModePending blocks fetchStatus's toggle-sync from clobbering our
+// in-flight value (poll runs every 5s, this op can take 15s+).
+let _autoModePending=false;
 async function toggleAutoMode(enabled){
+  _autoModePending=true;
+  const t=document.getElementById('autoModeToggle');
+  if(t)t.disabled=true;
   try{
     await apiFetch(API+'?action=set-config&key=auto_mode&value='+(enabled?'true':'false'));
     state.auto_mode=enabled;
     if(enabled){
-      // Immediately optimize on enable. doAutoSelect handles UI/toast.
-      doAutoSelect();
+      // Wait for the immediate auto-select to finish before unlocking the
+      // toggle, so a quick second flick doesn't fire a parallel run.
+      await doAutoSelect();
     }else{
       toast.info('Ручной режим','Сервер сменится только при сбое (watchdog)');
     }
   }catch(e){
-    // Revert toggle visual on failure
-    const t=document.getElementById('autoModeToggle');
     if(t)t.checked=!enabled;
     toast.error('Ошибка','Не удалось сохранить режим');
+  }finally{
+    _autoModePending=false;
+    if(t)t.disabled=false;
   }
 }
 async function doAutoSelect(){
+  // Both doPing and doAutoSelect probe servers — running them in parallel
+  // hammers the router (multiple xrays + curl bursts on weak hardware).
+  // Lock pingBtn for the duration so the user can't fire a second probe loop.
+  const pingBtn=document.getElementById('pingBtn');
+  if(pingBtn)pingBtn.disabled=true;
   let tid=toast.loading('Измеряем все серверы и выбираем лучший…');
   try{
     const r=await apiFetch(API+'?action=auto-select');const d=await r.json();
@@ -1840,6 +1866,8 @@ async function doAutoSelect(){
     const reason=(e&&e.message)||'Все серверы недоступны';
     const desc=log?(reason+'\n\n'+log):reason;
     tid=updateToast(tid,'Не удалось подобрать',{type:'error',desc,duration:7000});
+  }finally{
+    if(pingBtn)pingBtn.disabled=false;
   }
 }
 async function setMode(m){
