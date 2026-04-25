@@ -2201,11 +2201,31 @@ async function loadLogs(){
     const list=document.getElementById('logList');
     if(!list){_logLoading=false;return}
 
-    // Empty case — render once, skip repeat
+    // Empty case — render once, skip repeat. Message depends on filter
+    // and VPN state: "no errors" is good news, "no connections" only makes
+    // sense when VPN is actually off.
     if(!d.length){
       const emptySig='EMPTY:'+currentLogFilter;
       if(_lastLogSig!==emptySig){
-        list.innerHTML='<div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Журнал пуст. Включите VPN — здесь появятся соединения.</div>';
+        const f=currentLogFilter;
+        const running=state&&state.running;
+        let msg;
+        if(!running){
+          msg='Журнал пуст. Включите VPN — здесь появятся соединения.';
+        }else if(f==='error'){
+          msg='Ошибок нет — всё работает штатно.';
+        }else if(f==='vpn'){
+          msg='Через VPN сейчас нет активных соединений.';
+        }else if(f==='direct'){
+          msg='Напрямую сейчас нет активных соединений.';
+        }else if(f==='dns'){
+          msg='DNS-запросов в буфере нет — попробуйте обновить страницу или открыть сайт.';
+        }else if(f==='flow'){
+          msg='Системных событий FlowVPN нет.';
+        }else{
+          msg='Записей в буфере нет.';
+        }
+        list.innerHTML='<div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>'+esc(msg)+'</div>';
         _lastLogSig=emptySig;
       }
       const ls=document.getElementById('logStats');if(ls&&ls.innerHTML!=='')ls.innerHTML='';
