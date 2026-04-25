@@ -13,3 +13,4 @@ singbox.json
 xray.json
 rules/
 combined.tmp
+.DS_Store
