@@ -86,6 +86,10 @@ generate_xray_config() {
 
 start_xray() {
     local config_file="$1"
+    if [ ! -x /usr/bin/xray ]; then
+        logger -t flowvpn "ERROR: /usr/bin/xray not found or not executable"
+        return 1
+    fi
     /usr/bin/xray run -config "$config_file" >/tmp/flowvpn/xray.log 2>&1 &
     echo $! > /tmp/flowvpn/xray.pid
 

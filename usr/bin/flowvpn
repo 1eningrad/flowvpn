@@ -11,7 +11,7 @@ FLOWVPN_TMP="/tmp/flowvpn"
 . "$FLOWVPN_LIB/singbox.sh"
 . "$FLOWVPN_LIB/network.sh"
 
-get_config_val() { jq -r ".$1 // \"$2\"" "$FLOWVPN_CONFIG"; }
+get_config_val() { jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$FLOWVPN_CONFIG"; }
 flog() { logger -t flowvpn "$*"; }
 
 # Returns the per-install Clash API secret. Generates one on first call.
@@ -151,14 +151,12 @@ cmd_restart() {
 }
 
 cmd_status() {
-    local running="false" server_name="" uptime=0 selected=0 vpn_ip="" mode=""
-    mode=$(get_config_val mode "all_vpn")
-
+    # Polled from UI every 5s — kept cheap.
+    # Single jq pass: --slurpfile reads config + servers.json once each,
+    # everything else (running, vpn_ip, uptime, etc.) comes via --argjson/--arg.
+    local running="false" uptime=0 vpn_ip=""
     if is_xray_running && is_singbox_running; then
         running="true"
-        selected=$(get_config_val selected_server 0)
-        [ -f "$FLOWVPN_TMP/servers.json" ] && \
-            server_name=$(jq -r ".[$selected].name // \"unknown\"" "$FLOWVPN_TMP/servers.json")
         [ -f "$FLOWVPN_TMP/start_time" ] && {
             local st=$(cat "$FLOWVPN_TMP/start_time")
             uptime=$(($(date +%s) - st))
@@ -166,33 +164,39 @@ cmd_status() {
         [ -f "$FLOWVPN_TMP/vpn_ip" ] && vpn_ip=$(cat "$FLOWVPN_TMP/vpn_ip")
     fi
 
-    local servers="[]"
-    [ -f "$FLOWVPN_TMP/servers.json" ] && servers=$(jq '[.[] | {name, host, port}]' "$FLOWVPN_TMP/servers.json")
+    local servers_raw='[]'
+    [ -f "$FLOWVPN_TMP/servers.json" ] && servers_raw=$(cat "$FLOWVPN_TMP/servers.json")
 
     local device_count=0
     [ -f /tmp/dhcp.leases ] && device_count=$(wc -l < /tmp/dhcp.leases)
 
-    local device_rules='{}'
-    device_rules=$(jq '.device_rules // {}' "$FLOWVPN_CONFIG")
+    local last_switch='null'
+    [ -f "$FLOWVPN_TMP/last_switch.json" ] && last_switch=$(cat "$FLOWVPN_TMP/last_switch.json")
 
     jq -n \
+        --slurpfile cfg "$FLOWVPN_CONFIG" \
         --argjson running "$running" \
-        --arg server "$server_name" \
         --argjson uptime "$uptime" \
-        --argjson selected "$selected" \
-        --argjson servers "$servers" \
-        --arg sub_url "$(get_config_val subscription_url '')" \
+        --argjson srv "$servers_raw" \
         --arg vpn_ip "$vpn_ip" \
-        --arg mode "$mode" \
         --argjson devices "$device_count" \
-        --argjson auto_start "$([ "$(get_config_val auto_start true)" = "true" ] && echo true || echo false)" \
-        --argjson device_rules "$device_rules" \
-        --argjson last_switch "$([ -f "$FLOWVPN_TMP/last_switch.json" ] && cat "$FLOWVPN_TMP/last_switch.json" || echo null)" \
+        --argjson last_switch "$last_switch" \
         --arg clash_secret "$(_get_clash_secret)" \
-        '{running:$running, server:$server, uptime:$uptime, selected:$selected,
-          servers:$servers, subscription_url:$sub_url, vpn_ip:$vpn_ip, mode:$mode,
-          devices:$devices, auto_start:$auto_start, device_rules:$device_rules,
-          last_switch:$last_switch, clash_secret:$clash_secret}'
+        '$cfg[0] as $c |
+         ($c.selected_server // 0) as $sel |
+         {running:$running,
+          server: (if $running then ($srv[$sel].name // "") else "" end),
+          uptime:$uptime,
+          selected: $sel,
+          servers: ($srv | map({name, host, port})),
+          subscription_url: ($c.subscription_url // ""),
+          vpn_ip:$vpn_ip,
+          mode: ($c.mode // "all_vpn"),
+          devices:$devices,
+          auto_start: ($c.auto_start // true),
+          device_rules: ($c.device_rules // {}),
+          last_switch:$last_switch,
+          clash_secret:$clash_secret}'
 }
 
 # ============================================================
@@ -337,9 +341,12 @@ cmd_get_log() {
     local TZ_OFFSET=$(echo "$tz_str" | sed 's/[A-Za-z]*//g; s/^-//' | awk '{print int($1)}')
     [ -z "$TZ_OFFSET" ] && TZ_OFFSET=3
 
-    # Collect from multiple sources
-    local tmplog="$FLOWVPN_TMP/combined.tmp"
-    > "$tmplog"
+    # Collect from multiple sources. mktemp + EXIT trap so parallel polling
+    # doesn't race on a shared filename and orphans don't accumulate.
+    mkdir -p "$FLOWVPN_TMP"
+    local tmplog
+    tmplog=$(mktemp "$FLOWVPN_TMP/combined.XXXXXX") || { echo "[]"; return 1; }
+    trap 'rm -f "$tmplog"' EXIT INT TERM
 
     # Source 1: sing-box log (skip for flow-only filter)
     if [ "$filter" != "flow" ]; then
