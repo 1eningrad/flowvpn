@@ -1155,15 +1155,28 @@ cmd_watchdog() {
 
         # Auto-recovery: if user wanted VPN on (running_intent=true) but
         # processes died externally — kernel OOM-killer, manual pkill, an
-        # xray crash — bring them back. Without this, after any external
-        # kill the user has to manually re-toggle in UI.
+        # xray crash — bring them back. With cooldown to prevent runaway
+        # restart loops if cmd_start itself keeps failing (e.g. provider
+        # blocked, server keys rotated): if we already tried recently and
+        # still no xray, wait — don't pile up zombie children.
         if ! is_xray_running || ! is_singbox_running; then
             local _intent
             _intent=$(get_config_val running_intent false)
             if [ "$_intent" = "true" ]; then
-                flog "Watchdog: VPN was killed externally, reviving"
-                cmd_start >/dev/null 2>&1
-                # Skip the connectivity check this tick — let it stabilize
+                local revive_marker="$FLOWVPN_TMP/last_revive"
+                local now=$(date +%s)
+                local last=0
+                [ -f "$revive_marker" ] && last=$(cat "$revive_marker" 2>/dev/null)
+                [ -z "$last" ] && last=0
+                # Min 60s between revival attempts. cmd_start needs ~7s to
+                # complete; this gives it room to finish + brief settle time.
+                if [ $((now - last)) -lt 60 ]; then
+                    : # in cooldown — skip this tick silently
+                else
+                    flog "Watchdog: VPN was killed externally, reviving"
+                    echo $now > "$revive_marker"
+                    cmd_start >/dev/null 2>&1
+                fi
             fi
             continue
         fi
