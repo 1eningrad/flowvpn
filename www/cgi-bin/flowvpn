@@ -58,6 +58,7 @@ case "$action" in
     set-server)     /usr/bin/flowvpn set-server "$index" ;;
     probe-server)   /usr/bin/flowvpn probe-server "$index" ;;
     ping)           /usr/bin/flowvpn ping ;;
+    auto-select)    /usr/bin/flowvpn auto-select ;;
     set-mode)       /usr/bin/flowvpn set-mode "$mode" ;;
     add-domain)     /usr/bin/flowvpn add-domain "$domain" "$list" ;;
     remove-domain)  /usr/bin/flowvpn remove-domain "$domain" "$list" ;;
