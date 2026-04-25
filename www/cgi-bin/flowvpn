@@ -2,12 +2,11 @@
 # FlowVPN v4 — CGI API
 
 echo "Content-Type: application/json"
-echo "Access-Control-Allow-Origin: http://$SERVER_NAME"
-echo "Access-Control-Allow-Methods: GET, POST, OPTIONS"
-echo "Access-Control-Allow-Headers: Content-Type"
 echo ""
 
 [ "$REQUEST_METHOD" = "OPTIONS" ] && exit 0
+
+_bad() { echo "{\"error\":\"invalid $1\"}"; exit 0; }
 
 # Parse query string
 action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
@@ -26,9 +25,26 @@ for pair in $QUERY_STRING; do
 done
 unset IFS
 
-# Read POST body
+# Validate parameters at the boundary (only those used in shell args / numeric tests)
+[ -n "$action" ]   && case "$action"   in *[!a-z-]*)                  _bad action;; esac
+[ -n "$index" ]    && case "$index"    in ''|*[!0-9]*)                 _bad index;;  esac
+[ -n "$lines" ]    && case "$lines"    in *[!0-9]*)                    _bad lines;;  esac
+[ -n "$mode" ]     && case "$mode"     in *[!a-zA-Z0-9_-]*)            _bad mode;;   esac
+[ -n "$list" ]     && case "$list"     in direct|blocklist) ;; *)      _bad list;;   esac
+[ -n "$route" ]    && case "$route"    in vpn|direct) ;; *)            _bad route;;  esac
+[ -n "$filter" ]   && case "$filter"   in *[!a-zA-Z]*)                 _bad filter;; esac
+[ -n "$key" ]      && case "$key"      in *[!a-zA-Z0-9_]*)             _bad key;;    esac
+[ -n "$domain" ]   && case "$domain"   in .*|*..*|*[!a-zA-Z0-9.*_-]*)  _bad domain;; esac
+[ -n "$on_time" ]  && case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) _bad on;;     esac
+[ -n "$off_time" ] && case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) _bad off;;    esac
+[ -n "$ip_addr" ]  && case "$ip_addr"  in
+    [0-9]*.[0-9]*.[0-9]*.[0-9]*) case "$ip_addr" in *[!0-9.]*) _bad ip;; esac ;;
+    *) _bad ip ;;
+esac
+
+# Read POST body, capped at 64KB to prevent OOM via huge requests
 body=""
-[ "$REQUEST_METHOD" = "POST" ] && body=$(cat 2>/dev/null)
+[ "$REQUEST_METHOD" = "POST" ] && body=$(head -c 65536)
 
 case "$action" in
     status)         /usr/bin/flowvpn status ;;
@@ -53,8 +69,9 @@ case "$action" in
         if [ -n "$key" ]; then
             /usr/bin/flowvpn set-config "$key" "$value"
         elif [ -n "$body" ]; then
-            local_key=$(echo "$body" | jq -r '.key // empty' 2>/dev/null)
-            local_val=$(echo "$body" | jq -r '.value // empty' 2>/dev/null)
+            local_key=$(printf '%s' "$body" | jq -r '.key // empty' 2>/dev/null)
+            local_val=$(printf '%s' "$body" | jq -r '.value // empty' 2>/dev/null)
+            case "$local_key" in *[!a-zA-Z0-9_]*) _bad key;; esac
             /usr/bin/flowvpn set-config "$local_key" "$local_val"
         else
             echo '{"error":"missing key/value"}'
@@ -72,7 +89,12 @@ case "$action" in
     auto-update)    /usr/bin/flowvpn auto-update "$mode" ;;
     backup)         /usr/bin/flowvpn backup ;;
     restore)
-        [ -n "$body" ] && /usr/bin/flowvpn restore "$body" || echo '{"error":"no data"}'
+        # Pipe body via stdin to avoid argv injection / argv length limits
+        if [ -n "$body" ]; then
+            printf '%s' "$body" | /usr/bin/flowvpn restore
+        else
+            echo '{"error":"no data"}'
+        fi
         ;;
     set-device)     /usr/bin/flowvpn set-device "$ip_addr" "$route" ;;
     remove-device-route) /usr/bin/flowvpn remove-device "$ip_addr" ;;

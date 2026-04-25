@@ -188,18 +188,22 @@ generate_singbox_config() {
         _build_blocklist_rules
     fi
 
+    local clash_secret
+    clash_secret=$(_get_clash_secret)
+
     # Build full config
     jq -n \
         --argjson rules "$rules" \
         --argjson dns_rules "$dns_rules" \
         --argjson xray_port "$xray_socks_port" \
+        --arg clash_secret "$clash_secret" \
         --arg final_outbound "$([ "$mode" = "all_vpn" ] && echo "default" || echo "direct")" \
         --arg final_dns "$([ "$mode" = "all_vpn" ] && echo "dns-proxy" || echo "dns-direct")" \
     '{
         log: {level: "info", timestamp: true},
         experimental: {
             cache_file: {enabled: true, path: "/tmp/flowvpn/cache.db"},
-            clash_api: {external_controller: "0.0.0.0:9090", secret: "flowvpn"}
+            clash_api: {external_controller: "0.0.0.0:9090", secret: $clash_secret}
         },
         dns: {
             servers: [

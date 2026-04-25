@@ -13,6 +13,21 @@ FLOWVPN_TMP="/tmp/flowvpn"
 
 get_config_val() { jq -r ".$1 // \"$2\"" "$FLOWVPN_CONFIG"; }
 flog() { logger -t flowvpn "$*"; }
+
+# Returns the per-install Clash API secret. Generates one on first call.
+# Stored in /etc/flowvpn/clash_secret (chmod 600).
+_get_clash_secret() {
+    local f=/etc/flowvpn/clash_secret
+    if [ ! -s "$f" ]; then
+        mkdir -p /etc/flowvpn
+        local s=""
+        s=$(head -c 16 /dev/urandom 2>/dev/null | hexdump -v -e '/1 "%02x"' 2>/dev/null)
+        [ -z "$s" ] && s=$(awk 'BEGIN{srand();for(i=0;i<32;i++)printf "%x",int(rand()*16)}')
+        printf '%s' "$s" > "$f"
+        chmod 600 "$f" 2>/dev/null
+    fi
+    cat "$f"
+}
 # Atomic config write — validates JSON before overwriting
 save_config() {
     local data="$1"
@@ -173,10 +188,11 @@ cmd_status() {
         --argjson auto_start "$([ "$(get_config_val auto_start true)" = "true" ] && echo true || echo false)" \
         --argjson device_rules "$device_rules" \
         --argjson last_switch "$([ -f "$FLOWVPN_TMP/last_switch.json" ] && cat "$FLOWVPN_TMP/last_switch.json" || echo null)" \
+        --arg clash_secret "$(_get_clash_secret)" \
         '{running:$running, server:$server, uptime:$uptime, selected:$selected,
           servers:$servers, subscription_url:$sub_url, vpn_ip:$vpn_ip, mode:$mode,
           devices:$devices, auto_start:$auto_start, device_rules:$device_rules,
-          last_switch:$last_switch}'
+          last_switch:$last_switch, clash_secret:$clash_secret}'
 }
 
 # ============================================================
@@ -604,7 +620,25 @@ _record_switch() {
 
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=2 fail_count=0 tick=0
-    trap 'flog "Watchdog stopped"; exit 0' TERM INT
+
+    # Single-instance lockfile. Stale lock from a dead process is ignored.
+    # Without this, two watchdogs racing on the same probe port (1081) would
+    # silently fail probes and trigger spurious failovers.
+    local lock="$FLOWVPN_TMP/watchdog.lock"
+    if [ -f "$lock" ]; then
+        local old_pid=$(cat "$lock" 2>/dev/null)
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            flog "Watchdog: another instance is running (pid $old_pid), exiting"
+            return 0
+        fi
+    fi
+    mkdir -p "$FLOWVPN_TMP"
+    echo $$ > "$lock"
+    trap 'rm -f "$lock"; flog "Watchdog stopped"; exit 0' TERM INT EXIT
+
+    # Unique probe port per-process — survives concurrent set-server probes
+    # and other ad-hoc xray runs that might collide on a fixed port.
+    local probe_port=$((1082 + $$ % 100))
 
     while true; do
         sleep "$interval"
@@ -647,15 +681,16 @@ cmd_watchdog() {
                     continue
                 fi
 
-                # Quick test this server via a temporary probe xray
+                # Quick test this server via a temporary probe xray on a unique port
                 generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray_test.json"
-                jq '.inbounds=[{tag:"t",port:1081,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+                jq --argjson p "$probe_port" \
+                    '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
                     "$FLOWVPN_TMP/xray_test.json" > "$FLOWVPN_TMP/xray_probe.json"
                 /usr/bin/xray run -config "$FLOWVPN_TMP/xray_probe.json" >/dev/null 2>&1 &
                 local probe_pid=$!
                 sleep 3
 
-                local test_ip=$(curl -s --socks5-hostname 127.0.0.1:1081 --max-time 5 https://api.ipify.org 2>/dev/null)
+                local test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
                 kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null
                 rm -f "$FLOWVPN_TMP/xray_test.json" "$FLOWVPN_TMP/xray_probe.json"
 
@@ -665,6 +700,9 @@ cmd_watchdog() {
                     local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
                     save_config "$tmp"
                     cmd_restart >/dev/null 2>&1
+                    # Give the new server time to stabilize before next probe.
+                    # Without this, a flaky network triggers cascading failovers.
+                    sleep $((interval * 3))
                     break
                 fi
             done
@@ -791,11 +829,21 @@ cmd_backup() {
 }
 
 cmd_restore() {
-    local data="$1"
+    local data
+    if [ -n "$1" ]; then
+        data="$1"
+    else
+        data=$(cat)
+    fi
     [ -z "$data" ] && { echo '{"error":"no data"}'; return 1; }
-    echo "$data" | jq -r '.config' > "$FLOWVPN_CONFIG"
-    echo "$data" | jq -r '.direct_domains // ""' > /etc/flowvpn/direct_domains.txt
-    echo "$data" | jq -r '.vpn_domains // ""' > /etc/flowvpn/vpn_domains.txt
+    # Validate JSON structure before applying — prevents writing garbage to config
+    if ! printf '%s' "$data" | jq -e '.config' >/dev/null 2>&1; then
+        echo '{"error":"invalid backup format"}'; return 1
+    fi
+    # printf '%s' (not echo) — avoids ash interpreting \n,\t in JSON string values
+    printf '%s' "$data" | jq -r '.config' > "$FLOWVPN_CONFIG"
+    printf '%s' "$data" | jq -r '.direct_domains // ""' > /etc/flowvpn/direct_domains.txt
+    printf '%s' "$data" | jq -r '.vpn_domains // ""' > /etc/flowvpn/vpn_domains.txt
     echo '{"status":"restored"}'
 }
 
@@ -803,9 +851,24 @@ cmd_restore() {
 # Per-device routing
 # ============================================================
 
+_validate_ipv4() {
+    # Returns 0 if $1 is a valid dotted-quad with octets 0-255, else 1.
+    local ip="$1"
+    case "$ip" in *[!0-9.]*|*..*|.*|*.) return 1;; esac
+    local IFS=.; set -- $ip; unset IFS
+    [ $# -eq 4 ] || return 1
+    for o in "$@"; do
+        case "$o" in ''|*[!0-9]*) return 1;; esac
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+    done
+    return 0
+}
+
 cmd_set_device_route() {
     local ip="$1" route="$2"
     [ -z "$ip" ] || [ -z "$route" ] && { echo '{"error":"need ip and route (vpn/direct)"}'; return 1; }
+    _validate_ipv4 "$ip" || { echo '{"error":"invalid ip"}'; return 1; }
+    case "$route" in vpn|direct) ;; *) echo '{"error":"route must be vpn or direct"}'; return 1;; esac
     local tmp=$(jq --arg ip "$ip" --arg r "$route" \
         '.device_rules[$ip] = $r' "$FLOWVPN_CONFIG")
     save_config "$tmp"
@@ -820,6 +883,7 @@ cmd_set_device_route() {
 cmd_remove_device_route() {
     local ip="$1"
     [ -z "$ip" ] && { echo '{"error":"need ip"}'; return 1; }
+    _validate_ipv4 "$ip" || { echo '{"error":"invalid ip"}'; return 1; }
     local tmp=$(jq --arg ip "$ip" 'del(.device_rules[$ip])' "$FLOWVPN_CONFIG")
     save_config "$tmp"
     if is_singbox_running; then
@@ -929,7 +993,7 @@ cmd_healthcheck() {
     done
 
     # 9. Rule-sets: query live clash API (reliable after log rotation)
-    local rules_json=$(curl -s --max-time 3 -H 'Authorization: Bearer flowvpn' http://127.0.0.1:9090/rules 2>/dev/null)
+    local rules_json=$(curl -s --max-time 3 -H "Authorization: Bearer $(_get_clash_secret)" http://127.0.0.1:9090/rules 2>/dev/null)
     if echo "$rules_json" | grep -q "geosite-ru"; then
         _hc "geosite-ru" "ok" "Активен"
     else
