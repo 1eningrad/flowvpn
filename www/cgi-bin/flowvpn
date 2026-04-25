@@ -30,7 +30,7 @@ unset IFS
 [ -n "$index" ]    && case "$index"    in ''|*[!0-9]*)                 _bad index;;  esac
 [ -n "$lines" ]    && case "$lines"    in *[!0-9]*)                    _bad lines;;  esac
 [ -n "$mode" ]     && case "$mode"     in *[!a-zA-Z0-9_-]*)            _bad mode;;   esac
-[ -n "$list" ]     && case "$list"     in direct|blocklist) ;; *)      _bad list;;   esac
+[ -n "$list" ]     && case "$list"     in direct|vpn) ;; *)            _bad list;;   esac
 [ -n "$route" ]    && case "$route"    in vpn|direct) ;; *)            _bad route;;  esac
 [ -n "$filter" ]   && case "$filter"   in *[!a-zA-Z]*)                 _bad filter;; esac
 [ -n "$key" ]      && case "$key"      in *[!a-zA-Z0-9_]*)             _bad key;;    esac
