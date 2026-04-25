@@ -214,7 +214,13 @@ generate_singbox_config() {
     local clash_secret
     clash_secret=$(_get_clash_secret)
 
-    # Build full config
+    # Build full config.
+    # Note on default_domain_resolver: sing-box 1.12+ requires an explicit
+    # DNS resolver for outbound dial (else logs WARN, 1.14 refuses to start).
+    # We point it at dns-direct (1.1.1.1 udp via direct outbound) — outbounds
+    # mostly dial pre-resolved IPs anyway (subscription has host IPs, sing-box
+    # DNS rules resolve domains before dial), so this matters mainly for
+    # internals and remote rule_set fetches over the "direct" path.
     jq -n \
         --argjson rules "$rules" \
         --argjson dns_rules "$dns_rules" \
@@ -247,6 +253,7 @@ generate_singbox_config() {
             {type: "socks", tag: "default", server: "127.0.0.1", server_port: $xray_port, version: "5"}
         ],
         route: {
+            default_domain_resolver: "dns-direct",
             default_mark: 32768,
             rules: $rules,
             rule_set: [
