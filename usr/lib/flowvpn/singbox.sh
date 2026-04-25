@@ -118,8 +118,37 @@ RUEOF
 }
 
 _fetch_blocklist_domains() {
-    curl -s --max-time 15 -o "$SR_RULES_DIR/domains.list" \
-        "https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/main/rules/domains_community.list"
+    # Source choice: a curated "actually-needs-bypass" list works better for
+    # Russia than dumping the full RKN registry — RKN includes lots of
+    # domains (gambling, malware, phishing) that no one needs unblocked,
+    # and a million-entry rule-set bogs down sing-box on an embedded router.
+    #
+    # Default = itdoginfo/allow-domains (~1.2k entries, hand-curated for
+    # the services people actually want: YouTube, X, ChatGPT, Discord, etc.)
+    # Fallback = 1andrevich/Re-filter-lists (~80k, more comprehensive but
+    # still without registry junk) when blocklist_source=full.
+    local source
+    source=$(get_config_val blocklist_source "curated")
+    local url
+    case "$source" in
+        full) url="https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/domains_all.lst" ;;
+        *)    url="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst" ;;
+    esac
+
+    # These lists ship as plain domains, one per line (no DOMAIN-SUFFIX prefix
+    # like Shadowrocket lists). Wrap each line in the SR format that
+    # convert_sr_to_singbox_rule already understands.
+    curl -s --max-time 30 "$url" | \
+        awk 'NF && !/^#/ && !/^!/ {gsub(/[[:space:]]+/, "", $0); if(length($0)) print "DOMAIN-SUFFIX," $0}' \
+        > "$SR_RULES_DIR/domains.list"
+
+    local cnt=$(wc -l < "$SR_RULES_DIR/domains.list" 2>/dev/null)
+    [ -z "$cnt" ] || [ "$cnt" -lt 50 ] && \
+        flog "WARNING: blocklist source $source returned only $cnt entries — check network"
+
+    # Telegram + Discord lists supplement domain-based routing for these
+    # specific apps (their domain routing alone is unreliable due to
+    # CDN sharding). Both are well-maintained.
     curl -s --max-time 15 -o "$SR_RULES_DIR/telegram.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Telegram/Telegram.list"
     curl -s --max-time 15 -o "$SR_RULES_DIR/discord.list" \
@@ -313,21 +342,38 @@ _build_blocklist_rules() {
     [ -f "$SR_RULES_DIR/meta_ips.list" ] && meta_ips_rule=$(convert_ip_list "$SR_RULES_DIR/meta_ips.list")
     [ -f "$SR_RULES_DIR/telegram_ips.list" ] && telegram_ips_rule=$(convert_ip_list "$SR_RULES_DIR/telegram_ips.list")
 
+    # Custom VPN domains added via UI ("Принудительно через VPN" tab).
+    # In blocklist mode these are critical: the curated source-list misses
+    # services like Gemini/Perplexity/HuggingFace, so users must be able to
+    # extend it. Built into the same JSON shape as the other rules so the
+    # forwarding loop below picks it up.
+    local custom_vpn_rule=""
+    if [ -f "$CUSTOM_VPN" ]; then
+        local cv_suffixes=""
+        while IFS= read -r line; do
+            line="${line%$'\r'}"
+            case "$line" in "#"*|"") continue ;; esac
+            [ -n "$cv_suffixes" ] && cv_suffixes="$cv_suffixes,"
+            cv_suffixes="$cv_suffixes\"$line\""
+        done < "$CUSTOM_VPN"
+        [ -n "$cv_suffixes" ] && custom_vpn_rule="{\"domain_suffix\":[$cv_suffixes]}"
+    fi
+
     rules="[{\"action\":\"sniff\",\"timeout\":\"300ms\"}"
     rules="$rules,{\"type\":\"logical\",\"mode\":\"or\",\"rules\":[{\"protocol\":\"dns\"},{\"port\":[53]}],\"action\":\"hijack-dns\"}"
     rules="$rules,{\"port\":[853],\"action\":\"reject\"}"
     rules="$rules,{\"network\":[\"udp\"],\"port\":[443],\"action\":\"reject\"}"
 
-    for rule in "$domains_rule" "$telegram_rule" "$discord_rule" "$meta_ips_rule" "$telegram_ips_rule"; do
+    for rule in "$custom_vpn_rule" "$domains_rule" "$telegram_rule" "$discord_rule" "$meta_ips_rule" "$telegram_ips_rule"; do
         [ -z "$rule" ] && continue
         rules="$rules,$(echo "$rule" | jq '. + {outbound:"default"}')"
     done
     rules="$rules]"
 
-    # DNS rules: blocked domains → dns-proxy
+    # DNS rules: blocked + custom_vpn domains → dns-proxy (resolve through VPN)
     dns_rules="["
     local first="1"
-    for rule in "$domains_rule" "$telegram_rule" "$discord_rule"; do
+    for rule in "$custom_vpn_rule" "$domains_rule" "$telegram_rule" "$discord_rule"; do
         [ -z "$rule" ] && continue
         local dns_rule
         dns_rule=$(echo "$rule" | jq '{}
