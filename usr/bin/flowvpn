@@ -291,6 +291,53 @@ cmd_set_server() {
     }
 }
 
+# Pre-flight: spin up a temp xray bound to an unused port and verify the
+# target server actually answers, before we tear down the running VPN.
+# Returns: {"status":"ok","ip":"...","latency_ms":N} on success
+#          {"error":"..."} on failure (production xray/sing-box untouched)
+cmd_probe_server() {
+    local idx="$1"
+    [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total
+    total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    [ -x /usr/bin/xray ] || { echo '{"error":"xray binary missing"}'; return 1; }
+
+    local probe_port=$((1082 + $$ % 100))
+    local test_cfg="$FLOWVPN_TMP/xray_test.json"
+    local probe_cfg="$FLOWVPN_TMP/xray_probe.json"
+    # Cleanup on any exit path — Ctrl+C from CGI, error in jq, killed probe.
+    trap 'kill $probe_pid 2>/dev/null; rm -f "$test_cfg" "$probe_cfg"' EXIT INT TERM
+
+    generate_xray_config "$FLOWVPN_TMP/servers.json" "$idx" "$test_cfg"
+    [ -s "$test_cfg" ] || { echo '{"error":"failed to generate xray config"}'; return 1; }
+    jq --argjson p "$probe_port" \
+        '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+        "$test_cfg" > "$probe_cfg"
+
+    /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
+    local probe_pid=$!
+    sleep 2  # let xray bind + handshake
+
+    local t0 t1 elapsed test_ip
+    t0=$(date +%s%3N 2>/dev/null)
+    test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
+    t1=$(date +%s%3N 2>/dev/null)
+    elapsed=$((t1 - t0))
+    [ "$elapsed" -lt 0 ] && elapsed=0
+
+    if [ -n "$test_ip" ]; then
+        local name
+        name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
+        jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" \
+            '{status:"ok", ip:$ip, server:$name, latency_ms:$ms}'
+    else
+        echo '{"error":"server unreachable"}'
+        return 1
+    fi
+}
+
 cmd_update() {
     local count
     count=$(update_subscription "$FLOWVPN_CONFIG")
@@ -1188,6 +1235,7 @@ case "$1" in
     restart)        cmd_restart ;;
     status)         cmd_status ;;
     set-server)     cmd_set_server "$2" ;;
+    probe-server)   cmd_probe_server "$2" ;;
     update)         cmd_update ;;
     ping)           cmd_ping ;;
     set-mode)       cmd_set_mode "$2" ;;
