@@ -251,10 +251,14 @@ cmd_status() {
     local device_count=0
     [ -f /tmp/dhcp.leases ] && device_count=$(wc -l < /tmp/dhcp.leases)
 
+    # Read both via jq so a corrupt/half-written file (truncated by power loss
+    # on /tmp) doesn't make --argjson choke and break the entire status response.
     local last_switch='null'
-    [ -f "$FLOWVPN_TMP/last_switch.json" ] && last_switch=$(cat "$FLOWVPN_TMP/last_switch.json")
+    [ -f "$FLOWVPN_TMP/last_switch.json" ] && \
+        last_switch=$(jq '.' "$FLOWVPN_TMP/last_switch.json" 2>/dev/null || echo null)
     local last_update='null'
-    [ -f "$FLOWVPN_TMP/last_update.json" ] && last_update=$(cat "$FLOWVPN_TMP/last_update.json")
+    [ -f "$FLOWVPN_TMP/last_update.json" ] && \
+        last_update=$(jq '.' "$FLOWVPN_TMP/last_update.json" 2>/dev/null || echo null)
 
     jq -n \
         --slurpfile cfg "$FLOWVPN_CONFIG" \
@@ -500,24 +504,46 @@ EOF
         return 0
     fi
 
-    local tmp
-    tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-    save_config "$tmp"
-    if is_xray_running; then
-        if ! cmd_restart >/dev/null 2>&1; then
-            flog "Auto-select: restart failed — rolling back to idx=$cur"
-            tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-            save_config "$tmp"
-            cmd_restart >/dev/null 2>&1
+    # Whole switch + state stamp under one op-lock — prevents watchdog
+    # auto_eval racing on config and auto_state. Subshell exit code:
+    # 0 = ok, 1 = lock contention, 2 = cmd_restart failure (rolled back).
+    mkdir -p "$FLOWVPN_TMP"
+    local sf="$FLOWVPN_TMP/auto_state.json"
+    local oplock="$FLOWVPN_TMP/auto.lock"
+    (
+        flock -w 5 -x 200 || exit 1
+        local tmp
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+        save_config "$tmp"
+        if is_xray_running; then
+            if ! cmd_restart >/dev/null 2>&1; then
+                tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+                save_config "$tmp"
+                cmd_restart >/dev/null 2>&1
+                exit 2
+            fi
+        fi
+        [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
+        local now=$(date +%s)
+        jq --argjson t "$now" '.last_eval = $t | .last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+    ) 200>"$oplock"
+    local rc=$?
+    case "$rc" in
+        0) ;;
+        1)
+            jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"another auto operation in progress", server:$n, attempts:$att}'
+            return 1
+            ;;
+        2)
+            flog "Auto-select: restart failed — rolled back to idx=$cur"
             jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"restart failed", server:$n, attempts:$att}'
             return 1
-        fi
-    fi
-    # Stamp the auto-state file so periodic eval honours its cooldown.
-    local sf="$FLOWVPN_TMP/auto_state.json" now
-    now=$(date +%s)
-    [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
-    jq --argjson t "$now" '.last_eval = $t | .last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+            ;;
+        *)
+            jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"unexpected", server:$n, attempts:$att}'
+            return 1
+            ;;
+    esac
 
     jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
         '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true, attempts:$att}'
@@ -531,101 +557,121 @@ cmd_auto_eval() {
     [ -f "$FLOWVPN_TMP/servers.json" ] || return 1
     is_xray_running || return 0   # not running → not our job, watchdog handles
 
+    mkdir -p "$FLOWVPN_TMP"
     local sf="$FLOWVPN_TMP/auto_state.json"
-    [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
+    local oplock="$FLOWVPN_TMP/auto.lock"
 
-    local now last_eval last_switch
-    now=$(date +%s)
-    last_eval=$(jq -r '.last_eval // 0' "$sf")
-    last_switch=$(jq -r '.last_switch // 0' "$sf")
+    # Whole eval runs under an op-level flock. -n (non-blocking) — if a
+    # user-triggered cmd_auto_select is running, we silently skip this tick
+    # rather than queue up a redundant eval behind it.
+    (
+        flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }
 
-    # Self-rate-limit: at most once per 20 min, even if watchdog calls more often.
-    [ $((now - last_eval)) -lt 1200 ] && return 0
+        [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
 
-    # Update last_eval up-front so a hung eval doesn't hold off the next one
-    # forever; we'll write it again at the very end too.
-    jq --argjson t "$now" '.last_eval = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+        local now last_eval last_switch
+        now=$(date +%s)
+        last_eval=$(jq -r '.last_eval // 0' "$sf")
+        last_switch=$(jq -r '.last_switch // 0' "$sf")
 
-    # Is the current tunnel actually carrying traffic? (test_xray returns the
-    # exit IP via the running socks; empty = dead tunnel.)
-    local current_broken=0
-    [ -z "$(test_xray)" ] && current_broken=1
+        # Self-rate-limit: at most once per 20 min, even if watchdog calls more often.
+        [ $((now - last_eval)) -lt 1200 ] && exit 0
 
-    # Cooldown: if current is fine and we switched < 1h ago, do nothing.
-    if [ "$current_broken" -eq 0 ] && [ $((now - last_switch)) -lt 3600 ]; then
-        return 0
-    fi
+        # Update last_eval up-front so a hung eval doesn't hold off the next one
+        # forever; we'll write it again at the very end too.
+        jq --argjson t "$now" '.last_eval = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
 
-    # Measure RTT for all non-metered servers; remember current's RTT for hysteresis.
-    local total i=0 name host ms current_idx current_rtt=-1 candidates=""
-    total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
-    current_idx=$(get_config_val selected_server 0)
-    while [ "$i" -lt "$total" ]; do
-        name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
-        host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
-        if ! _is_metered_server "$name"; then
-            ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
-            [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
-            if [ "$ms" -gt 0 ] 2>/dev/null; then
-                candidates="$candidates$ms $i\n"
-                [ "$i" = "$current_idx" ] && current_rtt="$ms"
+        # Is the current tunnel actually carrying traffic? (test_xray returns the
+        # exit IP via the running socks; empty = dead tunnel.)
+        local current_broken=0
+        [ -z "$(test_xray)" ] && current_broken=1
+
+        # Cooldown: if current is fine and we switched < 1h ago, do nothing.
+        if [ "$current_broken" -eq 0 ] && [ $((now - last_switch)) -lt 3600 ]; then
+            exit 0
+        fi
+
+        # Measure RTT for all non-metered servers; remember current's RTT for hysteresis.
+        local total i=0 name host ms current_idx current_rtt=-1 candidates=""
+        total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+        current_idx=$(get_config_val selected_server 0)
+        # Bounds-check: subscription may have shrunk while we were on a higher
+        # index. Treat that as broken so we move to a real server.
+        if [ "$current_idx" -ge "$total" ] 2>/dev/null; then
+            flog "Auto-mode: current_idx=$current_idx out of range (total=$total) — treating as broken"
+            current_broken=1
+            current_idx=0
+        fi
+        while [ "$i" -lt "$total" ]; do
+            name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
+            host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+            if ! _is_metered_server "$name"; then
+                ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+                [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+                if [ "$ms" -gt 0 ] 2>/dev/null; then
+                    candidates="$candidates$ms $i\n"
+                    [ "$i" = "$current_idx" ] && current_rtt="$ms"
+                fi
+            fi
+            i=$((i + 1))
+        done
+        [ -z "$candidates" ] && exit 0
+
+        local best_line best_rtt best_idx
+        best_line=$(printf '%b' "$candidates" | sort -n | head -1)
+        best_rtt=$(echo "$best_line" | awk '{print $1}')
+        best_idx=$(echo "$best_line" | awk '{print $2}')
+
+        [ "$best_idx" = "$current_idx" ] && exit 0   # already on best by RTT
+
+        # Hysteresis. Three branches:
+        #   - tunnel dead (test_xray empty)        → switch to anything working
+        #   - current TCP unreachable but VPN ok   → switch to anything reachable
+        #     (don't strand on a host we can't even reach by TCP)
+        #   - both RTTs known                      → 30% OR 50ms improvement
+        local should_switch=0
+        if [ "$current_broken" -eq 1 ]; then
+            should_switch=1
+            flog "Auto-mode: current tunnel dead, looking for any working server"
+        elif [ "$current_rtt" -le 0 ] && [ "$best_rtt" -gt 0 ]; then
+            should_switch=1
+            flog "Auto-mode: current TCP unreachable, switching to best reachable ($best_rtt ms)"
+        elif [ "$current_rtt" -gt 0 ] && [ "$best_rtt" -gt 0 ]; then
+            local rel=$((current_rtt * 7 / 10))     # 30% lower
+            local abs=$((current_rtt - 50))         # 50ms lower
+            if [ "$best_rtt" -lt "$rel" ] || [ "$best_rtt" -lt "$abs" ]; then
+                should_switch=1
+                flog "Auto-mode: $current_rtt ms → $best_rtt ms — switching"
             fi
         fi
-        i=$((i + 1))
-    done
-    [ -z "$candidates" ] && return 0
 
-    local best_line best_rtt best_idx
-    best_line=$(printf '%b' "$candidates" | sort -n | head -1)
-    best_rtt=$(echo "$best_line" | awk '{print $1}')
-    best_idx=$(echo "$best_line" | awk '{print $2}')
+        [ "$should_switch" -eq 0 ] && exit 0
 
-    [ "$best_idx" = "$current_idx" ] && return 0   # already on best by RTT
-
-    # Hysteresis: switch only when improvement is meaningful — either 30%
-    # lower OR 50ms lower (whichever is more permissive). Pure-30% leaves
-    # 200→140 stuck. Pure-50ms ignores 41→17 (a real win for low RTT).
-    # Skip threshold entirely if the current tunnel is dead — any working
-    # server beats nothing.
-    local should_switch=0
-    if [ "$current_broken" -eq 1 ]; then
-        should_switch=1
-        flog "Auto-mode: current tunnel dead, looking for any working server"
-    elif [ "$current_rtt" -gt 0 ] && [ "$best_rtt" -gt 0 ]; then
-        local rel=$((current_rtt * 7 / 10))     # 30% lower
-        local abs=$((current_rtt - 50))         # 50ms lower
-        if [ "$best_rtt" -lt "$rel" ] || [ "$best_rtt" -lt "$abs" ]; then
-            should_switch=1
-            flog "Auto-mode: $current_rtt ms → $best_rtt ms — switching"
+        # Real VLESS probe before committing
+        local probe
+        probe=$(cmd_probe_server "$best_idx" 2>/dev/null)
+        if ! echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+            flog "Auto-mode: best candidate failed VLESS probe — staying"
+            exit 0
         fi
-    fi
 
-    [ "$should_switch" -eq 0 ] && return 0
-
-    # Real VLESS probe before committing
-    local probe
-    probe=$(cmd_probe_server "$best_idx" 2>/dev/null)
-    if ! echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
-        flog "Auto-mode: best candidate failed VLESS probe — staying"
-        return 0
-    fi
-
-    # Commit + restart, with rollback on failure
-    local tmp
-    tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-    save_config "$tmp"
-    if cmd_restart >/dev/null 2>&1; then
-        _record_switch "$current_idx" "$best_idx" "auto"
-        jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
-        local bn
-        bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
-        flog "Auto-mode: switched to $bn"
-    else
-        tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+        # Commit + restart, with rollback on failure
+        local tmp
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
         save_config "$tmp"
-        cmd_restart >/dev/null 2>&1
-        flog "Auto-mode: restart failed, rolled back"
-    fi
+        if cmd_restart >/dev/null 2>&1; then
+            _record_switch "$current_idx" "$best_idx" "auto"
+            jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+            local bn
+            bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
+            flog "Auto-mode: switched to $bn"
+        else
+            tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+            save_config "$tmp"
+            cmd_restart >/dev/null 2>&1
+            flog "Auto-mode: restart failed, rolled back"
+        fi
+    ) 200>"$oplock"
 }
 
 # ============================================================
@@ -1176,25 +1222,30 @@ cmd_get_traffic() {
     # their last-known bytes stay accumulated. Result: cumulative VPN_dl,
     # VPN_ul, DIR_dl, DIR_ul since tracking started (cleared on sing-box
     # restart by start_singbox).
+    #
+    # The whole RMW is wrapped in flock — UI polls every 5s and two open
+    # tabs would otherwise both read the same `seen` snapshot, compute
+    # the same deltas, and double-count traffic.
+    mkdir -p "$FLOWVPN_TMP"
     local state_file="$FLOWVPN_TMP/traffic_state.json"
-    [ -f "$state_file" ] || \
-        printf '%s\n' '{"vpn_dl":0,"vpn_ul":0,"dir_dl":0,"dir_ul":0,"started":0,"seen":{}}' > "$state_file"
+    (
+        flock -x 200
+        [ -f "$state_file" ] || \
+            printf '%s\n' '{"vpn_dl":0,"vpn_ul":0,"dir_dl":0,"dir_ul":0,"started":0,"seen":{}}' > "$state_file"
 
-    local conns secret
-    secret=$(_get_clash_secret)
-    conns=$(curl -s --max-time 3 -H "Authorization: Bearer $secret" \
-        http://127.0.0.1:9090/connections 2>/dev/null)
+        local conns secret
+        secret=$(_get_clash_secret)
+        conns=$(curl -s --max-time 3 -H "Authorization: Bearer $secret" \
+            http://127.0.0.1:9090/connections 2>/dev/null)
 
-    if [ -z "$conns" ] || ! echo "$conns" | jq -e . >/dev/null 2>&1; then
-        # API unreachable (sing-box down?). Return last-known state with
-        # zeros for the live fields so UI can degrade gracefully.
-        jq '. + {total_dl:0, total_ul:0, vpn_active:0, direct_active:0,
-                 vpn_conns:0, direct_conns:0, api_ok:false} | del(.seen)' "$state_file"
-        return
-    fi
+        if [ -z "$conns" ] || ! echo "$conns" | jq -e . >/dev/null 2>&1; then
+            jq '. + {total_dl:0, total_ul:0, vpn_active:0, direct_active:0,
+                     vpn_conns:0, direct_conns:0, api_ok:false} | del(.seen)' "$state_file"
+            return 0
+        fi
 
-    local new_state
-    new_state=$(jq -n \
+        local new_state
+        new_state=$(jq -n \
         --slurpfile state "$state_file" \
         --argjson conns "$conns" '
         ($state[0]) as $s |
@@ -1232,25 +1283,26 @@ cmd_get_traffic() {
         }
     ')
 
-    if [ -n "$new_state" ] && echo "$new_state" | jq -e . >/dev/null 2>&1; then
-        printf '%s\n' "$new_state" > "${state_file}.tmp" && mv "${state_file}.tmp" "$state_file"
-    fi
+        if [ -n "$new_state" ] && echo "$new_state" | jq -e . >/dev/null 2>&1; then
+            printf '%s\n' "$new_state" > "${state_file}.tmp" && mv "${state_file}.tmp" "$state_file"
+        fi
 
-    # Public response — strip the internal seen{} and add live fields.
-    cat "$state_file" | jq \
-        --argjson conns "$conns" \
-        '{
-            vpn_dl, vpn_ul, dir_dl, dir_ul, started,
-            total_dl: ($conns.downloadTotal // 0),
-            total_ul: ($conns.uploadTotal // 0),
-            vpn_active: ([$conns.connections[]? | select(.chains | index("direct") | not)
-                                                | (.upload // 0) + (.download // 0)] | add // 0),
-            direct_active: ([$conns.connections[]? | select(.chains | index("direct"))
-                                                | (.upload // 0) + (.download // 0)] | add // 0),
-            vpn_conns: ([$conns.connections[]? | select(.chains | index("direct") | not)] | length),
-            direct_conns: ([$conns.connections[]? | select(.chains | index("direct"))] | length),
-            api_ok: true
-        }'
+        # Public response — strip the internal seen{} and add live fields.
+        cat "$state_file" | jq \
+            --argjson conns "$conns" \
+            '{
+                vpn_dl, vpn_ul, dir_dl, dir_ul, started,
+                total_dl: ($conns.downloadTotal // 0),
+                total_ul: ($conns.uploadTotal // 0),
+                vpn_active: ([$conns.connections[]? | select(.chains | index("direct") | not)
+                                                    | (.upload // 0) + (.download // 0)] | add // 0),
+                direct_active: ([$conns.connections[]? | select(.chains | index("direct"))
+                                                    | (.upload // 0) + (.download // 0)] | add // 0),
+                vpn_conns: ([$conns.connections[]? | select(.chains | index("direct") | not)] | length),
+                direct_conns: ([$conns.connections[]? | select(.chains | index("direct"))] | length),
+                api_ok: true
+            }'
+    ) 200>"$state_file.lock"
 }
 
 # ============================================================
@@ -1555,7 +1607,12 @@ cmd_healthcheck() {
         seen_ip=$(echo "$trace" | awk -F= '/^ip=/{print $2;exit}')
         if [ -z "$seen_ip" ]; then
             _hc "IP-leak" "warn" "Не удалось проверить (нет связи через VPN)"
-        elif [ -n "$cur_vpn_ip" ] && [ "$seen_ip" = "$cur_vpn_ip" ]; then
+        elif [ -z "$cur_vpn_ip" ]; then
+            # vpn_ip file may be missing right after a fresh boot before
+            # cmd_start has finished writing it — not a real leak, just
+            # nothing to compare to yet.
+            _hc "IP-leak" "warn" "Нет сохранённого VPN IP (видно $seen_ip)"
+        elif [ "$seen_ip" = "$cur_vpn_ip" ]; then
             _hc "IP-leak" "ok" "Клиенты выходят через $seen_ip (VPN)"
         else
             _hc "IP-leak" "error" "Клиенты выходят через $seen_ip — VPN IP $cur_vpn_ip не совпадает"
