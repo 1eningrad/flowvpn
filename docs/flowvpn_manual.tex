@@ -1,0 +1,432 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setdefaultlanguage{russian}
+\setotherlanguage{english}
+\setmainfont[Ligatures=TeX]{STIX Two Text}
+\setmonofont{PT Mono}[Scale=0.92]
+\newfontfamily\cyrillicfont[Ligatures=TeX]{STIX Two Text}
+\newfontfamily\cyrillicfonttt{PT Mono}[Scale=0.92]
+% STIX Two Text doesn't have all symbols — fall back to system font
+% for arrows and box-drawing chars used in architecture diagrams.
+\usepackage{newunicodechar}
+\newfontfamily\fallbackfont{Apple Symbols}
+\newunicodechar{→}{{\fallbackfont →}}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{titling}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+
+\definecolor{accent}{HTML}{7c3aed}
+\definecolor{ok}{HTML}{10b981}
+\definecolor{warn}{HTML}{f59e0b}
+\definecolor{err}{HTML}{ef4444}
+\definecolor{codecomment}{HTML}{8b8b95}
+\definecolor{codecmd}{HTML}{c2410c}
+\definecolor{codestr}{HTML}{0369a1}
+\definecolor{boxbg}{HTML}{f5f3ff}
+\definecolor{boxborder}{HTML}{c4b5fd}
+
+\hypersetup{
+  colorlinks=false,
+  pdftitle={FlowVPN — Руководство пользователя},
+  pdfauthor={FlowVPN},
+  pdfsubject={Установка и настройка FlowVPN на OpenWrt},
+}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+\titlespacing*{\section}{0pt}{1.5em}{0.6em}
+\titlespacing*{\subsection}{0pt}{1.0em}{0.4em}
+
+\setlist[itemize]{leftmargin=*,topsep=2pt,itemsep=2pt}
+\setlist[enumerate]{leftmargin=*,topsep=2pt,itemsep=2pt}
+
+\lstdefinelanguage{shell}{
+  morekeywords={flowvpn,uci,opkg,nft,ip,jq,ssh,curl,cat,chmod,sleep,grep,tail,head,wc,for,do,done,killall},
+  morecomment=[l]\#,
+  morestring=[b]",
+  morestring=[b]',
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codecmd}\bfseries,
+  commentstyle=\color{codecomment}\itshape,
+  stringstyle=\color{codestr},
+  breaklines=true,
+  showstringspaces=false,
+  keepspaces=true,
+  columns=fullflexible,
+  frame=none,
+  xleftmargin=0pt,
+  aboveskip=4pt,
+  belowskip=4pt,
+  extendedchars=true,
+  inputencoding=utf8,
+}
+\lstset{language=shell}
+
+\newtcolorbox{notebox}{
+  colback=boxbg,
+  colframe=boxborder,
+  boxrule=0.6pt,
+  arc=3pt,
+  left=10pt,right=10pt,top=6pt,bottom=6pt,
+  fontupper=\small
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\fancyhead[L]{\small\color{gray}FlowVPN}
+\fancyhead[R]{\small\color{gray}Руководство пользователя}
+\renewcommand{\headrulewidth}{0pt}
+
+\title{\vspace{2cm}\Huge\textbf{FlowVPN}\\[0.4em]\large\mdseries Руководство по установке и настройке}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\vspace{1cm}
+
+\begin{center}
+\small Лёгкий VPN-менеджер для OpenWrt \\
+VLESS+XHTTP+Reality · sing-box tproxy · Веб-интерфейс
+\end{center}
+
+\vspace{2cm}
+\tableofcontents
+\thispagestyle{empty}
+\newpage
+
+\section{Введение}
+
+FlowVPN направляет трафик домашней сети через VPN-сервер с поддержкой VLESS+XHTTP+Reality (xray-core). Российские сайты идут напрямую благодаря geosite-ru/geoip-ru. Управление через веб-интерфейс на самом роутере.
+
+\subsection{Основные возможности}
+
+\begin{itemize}
+\item \textbf{Два режима маршрутизации}: всё через VPN (с прямым доступом к RU) или только заблокированные сайты
+\item \textbf{VLESS+XHTTP+Reality} через xray-core 26.4.17+
+\item \textbf{Защита DNS}: перехват DNS, блокировка DoT/QUIC от подмены провайдером
+\item \textbf{Без утечек}: при перезапуске nftables и dnsmasq остаются на месте
+\item \textbf{Авто-переключение}: watchdog заменяет упавший сервер (без тарифицируемых операторов)
+\item \textbf{Маршрутизация по устройствам}: VPN или Direct для каждого клиента
+\item \textbf{Скорость в реальном времени}: через Clash API WebSocket
+\item \textbf{Диагностика}: 25 автоматических проверок
+\item \textbf{Журнал}: три источника (FlowVPN/sing-box/xray) с фильтрами
+\item \textbf{Расписание}: включение и выключение по времени
+\item \textbf{Бэкап}: экспорт и импорт настроек
+\end{itemize}
+
+\section{Установка}
+
+\subsection{Требования}
+
+\begin{itemize}
+\item Роутер с OpenWrt 24.10+ (проверено на Routerich AX3000, aarch64)
+\item 256\,МБ ОЗУ, 40\,МБ свободной flash-памяти
+\item SSH-доступ как root
+\item Подписка на VLESS+Reality серверы (Remnawave или аналог)
+\end{itemize}
+
+\subsection{Зависимости}
+
+\begin{lstlisting}
+opkg update
+opkg install jq coreutils-base64 kmod-nft-tproxy sing-box
+\end{lstlisting}
+
+\begin{notebox}
+\textbf{Внимание:} \texttt{xray} из opkg — устаревший (25.1.30) и содержит критические баги XHTTP. Установите 26.4.17+ вручную с GitHub-релизов \texttt{XTLS/Xray-core}.
+\end{notebox}
+
+\subsection{Установка xray}
+
+\begin{lstlisting}
+# На локальной машине:
+curl -sL "https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-arm64-v8a.zip" -o /tmp/xray.zip
+unzip -o /tmp/xray.zip xray -d /tmp/
+
+# Загрузка на роутер (scp не работает на busybox — используем cat | ssh):
+cat /tmp/xray | ssh root@192.168.1.1 "cat > /usr/bin/xray && chmod +x /usr/bin/xray"
+
+# Проверка:
+ssh root@192.168.1.1 "/usr/bin/xray version"
+\end{lstlisting}
+
+\subsection{Деплой файлов FlowVPN}
+
+\begin{lstlisting}
+ssh root@192.168.1.1 "mkdir -p /usr/lib/flowvpn /www/flowvpn /etc/flowvpn /tmp/flowvpn"
+
+for f in usr/bin/flowvpn usr/lib/flowvpn/parse.sh usr/lib/flowvpn/xray.sh \
+         usr/lib/flowvpn/singbox.sh usr/lib/flowvpn/network.sh \
+         www/cgi-bin/flowvpn www/flowvpn/index.html etc/init.d/flowvpn; do
+    cat "$f" | ssh root@192.168.1.1 "cat > /$f && chmod +x /$f"
+done
+\end{lstlisting}
+
+\subsection{Первый запуск}
+
+\begin{lstlisting}
+# Указать ссылку на подписку
+flowvpn set-config subscription_url "https://example.com/api/sub/xxx"
+
+# Загрузить серверы и правила маршрутизации
+flowvpn update
+
+# Запустить
+flowvpn start
+
+# Включить автозапуск при загрузке
+/etc/init.d/flowvpn enable
+\end{lstlisting}
+
+\section{Веб-интерфейс}
+
+После запуска откройте \texttt{http://192.168.1.1/flowvpn/} в браузере.
+
+\subsection{Вкладки}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Вкладка} & \textbf{Описание} \\
+\midrule
+Маршрут & Главная: переключатель VPN, выбор сервера, режим, скорость \\
+Серверы & Список серверов из подписки, пинг, тарифицируемые помечены «Тариф» \\
+Устройства & Подключённые клиенты, переключение VPN/Direct для каждого \\
+Журнал & Соединения с фильтрами (VPN/Direct/DNS/Ошибки/FlowVPN/xray) \\
+Диагностика & 25 автоматических проверок системы \\
+Настройки & Подписка, расписание, автообновление, бэкап \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Режимы маршрутизации}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Режим} & \textbf{Поведение} \\
+\midrule
+\texttt{all\_vpn} & Всё через VPN, кроме geosite-ru / geoip-ru. По умолчанию. \\
+\texttt{blocklist} & Через VPN только домены из списка Shadowrocket. Остальное — напрямую. \\
+\bottomrule
+\end{tabularx}
+
+\section{Командная строка}
+
+\subsection{Управление}
+
+\begin{lstlisting}
+flowvpn status                   # JSON со статусом, сервером, IP
+flowvpn start                    # Запуск
+flowvpn stop                     # Остановка с полной очисткой nft+dnsmasq
+flowvpn restart                  # Soft restart — без утечек DNS
+flowvpn update                   # Обновить подписку и правила
+\end{lstlisting}
+
+\subsection{Серверы и режим}
+
+\begin{lstlisting}
+flowvpn set-server 0             # Выбрать сервер по индексу
+flowvpn set-mode all_vpn         # Режим маршрутизации
+flowvpn set-mode blocklist
+flowvpn ping                     # Пинг всех серверов
+\end{lstlisting}
+
+\subsection{Домены}
+
+\begin{lstlisting}
+flowvpn add-domain youtube.com vpn       # Принудительно через VPN
+flowvpn add-domain rutube.ru direct      # Принудительно напрямую
+flowvpn remove-domain youtube.com vpn
+flowvpn get-domains                      # Список текущих
+\end{lstlisting}
+
+\subsection{Диагностика и журнал}
+
+\begin{lstlisting}
+flowvpn diagnose                 # Быстрая диагностика
+flowvpn healthcheck              # 25 проверок
+flowvpn get-log 100 all          # Журнал
+flowvpn clear-log                # Очистить
+flowvpn system-info              # Версии, RAM, flash, uptime
+\end{lstlisting}
+
+\subsection{Бэкап}
+
+\begin{lstlisting}
+flowvpn backup > flowvpn-backup.json
+cat flowvpn-backup.json | flowvpn restore
+\end{lstlisting}
+
+\section{Архитектура}
+
+\begin{lstlisting}
+Клиент -> dnsmasq(:53) -> sing-box DNS(:5354) -> dns-proxy(VPN) / dns-direct
+       -> nftables tproxy -> sing-box(:2154) -> xray SOCKS(:1080) -> VPN
+                                              -> direct (RU)
+\end{lstlisting}
+
+\subsection{Ключевые порты}
+
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Порт} & \textbf{Процесс} & \textbf{Назначение} \\
+\midrule
+1080 & xray & SOCKS-прокси для sing-box \\
+2154 & sing-box & tproxy inbound \\
+5354 & sing-box & DNS inbound (от dnsmasq) \\
+9090 & sing-box & Clash API + WebSocket трафика \\
+\bottomrule
+\end{tabularx}
+
+\subsection{nftables}
+
+\begin{itemize}
+\item Таблица: \texttt{table ip flowvpn} (\textbf{ip}, не \texttt{inet} — \texttt{tproxy} не работает в \texttt{inet})
+\item Mark \texttt{0x8000} (32768): обход fw4 (\texttt{meta mark \& 0x00008000 accept})
+\item Прерывание: трафик роутера, локальные сети, IP VPN-серверов идут напрямую
+\end{itemize}
+
+\subsection{DNS}
+
+\begin{itemize}
+\item dnsmasq → \texttt{127.0.0.1\#5354} (sing-box DNS)
+\item DNS заблокированных доменов → через VPN (\texttt{tls://1.1.1.1})
+\item DNS остальных → напрямую (\texttt{udp://1.1.1.1})
+\item DoT (порт 853) и QUIC (UDP 443) блокируются — приложения переключаются на TCP
+\end{itemize}
+
+\section{Безопасность}
+
+\subsection{Clash API}
+
+При первом запуске генерируется случайный 32-символьный секрет в \texttt{/etc/flowvpn/clash\_secret} (\texttt{chmod 600}). UI получает его через \texttt{/status} и использует в WebSocket. Раньше был хардкод \texttt{"flowvpn"}.
+
+\subsection{CGI-валидация}
+
+Все параметры от UI проходят валидацию на границе CGI:
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Параметр} & \textbf{Допускается} \\
+\midrule
+\texttt{index} & только цифры \\
+\texttt{domain} & \texttt{[a-zA-Z0-9.*\_-]}, без \texttt{..} и без точки в начале \\
+\texttt{ip} & валидный IPv4 dotted-quad \\
+\texttt{route} & \texttt{vpn} или \texttt{direct} \\
+\texttt{list} & \texttt{direct} или \texttt{blocklist} \\
+\texttt{mode} & \texttt{[a-zA-Z0-9\_-]} \\
+\texttt{on}/\texttt{off} & \texttt{HH:MM} формат \\
+\bottomrule
+\end{tabularx}
+
+POST body ограничен 64\,КБ. Восстановление бэкапа идёт через stdin (не через argv).
+
+\section{Watchdog}
+
+Каждые 20 секунд проверяет VPN-соединение через текущий SOCKS. После 2 фейлов подряд:
+
+\begin{enumerate}
+\item Перебирает следующие серверы из подписки
+\item Пропускает тарифицируемых операторов (МТС, Т2, Билайн, Мегафон) — белые списки потеряют смысл при переключении
+\item Пробует каждого через probe xray на уникальном порту
+\item Первый рабочий — \texttt{soft restart} с новым сервером
+\item Спит \texttt{interval}\,×\,3 для стабилизации, чтобы не вызвать каскадный failover
+\end{enumerate}
+
+Защита от двух экземпляров через лок-файл \texttt{/tmp/flowvpn/watchdog.lock}.
+
+\section{Устранение неполадок}
+
+\subsection{VPN не подключается}
+
+\begin{enumerate}
+\item \texttt{flowvpn diagnose} — должно быть «xray работает» и «VPN IP получен»
+\item \texttt{flowvpn ping} — какой сервер отвечает
+\item \texttt{logread -e flowvpn | tail -20} — последние события
+\end{enumerate}
+
+\subsection{Сайт не открывается через VPN}
+
+\begin{enumerate}
+\item Журнал → проверить идёт ли домен через VPN или Direct
+\item Если Direct, но должен быть VPN: добавить домен в «Принудительно через VPN»
+\item Если VPN, но не работает: попробовать другой сервер
+\end{enumerate}
+
+\subsection{AI пишет «не поддерживается в вашей стране»}
+
+geosite-ru включает \texttt{google.com} → Gemini идёт напрямую с домашнего IP. Решение:
+\begin{lstlisting}
+flowvpn add-domain gemini.google.com vpn
+flowvpn add-domain ai.google.com vpn
+\end{lstlisting}
+
+\subsection{Приложение пишет «нет сети»}
+
+Кэш DNS и соединений. Авиарежим вкл/выкл на телефоне сбрасывает.
+
+\subsection{Всё сломалось — нет интернета}
+
+\begin{lstlisting}
+ssh root@192.168.1.1
+flowvpn stop
+# Если не помогает — экстренное восстановление:
+nft delete table ip flowvpn
+killall xray sing-box
+uci delete dhcp.@dnsmasq[0].server
+uci set dhcp.@dnsmasq[0].noresolv='0'
+uci commit dhcp
+/etc/init.d/dnsmasq restart
+\end{lstlisting}
+
+\section{Ресурсы}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Ресурс} & \textbf{Расход} \\
+\midrule
+RAM & ${\sim}112$\,МБ (xray 64\,МБ + sing-box 46\,МБ) \\
+Flash & ${\sim}33$\,МБ (xray 32{,}5\,МБ + скрипты 112\,КБ) \\
+CPU & ${\sim}0\%$ idle, всплески при handshake \\
+\bottomrule
+\end{tabularx}
+
+\section{Файлы}
+
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Путь} & \textbf{Назначение} \\
+\midrule
+\texttt{/usr/bin/flowvpn} & Главный CLI-скрипт \\
+\texttt{/usr/lib/flowvpn/parse.sh} & Парсер VLESS-подписки \\
+\texttt{/usr/lib/flowvpn/xray.sh} & Генерация xray SOCKS-конфига \\
+\texttt{/usr/lib/flowvpn/singbox.sh} & Генерация sing-box-конфига \\
+\texttt{/usr/lib/flowvpn/network.sh} & nftables tproxy + dnsmasq \\
+\texttt{/www/cgi-bin/flowvpn} & CGI API \\
+\texttt{/www/flowvpn/index.html} & Веб-интерфейс \\
+\texttt{/etc/flowvpn/config.json} & Конфигурация \\
+\texttt{/etc/flowvpn/clash\_secret} & Случайный секрет Clash API \\
+\texttt{/etc/init.d/flowvpn} & Автозапуск \\
+\texttt{/tmp/flowvpn/} & Состояние, логи, кэш \\
+\bottomrule
+\end{tabularx}
+
+\vfill
+\begin{center}
+\small\color{gray}
+GitHub: \url{https://github.com/1eningrad/flowvpn} · MIT License
+\end{center}
+
+\end{document}
