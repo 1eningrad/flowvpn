@@ -513,8 +513,119 @@ EOF
             return 1
         fi
     fi
+    # Stamp the auto-state file so periodic eval honours its cooldown.
+    local sf="$FLOWVPN_TMP/auto_state.json" now
+    now=$(date +%s)
+    [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
+    jq --argjson t "$now" '.last_eval = $t | .last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+
     jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
         '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true, attempts:$att}'
+}
+
+# Periodic re-evaluation invoked by the watchdog. Honours hysteresis so we
+# don't bounce between similar-RTT servers, and a cooldown so even when
+# improvements appear we don't switch more than once per hour (unless the
+# current tunnel is actually broken — then any working candidate is fine).
+cmd_auto_eval() {
+    [ -f "$FLOWVPN_TMP/servers.json" ] || return 1
+    is_xray_running || return 0   # not running → not our job, watchdog handles
+
+    local sf="$FLOWVPN_TMP/auto_state.json"
+    [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
+
+    local now last_eval last_switch
+    now=$(date +%s)
+    last_eval=$(jq -r '.last_eval // 0' "$sf")
+    last_switch=$(jq -r '.last_switch // 0' "$sf")
+
+    # Self-rate-limit: at most once per 20 min, even if watchdog calls more often.
+    [ $((now - last_eval)) -lt 1200 ] && return 0
+
+    # Update last_eval up-front so a hung eval doesn't hold off the next one
+    # forever; we'll write it again at the very end too.
+    jq --argjson t "$now" '.last_eval = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+
+    # Is the current tunnel actually carrying traffic? (test_xray returns the
+    # exit IP via the running socks; empty = dead tunnel.)
+    local current_broken=0
+    [ -z "$(test_xray)" ] && current_broken=1
+
+    # Cooldown: if current is fine and we switched < 1h ago, do nothing.
+    if [ "$current_broken" -eq 0 ] && [ $((now - last_switch)) -lt 3600 ]; then
+        return 0
+    fi
+
+    # Measure RTT for all non-metered servers; remember current's RTT for hysteresis.
+    local total i=0 name host ms current_idx current_rtt=-1 candidates=""
+    total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    current_idx=$(get_config_val selected_server 0)
+    while [ "$i" -lt "$total" ]; do
+        name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
+        host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+        if ! _is_metered_server "$name"; then
+            ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+            [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+            if [ "$ms" -gt 0 ] 2>/dev/null; then
+                candidates="$candidates$ms $i\n"
+                [ "$i" = "$current_idx" ] && current_rtt="$ms"
+            fi
+        fi
+        i=$((i + 1))
+    done
+    [ -z "$candidates" ] && return 0
+
+    local best_line best_rtt best_idx
+    best_line=$(printf '%b' "$candidates" | sort -n | head -1)
+    best_rtt=$(echo "$best_line" | awk '{print $1}')
+    best_idx=$(echo "$best_line" | awk '{print $2}')
+
+    [ "$best_idx" = "$current_idx" ] && return 0   # already on best by RTT
+
+    # Hysteresis: switch only when improvement is meaningful — either 30%
+    # lower OR 50ms lower (whichever is more permissive). Pure-30% leaves
+    # 200→140 stuck. Pure-50ms ignores 41→17 (a real win for low RTT).
+    # Skip threshold entirely if the current tunnel is dead — any working
+    # server beats nothing.
+    local should_switch=0
+    if [ "$current_broken" -eq 1 ]; then
+        should_switch=1
+        flog "Auto-mode: current tunnel dead, looking for any working server"
+    elif [ "$current_rtt" -gt 0 ] && [ "$best_rtt" -gt 0 ]; then
+        local rel=$((current_rtt * 7 / 10))     # 30% lower
+        local abs=$((current_rtt - 50))         # 50ms lower
+        if [ "$best_rtt" -lt "$rel" ] || [ "$best_rtt" -lt "$abs" ]; then
+            should_switch=1
+            flog "Auto-mode: $current_rtt ms → $best_rtt ms — switching"
+        fi
+    fi
+
+    [ "$should_switch" -eq 0 ] && return 0
+
+    # Real VLESS probe before committing
+    local probe
+    probe=$(cmd_probe_server "$best_idx" 2>/dev/null)
+    if ! echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+        flog "Auto-mode: best candidate failed VLESS probe — staying"
+        return 0
+    fi
+
+    # Commit + restart, with rollback on failure
+    local tmp
+    tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+    save_config "$tmp"
+    if cmd_restart >/dev/null 2>&1; then
+        _record_switch "$current_idx" "$best_idx" "auto"
+        jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+        local bn
+        bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
+        flog "Auto-mode: switched to $bn"
+    else
+        tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+        save_config "$tmp"
+        cmd_restart >/dev/null 2>&1
+        flog "Auto-mode: restart failed, rolled back"
+    fi
 }
 
 # ============================================================
@@ -946,6 +1057,16 @@ cmd_watchdog() {
 
         # Rotate logs every ~10 minutes (30 ticks × 20s)
         [ $((tick % 30)) -eq 0 ] && _rotate_log
+
+        # Auto-mode periodic re-evaluation every ~20 minutes (60 ticks).
+        # cmd_auto_eval has its own internal rate-limit and hysteresis,
+        # so it's safe to call this frequently — actual switches happen
+        # at most once per hour and only on meaningful improvement.
+        if [ $((tick % 60)) -eq 0 ]; then
+            local _am
+            _am=$(get_config_val auto_mode false)
+            [ "$_am" = "true" ] && cmd_auto_eval >/dev/null 2>&1
+        fi
 
         # Skip if not running
         is_xray_running || continue
@@ -1500,6 +1621,7 @@ case "$1" in
     update)         cmd_update ;;
     ping)           cmd_ping ;;
     auto-select)    cmd_auto_select ;;
+    auto-eval)      cmd_auto_eval ;;
     set-mode)       cmd_set_mode "$2" ;;
     add-domain)     cmd_add_domain "$2" "$3" ;;
     remove-domain)  cmd_remove_domain "$2" "$3" ;;
