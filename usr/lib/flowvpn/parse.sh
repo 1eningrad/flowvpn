@@ -20,26 +20,26 @@ _b64_pad() {
 
 fetch_subscription() {
     local url="$1" out="$2"
-    # Trim leading/trailing whitespace — users often paste with stray spaces.
     url=$(printf '%s' "$url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 
-    # Whitelist schemes — prevents SSRF (file://, ftp://, gopher://) since the
-    # URL comes from user config and the call runs as root on the router.
     case "$url" in
         https://*|http://*) ;;
         *) logger -t flowvpn "Subscription: rejecting URL with scheme other than http(s)"; return 1 ;;
     esac
 
+    # --dump-header writes response headers to a sidecar file. We use those to
+    # extract subscription metadata (title, quota, expiry, provider announce)
+    # and save it for the UI in /tmp/flowvpn/subscription_meta.json.
+    local hdr_file="/tmp/flowvpn/sub_headers.txt"
+    mkdir -p /tmp/flowvpn
     local raw
-    raw=$(curl -s --max-time 15 --proto '=http,https' "$url") || {
+    raw=$(curl -s --max-time 15 --proto '=http,https' \
+        --dump-header "$hdr_file" "$url") || {
         logger -t flowvpn "Subscription: fetch failed (network/TLS error)"
         return 1
     }
     [ -z "$raw" ] && { logger -t flowvpn "Subscription: empty response from server"; return 1; }
 
-    # Try base64 decode first; if that fails, try with padding; if that fails,
-    # treat the response as already-decoded plain text (some endpoints serve
-    # vless:// lines directly without base64 wrapping).
     if echo "$raw" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
         :
     elif _b64_pad "$raw" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
@@ -48,6 +48,70 @@ fetch_subscription() {
         printf '%s' "$raw" > "$out"
     fi
     [ -s "$out" ] || { logger -t flowvpn "Subscription: decoded body is empty"; return 1; }
+
+    _parse_subscription_headers "$hdr_file"
+}
+
+# Parse Profile-Title / Subscription-Userinfo / Announce / Profile-Update-Interval
+# and write a single JSON to /tmp/flowvpn/subscription_meta.json that cmd_status
+# surfaces and the UI shows on the Settings tab.
+_parse_subscription_headers() {
+    local hdr_file="$1"
+    [ -f "$hdr_file" ] || return 0
+
+    # Header names are case-insensitive — use grep -i and lowercase the value extraction.
+    local title userinfo announce update_interval
+    title=$(grep -i '^profile-title:' "$hdr_file" | head -1 | sed 's/^[Pp]rofile-[Tt]itle:[[:space:]]*//; s/[[:space:]]*$//; s/\r$//')
+    userinfo=$(grep -i '^subscription-userinfo:' "$hdr_file" | head -1 | sed 's/^[Ss]ubscription-[Uu]serinfo:[[:space:]]*//; s/[[:space:]]*$//; s/\r$//')
+    announce=$(grep -i '^announce:' "$hdr_file" | head -1 | sed 's/^[Aa]nnounce:[[:space:]]*//; s/[[:space:]]*$//; s/\r$//')
+    update_interval=$(grep -i '^profile-update-interval:' "$hdr_file" | head -1 | sed 's/^[Pp]rofile-[Uu]pdate-[Ii]nterval:[[:space:]]*//; s/[[:space:]]*$//; s/\r$//')
+
+    # Title may be base64-prefixed in some panels.
+    case "$title" in
+        base64:*) title=$(printf '%s' "${title#base64:}" | base64 -d 2>/dev/null) ;;
+    esac
+
+    # Announce can be plain or "base64:..." — providers like EclipVPN use the latter.
+    local announce_text=""
+    if [ -n "$announce" ]; then
+        case "$announce" in
+            base64:*) announce_text=$(printf '%s' "${announce#base64:}" | base64 -d 2>/dev/null) ;;
+            *)        announce_text="$announce" ;;
+        esac
+    fi
+
+    # Userinfo: "upload=N; download=N; total=N; expire=ts"
+    local upload=0 download=0 total=0 expire=0
+    if [ -n "$userinfo" ]; then
+        upload=$(printf '%s' "$userinfo"   | grep -oE 'upload=[0-9]+'   | cut -d= -f2)
+        download=$(printf '%s' "$userinfo" | grep -oE 'download=[0-9]+' | cut -d= -f2)
+        total=$(printf '%s' "$userinfo"    | grep -oE 'total=[0-9]+'    | cut -d= -f2)
+        expire=$(printf '%s' "$userinfo"   | grep -oE 'expire=[0-9]+'   | cut -d= -f2)
+        [ -z "$upload" ]   && upload=0
+        [ -z "$download" ] && download=0
+        [ -z "$total" ]    && total=0
+        [ -z "$expire" ]   && expire=0
+    fi
+
+    [ -z "$update_interval" ] || ! [ "$update_interval" -gt 0 ] 2>/dev/null && update_interval=0
+
+    jq -n \
+        --arg title "$title" \
+        --arg announce "$announce_text" \
+        --argjson upload "$upload" \
+        --argjson download "$download" \
+        --argjson total "$total" \
+        --argjson expire "$expire" \
+        --argjson update_interval "$update_interval" \
+        --argjson fetched_at "$(date +%s)" \
+        '{
+            title: (if $title == "" then null else $title end),
+            announce: (if $announce == "" then null else $announce end),
+            upload: $upload, download: $download, total: $total, expire: $expire,
+            update_interval_hours: $update_interval,
+            fetched_at: $fetched_at
+        }' > /tmp/flowvpn/subscription_meta.json
+    rm -f "$hdr_file"
 }
 
 # Validate a VLESS URL and emit JSON. Returns non-zero on malformed input
