@@ -268,6 +268,8 @@ generate_singbox_config() {
             auto_detect_interface: true
         }
     }' > "$output"
+    # sing-box config holds the Clash API secret; tighten file mode.
+    chmod 600 "$output" 2>/dev/null
 }
 
 _build_allvpn_rules() {
@@ -406,10 +408,20 @@ start_singbox() {
         logger -t flowvpn "ERROR: /usr/bin/sing-box not found or not executable"
         return 1
     fi
-    # Reset traffic accounting state — connection IDs change across restarts,
-    # and "VPN bytes since session" should mean "since this sing-box came up".
-    rm -f /tmp/flowvpn/traffic_state.json
-    TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/flowvpn >/tmp/flowvpn/singbox.log 2>&1 &
+    # Clear only the per-connection-ID map: sing-box assigns fresh IDs on each
+    # boot, so old entries are dead weight. But keep the cumulative vpn_dl/ul
+    # and dir_dl/ul totals — otherwise every restart (auto-update, set-server,
+    # watchdog failover) wipes the user's running counter. Totals survive
+    # tmpfs rebuilds only across restarts of sing-box, not router reboots.
+    local _ts=/tmp/flowvpn/traffic_state.json
+    if [ -f "$_ts" ]; then
+        jq '.seen = {}' "$_ts" > "$_ts.tmp" 2>/dev/null && mv "$_ts.tmp" "$_ts" || rm -f "$_ts" "$_ts.tmp"
+    fi
+    # Append-mode (>>) is critical: rotation truncates the file, but daemon's
+    # write position keeps moving forward. Without O_APPEND, post-rotate writes
+    # land at the old offset and the kernel fills the gap with NUL bytes —
+    # the log balloons to tens of MB while only a few KB are real data.
+    TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/flowvpn >>/tmp/flowvpn/singbox.log 2>>/tmp/flowvpn/singbox.log &
     echo $! > /tmp/flowvpn/singbox.pid
     local tries=0
     while [ "$tries" -lt 10 ]; do
@@ -421,12 +433,23 @@ start_singbox() {
 }
 
 stop_singbox() {
-    [ -f /tmp/flowvpn/singbox.pid ] || return 0
-    local pid=$(cat /tmp/flowvpn/singbox.pid)
-    kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null
+    local pid=""
+    [ -f /tmp/flowvpn/singbox.pid ] && pid=$(cat /tmp/flowvpn/singbox.pid)
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+    sleep 1
+    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    # Same orphan-sweep as stop_xray — see comment there.
+    for orphan in $(pgrep -f 'sing-box run -c /tmp/flowvpn/singbox.json' 2>/dev/null); do
+        [ "$orphan" = "$pid" ] && continue
+        kill -9 "$orphan" 2>/dev/null
+    done
     rm -f /tmp/flowvpn/singbox.pid
 }
 
 is_singbox_running() {
-    [ -f /tmp/flowvpn/singbox.pid ] && kill -0 "$(cat /tmp/flowvpn/singbox.pid)" 2>/dev/null
+    if [ -f /tmp/flowvpn/singbox.pid ]; then
+        local pid=$(cat /tmp/flowvpn/singbox.pid 2>/dev/null)
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+    fi
+    pgrep -f 'sing-box run -c /tmp/flowvpn/singbox.json' >/dev/null 2>&1
 }

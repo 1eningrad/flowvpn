@@ -82,6 +82,8 @@ generate_xray_config() {
             domainStrategy: "AsIs"
         }
     }' > "$config_file"
+    # xray config holds the live VLESS UUID and Reality keys — credential file.
+    chmod 600 "$config_file" 2>/dev/null
 }
 
 start_xray() {
@@ -90,7 +92,8 @@ start_xray() {
         logger -t flowvpn "ERROR: /usr/bin/xray not found or not executable"
         return 1
     fi
-    /usr/bin/xray run -config "$config_file" >/tmp/flowvpn/xray.log 2>&1 &
+    # Append-mode (>>) — see singbox.sh for rationale (NUL-hole sparse files).
+    /usr/bin/xray run -config "$config_file" >>/tmp/flowvpn/xray.log 2>>/tmp/flowvpn/xray.log &
     echo $! > /tmp/flowvpn/xray.pid
 
     local tries=0
@@ -109,17 +112,31 @@ start_xray() {
 }
 
 stop_xray() {
-    [ -f /tmp/flowvpn/xray.pid ] || return 0
-    local pid
-    pid=$(cat /tmp/flowvpn/xray.pid)
-    kill "$pid" 2>/dev/null
+    local pid=""
+    [ -f /tmp/flowvpn/xray.pid ] && pid=$(cat /tmp/flowvpn/xray.pid)
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null
     sleep 1
-    kill -9 "$pid" 2>/dev/null
+    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    # Sweep orphans — any other xray running with our prod config means a
+    # previous restart raced and left a zombie; if we don't reap it, the
+    # next start_xray spawns a third one and they fight over port 1080.
+    for orphan in $(pgrep -f 'xray run -config /tmp/flowvpn/xray.json' 2>/dev/null); do
+        [ "$orphan" = "$pid" ] && continue
+        kill -9 "$orphan" 2>/dev/null
+    done
     rm -f /tmp/flowvpn/xray.pid
 }
 
 is_xray_running() {
-    [ -f /tmp/flowvpn/xray.pid ] && kill -0 "$(cat /tmp/flowvpn/xray.pid)" 2>/dev/null
+    # Belt and suspenders: pidfile may be stale (PID got reused, or a previous
+    # restart wrote the wrong PID). Fall back to a config-path scan so we
+    # don't trigger a spurious "VPN was killed externally" revival when the
+    # process is actually fine but the pidfile is wrong.
+    if [ -f /tmp/flowvpn/xray.pid ]; then
+        local pid=$(cat /tmp/flowvpn/xray.pid 2>/dev/null)
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+    fi
+    pgrep -f 'xray run -config /tmp/flowvpn/xray.json' >/dev/null 2>&1
 }
 
 test_xray() {
