@@ -32,6 +32,9 @@ fetch_subscription() {
     # and save it for the UI in /tmp/flowvpn/subscription_meta.json.
     local hdr_file="/tmp/flowvpn/sub_headers.txt"
     mkdir -p /tmp/flowvpn
+    # umask 077 — both response body (vless:// URLs with UUIDs) and headers
+    # (Subscription-Userinfo) are sensitive while we're writing them.
+    umask 077
     local raw
     raw=$(curl -s --max-time 15 --proto '=http,https' \
         --dump-header "$hdr_file" "$url") || {
@@ -47,6 +50,7 @@ fetch_subscription() {
     else
         printf '%s' "$raw" > "$out"
     fi
+    chmod 600 "$out" 2>/dev/null
     [ -s "$out" ] || { logger -t flowvpn "Subscription: decoded body is empty"; return 1; }
 
     _parse_subscription_headers "$hdr_file"
@@ -95,7 +99,7 @@ _parse_subscription_headers() {
 
     [ -z "$update_interval" ] || ! [ "$update_interval" -gt 0 ] 2>/dev/null && update_interval=0
 
-    jq -n \
+    ( umask 077; jq -n \
         --arg title "$title" \
         --arg announce "$announce_text" \
         --argjson upload "$upload" \
@@ -110,7 +114,7 @@ _parse_subscription_headers() {
             upload: $upload, download: $download, total: $total, expire: $expire,
             update_interval_hours: $update_interval,
             fetched_at: $fetched_at
-        }' > /tmp/flowvpn/subscription_meta.json
+        }' > /tmp/flowvpn/subscription_meta.json )
     rm -f "$hdr_file"
 }
 
@@ -222,7 +226,10 @@ parse_subscription_file() {
 
     local count
     count=$(echo "$servers" | jq 'length')
-    echo "$servers" | jq '.' > "$output"
+    # umask before writing — servers.json holds VLESS UUIDs and Reality keys
+    # for every server in the subscription. Treat as a credential file.
+    ( umask 077; echo "$servers" | jq '.' > "$output" )
+    chmod 600 "$output" 2>/dev/null
 
     if [ "$count" -eq 0 ]; then
         if [ "$total" -eq 0 ] && [ "$unknown" -eq 0 ]; then

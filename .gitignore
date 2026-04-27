@@ -14,3 +14,5 @@ xray.json
 rules/
 combined.tmp
 .DS_Store
+*.bak
+*.bak.*

@@ -28,11 +28,13 @@ _get_clash_secret() {
     fi
     cat "$f"
 }
-# Atomic config write — validates JSON before overwriting
+# Atomic config write — validates JSON before overwriting.
+# chmod 600 because config.json holds the subscription URL (panel credential).
 save_config() {
     local data="$1"
     printf '%s\n' "$data" > "${FLOWVPN_CONFIG}.tmp"
     if jq '.' "${FLOWVPN_CONFIG}.tmp" >/dev/null 2>&1; then
+        chmod 600 "${FLOWVPN_CONFIG}.tmp" 2>/dev/null
         mv "${FLOWVPN_CONFIG}.tmp" "$FLOWVPN_CONFIG"
     else
         rm -f "${FLOWVPN_CONFIG}.tmp"
@@ -44,6 +46,19 @@ save_config() {
 # ============================================================
 # Core commands
 # ============================================================
+
+# Operation sentinel — set while a user-initiated lifecycle command (start,
+# stop, restart, set-server, set-mode) is in flight. Watchdog defers its
+# revival check while this is held; otherwise watchdog races with cmd_restart's
+# brief stop_xray window and spawns a parallel xray, leading to zombies and
+# port-1080 conflicts.
+_op_begin() {
+    mkdir -p "$FLOWVPN_TMP"
+    echo $$ > "$FLOWVPN_TMP/op.in_progress"
+}
+_op_end() {
+    rm -f "$FLOWVPN_TMP/op.in_progress"
+}
 
 _rotate_log() {
     # Size-based rotation with copytruncate semantics.
@@ -79,6 +94,8 @@ cmd_start() {
         return 1
     fi
     mkdir -p "$FLOWVPN_TMP"
+    _op_begin
+    trap '_op_end' EXIT INT TERM
     _rotate_log
 
     local sub_url iface mode
@@ -168,6 +185,8 @@ cmd_start() {
 }
 
 cmd_stop() {
+    _op_begin
+    trap '_op_end' EXIT INT TERM
     flog "Stopping FlowVPN"
     # Clear intent first — watchdog runs every 20s and would otherwise
     # see processes-down + intent=true and revive the VPN we just stopped.
@@ -183,6 +202,8 @@ cmd_stop() {
 }
 
 cmd_restart() {
+    _op_begin
+    trap '_op_end' EXIT INT TERM
     # Soft restart: keeps nftables rules + dnsmasq redirect in place so
     # that during the process-swap gap, traffic fails closed (no internet
     # for clients) instead of leaking direct (~5s of plaintext DNS + traffic).
@@ -190,6 +211,10 @@ cmd_restart() {
     # "Restart" button. cmd_stop still does the full teardown when the user
     # genuinely wants VPN off.
     if ! is_xray_running && ! is_singbox_running; then
+        # cmd_start has its own _op_begin — clear ours first to avoid
+        # the trap clearing the sentinel mid-operation.
+        _op_end
+        trap - EXIT INT TERM
         cmd_start
         return $?
     fi
@@ -972,118 +997,145 @@ cmd_set_config() {
 }
 
 cmd_diagnose() {
-    local results="[]"
-    _check() {
-        local name="$1" status="$2" detail="$3"
-        results=$(echo "$results" | jq --arg n "$name" --arg s "$status" --arg d "$detail" \
-            '. + [{name:$n, status:$s, detail:$d}]')
-    }
+    # Tab-separated rows (name<TAB>status<TAB>detail) → single jq at end.
+    # Three network probes run in parallel (saves ~10-15s on aarch64).
+    local diag_dir="$FLOWVPN_TMP/diag.$$"
+    mkdir -p "$diag_dir"
+    local rows="$diag_dir/rows"
+    : > "$rows"
+    trap "rm -rf '$diag_dir'" EXIT INT TERM
 
-    # 1. xray process
+    _add() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$rows"; }
+
+    # Kick off network probes in parallel — they dominate total runtime.
     if is_xray_running; then
-        _check "xray-core" "ok" "PID $(cat /tmp/flowvpn/xray.pid), порт 1080"
+        ( curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 https://ifconfig.me 2>/dev/null > "$diag_dir/vpn_ip" ) &
+        ( curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://youtube.com 2>/dev/null > "$diag_dir/yt_code" ) &
+    fi
+    ( curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://yandex.ru 2>/dev/null > "$diag_dir/ya_code" ) &
+
+    # Local checks while probes are in flight.
+
+    # 1. xray
+    if is_xray_running; then
+        _add "xray-core" "ok" "PID $(cat /tmp/flowvpn/xray.pid 2>/dev/null), порт 1080"
     else
-        _check "xray-core" "error" "Не запущен"
+        _add "xray-core" "error" "Не запущен"
     fi
 
-    # 2. sing-box process
+    # 2. sing-box
     if is_singbox_running; then
-        _check "sing-box" "ok" "PID $(cat /tmp/flowvpn/singbox.pid), порт 2154"
+        _add "sing-box" "ok" "PID $(cat /tmp/flowvpn/singbox.pid 2>/dev/null), порт 2154"
     else
-        _check "sing-box" "error" "Не запущен"
+        _add "sing-box" "error" "Не запущен"
     fi
 
     # 3. nftables
     if nft list table ip flowvpn >/dev/null 2>&1; then
         local rule_count=$(nft list table ip flowvpn 2>/dev/null | grep -c "tproxy\|return\|reject")
-        _check "nftables" "ok" "Таблица flowvpn: $rule_count правил"
+        _add "nftables" "ok" "Таблица flowvpn: $rule_count правил"
     else
-        _check "nftables" "error" "Таблица flowvpn не найдена"
+        _add "nftables" "error" "Таблица flowvpn не найдена"
     fi
 
     # 4. ip rule for tproxy
     if ip rule list | grep -q "fwmark 0x1"; then
-        _check "ip-rule" "ok" "fwmark 0x1 → table 100"
+        _add "ip-rule" "ok" "fwmark 0x1 → table 100"
     else
-        _check "ip-rule" "error" "Правило fwmark не найдено"
+        _add "ip-rule" "error" "Правило fwmark не найдено"
     fi
 
     # 5. dnsmasq → sing-box
     local dns_srv=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
     if echo "$dns_srv" | grep -q "5354"; then
-        _check "dns-redirect" "ok" "dnsmasq → sing-box ($dns_srv)"
+        _add "dns-redirect" "ok" "dnsmasq → sing-box ($dns_srv)"
     else
-        _check "dns-redirect" "warn" "dnsmasq не перенаправлен: $dns_srv"
+        _add "dns-redirect" "warn" "dnsmasq не перенаправлен: $dns_srv"
     fi
 
     # 6. DNS resolution
     local dns_test=$(nslookup youtube.com 127.0.0.1 2>&1 | grep -c "Address.*[0-9]")
     if [ "$dns_test" -gt 1 ]; then
-        _check "dns-resolve" "ok" "youtube.com резолвится"
+        _add "dns-resolve" "ok" "youtube.com резолвится"
     else
-        _check "dns-resolve" "error" "youtube.com не резолвится"
+        _add "dns-resolve" "error" "youtube.com не резолвится"
     fi
 
-    # 7. VPN connection (xray SOCKS)
-    if is_xray_running; then
-        local vpn_ip=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 https://ifconfig.me 2>/dev/null)
-        if [ -n "$vpn_ip" ]; then
-            _check "vpn-connection" "ok" "VPN IP: $vpn_ip"
-        else
-            _check "vpn-connection" "error" "Нет ответа через VPN"
-        fi
+    # Wait for the parallel probes before consuming their results.
+    wait
+    local vpn_ip="" yt_code="" ya_code=""
+    [ -f "$diag_dir/vpn_ip" ]  && vpn_ip=$(cat "$diag_dir/vpn_ip" 2>/dev/null)
+    [ -f "$diag_dir/yt_code" ] && yt_code=$(cat "$diag_dir/yt_code" 2>/dev/null)
+    [ -f "$diag_dir/ya_code" ] && ya_code=$(cat "$diag_dir/ya_code" 2>/dev/null)
+
+    # 7. VPN connection
+    if ! is_xray_running; then
+        _add "vpn-connection" "error" "xray не запущен"
+    elif [ -n "$vpn_ip" ]; then
+        _add "vpn-connection" "ok" "VPN IP: $vpn_ip"
     else
-        _check "vpn-connection" "error" "xray не запущен"
+        _add "vpn-connection" "error" "Нет ответа через VPN"
     fi
 
     # 8. Blocked site through VPN
-    if is_xray_running; then
-        local yt_code=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://youtube.com 2>/dev/null)
-        if [ "$yt_code" = "301" ] || [ "$yt_code" = "200" ]; then
-            _check "test-blocked" "ok" "youtube.com: HTTP $yt_code через VPN"
-        else
-            _check "test-blocked" "error" "youtube.com: HTTP $yt_code"
-        fi
+    if ! is_xray_running; then
+        _add "test-blocked" "error" "xray не запущен"
+    elif [ "$yt_code" = "301" ] || [ "$yt_code" = "200" ]; then
+        _add "test-blocked" "ok" "youtube.com: HTTP $yt_code через VPN"
     else
-        _check "test-blocked" "error" "xray не запущен"
+        _add "test-blocked" "error" "youtube.com: HTTP $yt_code"
     fi
 
     # 9. RU site direct
-    local ya_code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://yandex.ru 2>/dev/null)
     if [ "$ya_code" = "302" ] || [ "$ya_code" = "200" ]; then
-        _check "test-direct" "ok" "yandex.ru: HTTP $ya_code напрямую"
+        _add "test-direct" "ok" "yandex.ru: HTTP $ya_code напрямую"
     else
-        _check "test-direct" "warn" "yandex.ru: HTTP $ya_code"
+        _add "test-direct" "warn" "yandex.ru: HTTP $ya_code"
     fi
 
-    # 10. sing-box log errors
-    local err_count=0
-    [ -f "$FLOWVPN_TMP/singbox.log" ] && err_count=$(grep -c "ERROR" "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+    # 10. sing-box log errors — read tail by BYTES, not lines.
+    # `tail -n N` walks the file from the start on busybox, so a 45MB log
+    # blocks for ~100s and overruns uhttpd's 30s network_timeout.
+    # `tail -c N` seeks from the end and is O(1).
+    local err_count=0 last_err=""
+    if [ -f "$FLOWVPN_TMP/singbox.log" ]; then
+        local err_lines=$(tail -c 262144 "$FLOWVPN_TMP/singbox.log" 2>/dev/null | tr -d '\0' | grep "ERROR")
+        if [ -n "$err_lines" ]; then
+            err_count=$(printf '%s\n' "$err_lines" | wc -l)
+            last_err=$(printf '%s\n' "$err_lines" | tail -1 | sed 's/.*\] //')
+        fi
+    fi
     if [ "$err_count" -eq 0 ]; then
-        _check "log-errors" "ok" "Ошибок нет"
+        _add "log-errors" "ok" "Ошибок нет (последние 256KB)"
     else
-        local last_err=$(grep "ERROR" "$FLOWVPN_TMP/singbox.log" | tail -1 | sed 's/.*\] //')
-        _check "log-errors" "warn" "$err_count ошибок. Последняя: $last_err"
+        _add "log-errors" "warn" "$err_count ошибок. Последняя: $last_err"
     fi
 
-    # 11. Log size
-    local log_size=0
-    [ -f "$FLOWVPN_TMP/singbox.log" ] && log_size=$(wc -l < "$FLOWVPN_TMP/singbox.log")
-    if [ "$log_size" -gt 5000 ]; then
-        _check "log-size" "warn" "$log_size строк — лог большой, рекомендуется очистить"
+    # 11. Log size — bytes, not line count.
+    local log_bytes=0 log_mb=0
+    if [ -f "$FLOWVPN_TMP/singbox.log" ]; then
+        log_bytes=$(wc -c < "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+        log_mb=$((log_bytes / 1048576))
+    fi
+    if [ "$log_mb" -ge 10 ]; then
+        _add "log-size" "warn" "${log_mb}MB — лог большой, рекомендуется очистить"
     else
-        _check "log-size" "ok" "$log_size строк"
+        _add "log-size" "ok" "${log_mb}MB"
     fi
 
     # 12. Disk space
     local free_mb=$(df /overlay 2>/dev/null | tail -1 | awk '{print int($4/1024)}')
     if [ "$free_mb" -lt 5 ]; then
-        _check "disk" "error" "Мало места: ${free_mb}MB свободно"
+        _add "disk" "error" "Мало места: ${free_mb}MB свободно"
     else
-        _check "disk" "ok" "${free_mb}MB свободно на /overlay"
+        _add "disk" "ok" "${free_mb}MB свободно на /overlay"
     fi
 
-    echo "$results" | jq '.'
+    # Convert TSV → JSON in a single jq invocation.
+    jq -R -s '
+        split("\n") | map(select(length > 0)) | map(split("\t")) |
+        map({name:.[0], status:.[1], detail:.[2]})
+    ' < "$rows"
 }
 
 # ============================================================
@@ -1115,7 +1167,7 @@ _record_switch() {
 }
 
 cmd_watchdog() {
-    local interval="${1:-20}" max_fails=2 fail_count=0 tick=0 silent_fails=0
+    local interval="${1:-20}" max_fails=3 fail_count=0 tick=0 silent_fails=0
 
     # Single-instance lockfile. Stale lock from a dead process is ignored.
     # Without this, two watchdogs racing on the same probe port (1081) would
@@ -1160,6 +1212,21 @@ cmd_watchdog() {
         # blocked, server keys rotated): if we already tried recently and
         # still no xray, wait — don't pile up zombie children.
         if ! is_xray_running || ! is_singbox_running; then
+            # Defer revival if a user-initiated lifecycle command is in
+            # flight. cmd_restart's brief stop_xray window otherwise tricks
+            # us into revival, which then races the rest of cmd_restart and
+            # spawns a parallel xray.
+            local op_marker="$FLOWVPN_TMP/op.in_progress"
+            if [ -f "$op_marker" ]; then
+                local op_pid=$(cat "$op_marker" 2>/dev/null)
+                if [ -n "$op_pid" ] && kill -0 "$op_pid" 2>/dev/null; then
+                    continue
+                fi
+                # Stale marker — owning process is dead, fall through and
+                # remove on the way out so we don't get stuck deferring forever.
+                rm -f "$op_marker"
+            fi
+
             local _intent
             _intent=$(get_config_val running_intent false)
             if [ "$_intent" = "true" ]; then
@@ -1184,9 +1251,19 @@ cmd_watchdog() {
         # Skip if not running (intent=false — user wanted VPN off)
         is_xray_running || continue
 
-        # Test VPN connectivity via current SOCKS
-        local ok=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 4 -o /dev/null -w "%{http_code}" https://cp.cloudflare.com/generate_204 2>/dev/null)
-        if [ "$ok" = "204" ] || [ "$ok" = "200" ]; then
+        # Test VPN connectivity via current SOCKS. 8s timeout — 4s was too
+        # tight for SOCKS+VLESS+Reality+TLS+HTTP under load and produced
+        # spurious failovers when transient jitter happened to line up two
+        # ticks in a row (real-world: 22 isolated failures across 5h, then
+        # one back-to-back pair → false-positive switch from a healthy server).
+        # Capture both http_code and curl's exit code so failures can be
+        # explained ("timeout" vs "DNS" vs "connect refused"), not just counted.
+        local probe_out probe_rc probe_code probe_time
+        probe_out=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code} %{time_total}" https://cp.cloudflare.com/generate_204 2>/dev/null)
+        probe_rc=$?
+        probe_code="${probe_out%% *}"
+        probe_time="${probe_out##* }"
+        if [ "$probe_code" = "204" ] || [ "$probe_code" = "200" ]; then
             # If we just recovered from a long outage, log it once.
             [ "$silent_fails" -gt 0 ] && logger -t flowvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
             fail_count=0
@@ -1194,19 +1271,34 @@ cmd_watchdog() {
             continue
         fi
 
+        # Map curl exit code to a human reason. Codes per curl(1):
+        # 6=DNS, 7=connect, 28=timeout, 35=TLS handshake, 52=empty reply,
+        # 56=recv reset, 92=HTTP/2 stream error.
+        local why
+        case "$probe_rc" in
+            0)  why="HTTP $probe_code за ${probe_time}с" ;;
+            6)  why="DNS не разрешился" ;;
+            7)  why="прокси не отвечает (xray:1080)" ;;
+            28) why="таймаут >8с (HTTP $probe_code)" ;;
+            35) why="ошибка TLS handshake" ;;
+            52) why="пустой ответ от сервера" ;;
+            56) why="разрыв соединения" ;;
+            *)  why="curl rc=$probe_rc, HTTP $probe_code" ;;
+        esac
+
         fail_count=$((fail_count + 1))
         # Throttle "check failed" logs after the failover loop already ran —
         # otherwise a permanent outage spams syslog every 20s forever.
         if [ "$fail_count" -le "$max_fails" ]; then
-            logger -t flowvpn "Watchdog: server check failed ($fail_count/$max_fails)"
+            logger -t flowvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
         else
             silent_fails=$((silent_fails + 1))
             # One reminder every ~5 min while still down
-            [ $((silent_fails % 15)) -eq 0 ] && logger -t flowvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch)"
+            [ $((silent_fails % 15)) -eq 0 ] && logger -t flowvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
         fi
 
         if [ "$fail_count" -eq "$max_fails" ]; then
-            logger -t flowvpn "Watchdog: switching server"
+            logger -t flowvpn "Watchdog: switching server (cause: $why)"
 
             local current=$(get_config_val selected_server 0)
             local selected="$current"
@@ -1736,7 +1828,10 @@ cmd_set_wifi() {
 if [ ! -f "$FLOWVPN_CONFIG" ]; then
     mkdir -p /etc/flowvpn
     echo '{"subscription_url":"","selected_server":0,"interface":"br-lan","auto_start":true,"mode":"all_vpn"}' | jq '.' > "$FLOWVPN_CONFIG"
+    chmod 600 "$FLOWVPN_CONFIG" 2>/dev/null
 fi
+# Defense in depth: tighten if a previous version left it world-readable.
+[ -f "$FLOWVPN_CONFIG" ] && chmod 600 "$FLOWVPN_CONFIG" 2>/dev/null
 
 case "$1" in
     start)          cmd_start ;;
