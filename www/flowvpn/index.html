@@ -5,43 +5,43 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
-<title>FlowVPN</title>
+<meta name="theme-color" content="#08090a" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fcfcfd" media="(prefers-color-scheme: light)">
+<title>EclipVPN</title>
 <style>
 /* System font stack — page must work without internet (it's the router admin UI) */
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 :root{
-  --bg:#0b0b10;
-  --bg-gradient:radial-gradient(ellipse 60% 50% at 30% 0%, rgba(124,58,237,0.08), transparent 50%), radial-gradient(ellipse 40% 40% at 80% 100%, rgba(59,130,246,0.05), transparent 50%), #0b0b10;
-  --card:rgba(255,255,255,0.03);
-  --card-hover:rgba(255,255,255,0.05);
-  --border:rgba(255,255,255,0.06);
-  --border-strong:rgba(255,255,255,0.1);
-  --text:#fafafa;
-  --text-muted:#a1a1aa;
-  --text-dim:#71717a;
-  --accent:#a78bfa;
-  --accent-warm:#f472b6;
-  --accent-cool:#60a5fa;
+  --bg:#08090a;
+  --bg-gradient:#08090a;
+  --card:rgba(255,255,255,0.025);
+  --card-hover:rgba(255,255,255,0.04);
+  --border:rgba(255,255,255,0.08);
+  --border-strong:rgba(255,255,255,0.12);
+  --text:#f7f8f8;
+  --text-muted:#8a8f98;
+  --text-dim:#62666d;
+  --accent:#5e6ad2;
+  --accent-warm:#5e6ad2;
+  --accent-cool:#5e6ad2;
   --green:#34d399;
   --red:#f87171;
   --yellow:#fbbf24;
   --orange:#fb923c;
 }
 [data-theme="light"]{
-  --bg:#fafaf9;
-  --bg-gradient:radial-gradient(ellipse 60% 50% at 30% 0%, rgba(124,58,237,0.04), transparent 50%), radial-gradient(ellipse 40% 40% at 80% 100%, rgba(59,130,246,0.03), transparent 50%), #fafaf9;
-  --card:rgba(0,0,0,0.02);
+  --bg:#fcfcfd;
+  --bg-gradient:#fcfcfd;
+  --card:rgba(0,0,0,0.025);
   --card-hover:rgba(0,0,0,0.04);
-  --border:rgba(0,0,0,0.06);
-  --border-strong:rgba(0,0,0,0.1);
-  --text:#18181b;
-  --text-muted:#52525b;
-  --text-dim:#a1a1aa;
-  --accent:#7c3aed;
-  --accent-warm:#db2777;
-  --accent-cool:#2563eb;
+  --border:rgba(0,0,0,0.08);
+  --border-strong:rgba(0,0,0,0.12);
+  --text:#2d2d30;
+  --text-muted:#5d5e64;
+  --text-dim:#8e8f96;
+  --accent:#5e6ad2;
+  --accent-warm:#5e6ad2;
+  --accent-cool:#5e6ad2;
   --green:#059669;
   --red:#dc2626;
   --yellow:#d97706;
@@ -74,27 +74,33 @@ html,body{max-width:100vw}
   display:flex;align-items:center;justify-content:space-between;
   padding:16px 0;margin:0 -28px 20px;padding-left:28px;padding-right:28px;
   position:sticky;top:0;z-index:50;
-  background:rgba(11,11,15,0.72);
+  background:rgba(8,9,10,0.72);
   backdrop-filter:saturate(140%) blur(14px);
   -webkit-backdrop-filter:saturate(140%) blur(14px);
   border-bottom:1px solid transparent;
-  transition:border-color .2s ease, background .2s ease
+  transition:border-color .2s ease
+}
+/* Theme-switch snap: when JS toggles theme, all transitions are disabled
+   for one frame so header/cards/buttons all snap to new colors together —
+   otherwise blurred header animates background over 200ms while body snaps
+   instantly, which reads as "top is lagging behind". */
+html.theme-switching *,html.theme-switching *::before,html.theme-switching *::after{
+  transition:none!important
 }
 [data-theme="light"] .header{
-  background:rgba(248,250,252,0.78)
+  background:rgba(252,252,253,0.78)
 }
 .header.scrolled{border-bottom-color:var(--border)}
 .brand{display:flex;align-items:baseline;gap:10px}
 .logo{
-  font-size:26px;font-weight:800;letter-spacing:-0.03em;
-  background:linear-gradient(120deg, var(--accent) 0%, var(--accent-cool) 60%, var(--accent-warm) 100%);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  font-size:26px;font-weight:700;letter-spacing:-0.03em;
+  color:var(--text);
 }
 .version{font-size:11px;color:var(--text-dim);font-weight:500;letter-spacing:0.04em;text-transform:uppercase}
-.header-actions{display:flex;align-items:center;gap:10px}
+.header-actions{display:flex;align-items:center;gap:10px;margin-left:auto}
 .header-info{
   font-size:12.5px;color:var(--text-muted);
-  display:flex;align-items:center;gap:8px;
+  display:none;align-items:center;gap:8px;
   padding:6px 12px;background:var(--card);border:1px solid var(--border);border-radius:999px;
   transition:all .2s ease
 }
@@ -110,76 +116,75 @@ html,body{max-width:100vw}
 }
 .header-info b{color:var(--text);font-weight:600;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11.5px}
 .header-mini-toggle{
-  width:40px;height:22px;position:relative;cursor:pointer;
+  width:42px;height:24px;position:relative;cursor:pointer;
   display:none;align-items:center;flex-shrink:0
 }
 .header-mini-toggle input{display:none}
 .header-mini-toggle .mt-track{
-  position:absolute;inset:0;border-radius:11px;
+  position:absolute;inset:0;border-radius:12px;
   background:rgba(255,255,255,0.08);
   border:1px solid var(--border-strong);
   transition:background .2s ease
 }
 .header-mini-toggle input:checked+.mt-track{
-  background:linear-gradient(135deg, var(--accent), var(--accent-cool));
+  background:var(--accent);
   border-color:transparent
 }
 .header-mini-toggle .mt-knob{
-  position:absolute;top:2px;left:2px;
-  width:16px;height:16px;border-radius:50%;
+  position:absolute;top:3px;left:3px;
+  width:18px;height:18px;border-radius:50%;
   background:#fff;transition:transform .25s cubic-bezier(0.4,0,0.2,1);
   box-shadow:0 1px 3px rgba(0,0,0,0.3)
 }
 .header-mini-toggle input:checked~.mt-knob{transform:translateX(18px)}
-.header.scrolled .header-mini-toggle{display:inline-flex}
+.header.compact .header-mini-toggle{display:inline-flex}
+.header.compact .header-info{display:inline-flex}
+/* Compact: hide brand so pill takes the left edge, actions stay right */
+.header.compact .brand{display:none}
 .header.scrolled .header-info{padding:6px 10px 6px 12px}
 
 /* Main toggle — HERO */
 .hero{
-  background:linear-gradient(135deg, var(--card) 0%, rgba(124,58,237,0.04) 100%);
+  background:var(--card);
   border:1px solid var(--border);
-  border-radius:24px;
-  padding:32px 36px;
+  border-radius:6px;
+  padding:22px 24px;
   margin-bottom:20px;
   position:relative;
   overflow:hidden;
 }
 .hero::before{
   content:'';position:absolute;inset:0;
-  background:radial-gradient(circle at 80% 50%, rgba(167,139,250,0.08), transparent 70%);
+  background:radial-gradient(circle at 80% 50%, rgba(94,106,210,0.08), transparent 70%);
   pointer-events:none;
 }
 .hero-inner{display:flex;align-items:center;justify-content:space-between;gap:24px;position:relative}
 .hero-status{display:flex;align-items:center;gap:20px}
 .status-orb{
-  width:68px;height:68px;border-radius:50%;
+  width:36px;height:36px;border-radius:50%;
   display:flex;align-items:center;justify-content:center;
-  background:radial-gradient(circle, rgba(52,211,153,0.2), rgba(52,211,153,0.05));
-  border:1px solid rgba(52,211,153,0.3);
+  background:transparent;
+  border:1px solid var(--border-strong);
   position:relative;
 }
-.status-orb.off{
-  background:radial-gradient(circle, rgba(248,113,113,0.15), rgba(248,113,113,0.03));
-  border-color:rgba(248,113,113,0.2);
-}
+.status-orb.off{border-color:var(--border)}
 .status-orb .pulse{
   position:absolute;inset:-2px;border-radius:50%;
-  border:2px solid var(--green);
+  border:1px solid var(--green);
   animation:pulse 2.5s ease-out infinite;
 }
 .status-orb.off .pulse{display:none}
 @keyframes pulse{
-  0%{transform:scale(1);opacity:0.8}
-  100%{transform:scale(1.4);opacity:0}
+  0%{transform:scale(1);opacity:0.6}
+  100%{transform:scale(1.35);opacity:0}
 }
 .status-orb .dot{
-  width:14px;height:14px;border-radius:50%;background:var(--green);
-  box-shadow:0 0 16px var(--green);
+  width:8px;height:8px;border-radius:50%;background:var(--green);
 }
-.status-orb.off .dot{background:var(--red);box-shadow:none}
+.status-orb.off .dot{background:var(--text-dim)}
 
 .status-text h1{
-  font-size:28px;font-weight:700;letter-spacing:-0.02em;
+  font-size:22px;font-weight:600;letter-spacing:-0.02em;
   margin-bottom:8px;line-height:1.2;
 }
 .status-text .meta{
@@ -198,26 +203,28 @@ html,body{max-width:100vw}
 }
 .status-text .meta b{color:var(--text);font-weight:600}
 
-/* Toggle */
-.toggle{position:relative;width:64px;height:34px;cursor:pointer;flex-shrink:0}
+/* Toggle — knob fills the track minus 3px padding on every side, which
+   makes off/on positions visually symmetric. Geometry: track WxH, knob
+   (H-6)x(H-6), travel = W - knob - 6. */
+.toggle{position:relative;width:54px;height:30px;cursor:pointer;flex-shrink:0}
 .toggle input{display:none}
 .toggle-track{
-  position:absolute;inset:0;border-radius:17px;
+  position:absolute;inset:0;border-radius:15px;
   background:rgba(255,255,255,0.08);
   transition:background .3s ease;
   border:1px solid var(--border-strong);
 }
 .toggle input:checked+.toggle-track{
-  background:linear-gradient(135deg, var(--accent) 0%, var(--accent-cool) 100%);
+  background:var(--accent);
   border-color:transparent;
 }
 .toggle-knob{
   position:absolute;top:3px;left:3px;
-  width:26px;height:26px;border-radius:50%;
+  width:24px;height:24px;border-radius:50%;
   background:#fff;transition:transform .3s cubic-bezier(0.4,0,0.2,1);
   box-shadow:0 2px 8px rgba(0,0,0,0.25);
 }
-.toggle input:checked~.toggle-knob{transform:translateX(30px)}
+.toggle input:checked~.toggle-knob{transform:translateX(24px)}
 
 /* Settings row with inline toggle */
 .setting-row{
@@ -233,9 +240,10 @@ html,body{max-width:100vw}
   font-size:12.5px;color:var(--text-muted);
   line-height:1.5;margin-top:4px
 }
-.toggle-sm{width:48px;height:28px;flex-shrink:0}
-.toggle-sm .toggle-knob{width:22px;height:22px;top:2px;left:2px}
-.toggle-sm input:checked~.toggle-knob{transform:translateX(20px)}
+.toggle-sm{width:42px;height:24px;flex-shrink:0}
+.toggle-sm .toggle-track{border-radius:12px}
+.toggle-sm .toggle-knob{width:18px;height:18px;top:3px;left:3px}
+.toggle-sm input:checked~.toggle-knob{transform:translateX(18px)}
 .setting-body{
   margin-top:16px;padding-top:16px;
   border-top:1px solid var(--border);
@@ -249,7 +257,7 @@ html,body{max-width:100vw}
 .setting-status.on{color:var(--green)}
 .setting-status.on::before{
   content:"";width:6px;height:6px;border-radius:50%;
-  background:var(--green);box-shadow:0 0 6px var(--green)
+  background:var(--green)
 }
 
 /* Layout */
@@ -265,9 +273,9 @@ html,body{max-width:100vw}
 .card{
   background:var(--card);
   border:1px solid var(--border);
-  border-radius:18px;
-  padding:24px 26px;
-  margin-bottom:18px;
+  border-radius:8px;
+  padding:16px 18px;
+  margin-bottom:14px;
   transition:border-color .2s ease;
 }
 .card:hover{border-color:var(--border-strong)}
@@ -276,15 +284,35 @@ html,body{max-width:100vw}
   content:"";position:absolute;left:0;top:14px;bottom:14px;
   width:3px;border-radius:0 3px 3px 0
 }
-.card-accent-direct::before{background:linear-gradient(180deg,var(--green),rgba(52,211,153,0.4))}
-.card-accent-direct{background:linear-gradient(90deg,rgba(52,211,153,0.02),transparent 30%),var(--card)}
-.card-accent-vpn::before{background:linear-gradient(180deg,var(--accent),var(--accent-warm))}
-.card-accent-vpn{background:linear-gradient(90deg,rgba(167,139,250,0.03),transparent 30%),var(--card)}
-.card-accent-dns::before{background:linear-gradient(180deg,var(--accent-cool),rgba(96,165,250,0.4))}
-.card-accent-dns{background:linear-gradient(90deg,rgba(96,165,250,0.02),transparent 30%),var(--card)}
+.card-accent-direct::before{background:var(--green)}
+.card-accent-vpn::before{background:var(--accent)}
+.card-accent-dns::before{background:var(--accent)}
 .card-head{
   display:flex;align-items:center;justify-content:space-between;
   margin-bottom:6px;gap:8px
+}
+.card-collapsible>.card-head{
+  position:relative;
+  cursor:pointer;user-select:none;margin-bottom:0;
+  border-radius:6px;padding:2px 22px 2px 4px;margin:-2px -4px;
+  transition:background .15s
+}
+.card-collapsible>.card-head:hover{background:rgba(255,255,255,0.03)}
+[data-theme="light"] .card-collapsible>.card-head:hover{background:rgba(0,0,0,0.03)}
+.card-collapsible>.card-head::after{
+  content:"";position:absolute;right:8px;top:50%;
+  width:8px;height:8px;
+  border-right:2px solid var(--text-dim);border-bottom:2px solid var(--text-dim);
+  transform:translateY(-70%) rotate(45deg);transition:transform .2s ease
+}
+.card-collapsible.expanded>.card-head::after{transform:translateY(-30%) rotate(-135deg)}
+.card-collapsible-body{
+  max-height:0;overflow:hidden;
+  transition:max-height .3s ease,margin-top .25s ease;
+  margin-top:0
+}
+.card-collapsible.expanded>.card-collapsible-body{
+  max-height:1200px;margin-top:8px
 }
 .card-title{
   font-size:14px;font-weight:600;color:var(--text);
@@ -298,7 +326,7 @@ html,body{max-width:100vw}
 /* Live dot */
 .live-dot{
   width:7px;height:7px;border-radius:50%;
-  background:var(--green);box-shadow:0 0 6px var(--green);
+  background:var(--green);
   animation:livePulse 1.6s infinite
 }
 
@@ -308,13 +336,18 @@ html,body{max-width:100vw}
   margin:6px 0 4px;border-radius:8px
 }
 
-/* Mini stats under speed */
+/* Mini stats under speed — visually consistent with .speed-item cards */
 .mini-stats{
   display:grid;grid-template-columns:1fr 1fr;gap:8px;
-  margin-top:10px;padding-top:12px;
-  border-top:1px solid var(--border)
+  margin-top:8px
 }
-.mini-stat{display:flex;flex-direction:column;gap:2px}
+.mini-stat{
+  padding:12px 14px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid var(--border);border-radius:6px;
+  text-align:center;
+  display:flex;flex-direction:column;gap:4px;align-items:center
+}
 .mini-stat-label{
   font-size:10px;color:var(--text-dim);
   text-transform:uppercase;letter-spacing:0.05em;font-weight:600
@@ -329,7 +362,7 @@ html,body{max-width:100vw}
 .speed-item{
   flex:1;padding:12px 14px;
   background:rgba(255,255,255,0.02);
-  border:1px solid var(--border);border-radius:12px;
+  border:1px solid var(--border);border-radius:6px;
   text-align:center
 }
 .speed-label{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
@@ -340,38 +373,48 @@ html,body{max-width:100vw}
 /* Servers list */
 .server{
   display:flex;align-items:center;gap:10px;
-  padding:12px 14px;border-radius:12px;cursor:pointer;
-  margin-bottom:4px;background:transparent;
+  padding:8px 12px;border-radius:6px;cursor:pointer;
+  margin-bottom:2px;background:transparent;
   border:1px solid transparent;
   transition:all .15s ease;
 }
-.server:hover{background:var(--card-hover);transform:translateX(2px)}
+.server:hover{background:var(--card-hover)}
 .server:focus-visible,.device:focus-visible,.mode-option:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px
 }
 .server.active:not(.switching){
-  background:linear-gradient(135deg, rgba(167,139,250,0.1), rgba(96,165,250,0.05));
-  border-color:rgba(167,139,250,0.3);
+  background:rgba(94,106,210,0.08);
+  border-color:rgba(94,106,210,0.3);
 }
 .server.switching{
-  background:linear-gradient(135deg, rgba(167,139,250,0.18), rgba(96,165,250,0.1));
-  border-color:rgba(167,139,250,0.6);
+  background:rgba(94,106,210,0.14);
+  border-color:rgba(94,106,210,0.6);
   animation:switchPulse 1.4s ease-in-out infinite;
 }
 .server.switching::after{
   content:'';display:inline-block;width:12px;height:12px;
-  border:2px solid rgba(167,139,250,0.4);border-top-color:rgba(167,139,250,1);
+  border:2px solid rgba(94,106,210,0.4);border-top-color:rgba(94,106,210,1);
   border-radius:50%;margin-left:8px;
   animation:spin .7s linear infinite;flex-shrink:0;
 }
 @keyframes switchPulse{
-  0%,100%{box-shadow:0 0 0 0 rgba(167,139,250,0.35)}
-  50%{box-shadow:0 0 0 6px rgba(167,139,250,0)}
+  0%,100%{box-shadow:0 0 0 0 rgba(94,106,210,0.35)}
+  50%{box-shadow:0 0 0 6px rgba(94,106,210,0)}
 }
 .server-list.locked .server:not(.switching){
   opacity:0.45;pointer-events:none;filter:saturate(0.6)
 }
-.server-flag{font-size:18px;filter:saturate(1.2)}
+.server-flag{font-size:18px;filter:saturate(1.2);min-width:24px;display:inline-flex;align-items:center;justify-content:center}
+.country-code{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:24px;height:18px;padding:0 5px;
+  font-size:10px;font-weight:700;letter-spacing:0.5px;
+  background:rgba(94,106,210,0.14);
+  border:1px solid rgba(94,106,210,0.3);
+  border-radius:3px;
+  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  color:var(--text)
+}
 .server-name{flex:1;font-size:14px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .server-ping-box{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
 .ping-bars{
@@ -410,10 +453,10 @@ html,body{max-width:100vw}
 .tabs{
   display:flex;gap:2px;margin-bottom:18px;
   padding:4px;background:var(--card);
-  border:1px solid var(--border);border-radius:14px;
+  border:1px solid var(--border);border-radius:8px;
 }
 .tab{
-  flex:1;padding:9px 14px;border-radius:10px;
+  flex:1;padding:9px 14px;border-radius:6px;
   font-size:13px;font-weight:500;
   cursor:pointer;background:transparent;
   color:var(--text-muted);border:none;
@@ -430,33 +473,48 @@ html,body{max-width:100vw}
 /* Inputs & buttons */
 .input{
   width:100%;padding:10px 14px;
-  border-radius:10px;border:1px solid var(--border-strong);
+  border-radius:6px;border:1px solid var(--border-strong);
   background:rgba(255,255,255,0.02);color:var(--text);
   font-size:13px;outline:none;font-family:inherit;
   transition:all .15s ease
 }
 .input:focus{border-color:var(--accent);background:rgba(255,255,255,0.04)}
 .input::placeholder{color:var(--text-dim)}
+.input.error{
+  border-color:var(--red);
+  background:rgba(248,113,113,0.08);
+  animation:shake .35s ease-in-out
+}
+.input.error:focus{border-color:var(--red);background:rgba(248,113,113,0.12)}
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  25%{transform:translateX(-4px)}
+  75%{transform:translateX(4px)}
+}
+.input-error-msg{
+  font-size:11.5px;color:var(--red);margin-top:4px;
+  display:none
+}
+.input-error-msg.visible{display:block}
 
 .btn{
-  padding:9px 16px;border-radius:10px;border:1px solid transparent;cursor:pointer;
+  padding:6px 12px;border-radius:6px;border:1px solid transparent;cursor:pointer;
   font-size:13px;font-weight:500;font-family:inherit;
   transition:transform .12s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease, color .15s ease;
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
-  line-height:1;white-space:nowrap
+  line-height:1.4;white-space:nowrap
 }
 .btn:active{transform:translateY(0)!important}
 .btn-primary{
-  background:linear-gradient(135deg, var(--accent) 0%, var(--accent-cool) 100%);
+  background:var(--accent);
   color:#fff;font-weight:600;
-  box-shadow:0 1px 3px rgba(124,58,237,0.3)
 }
-.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(124,58,237,0.4)}
+.btn-primary:hover{background:#6c77da}
 .btn-secondary{
-  background:rgba(167,139,250,0.1);color:var(--accent);
-  border-color:rgba(167,139,250,0.3);font-weight:600
+  background:rgba(94,106,210,0.1);color:var(--accent);
+  border-color:rgba(94,106,210,0.3);font-weight:600
 }
-.btn-secondary:hover{background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.5)}
+.btn-secondary:hover{background:rgba(94,106,210,0.18);border-color:rgba(94,106,210,0.5)}
 .btn-ghost{
   background:var(--card);color:var(--text);
   border-color:var(--border-strong)
@@ -474,7 +532,7 @@ html,body{max-width:100vw}
 /* Mode switcher */
 .mode-switch{display:flex;gap:10px;margin-bottom:4px}
 .mode-option{
-  flex:1;padding:16px 18px;border-radius:14px;
+  flex:1;padding:14px 16px;border-radius:8px;
   cursor:pointer;border:1px solid var(--border);
   background:rgba(255,255,255,0.02);transition:all .2s ease;
   position:relative;overflow:hidden
@@ -482,12 +540,25 @@ html,body{max-width:100vw}
 .mode-option:hover{border-color:var(--border-strong);background:var(--card-hover)}
 .mode-option.active{
   border-color:var(--accent);
-  background:linear-gradient(135deg, rgba(167,139,250,0.08), rgba(96,165,250,0.03))
+  background:rgba(94,106,210,0.06)
 }
 .mode-option.active::before{
   content:'';position:absolute;inset:0;
-  background:radial-gradient(circle at 80% 0%, rgba(167,139,250,0.1), transparent 60%);
+  background:transparent;
   pointer-events:none
+}
+/* Applying state — fired during set-mode request to give immediate
+   visual confirmation that the click was registered before the toast
+   appears. Prevents the user from clicking again because nothing
+   happened yet. */
+.mode-option.applying{
+  animation:modeApply .9s ease-out;
+  pointer-events:none
+}
+@keyframes modeApply{
+  0%{transform:scale(1)}
+  35%{transform:scale(0.98);box-shadow:0 0 0 4px rgba(94,106,210,0.18)}
+  100%{transform:scale(1);box-shadow:0 0 0 0 transparent}
 }
 .mode-option h3{font-size:14px;font-weight:600;margin-bottom:6px;position:relative;letter-spacing:-0.01em}
 .mode-option p{font-size:12px;color:var(--text-muted);line-height:1.55;position:relative}
@@ -514,7 +585,7 @@ html,body{max-width:100vw}
 .stats{display:flex;gap:10px;margin-top:14px}
 .stat{
   flex:1;padding:12px 14px;background:rgba(255,255,255,0.02);
-  border:1px solid var(--border);border-radius:10px;text-align:center
+  border:1px solid var(--border);border-radius:6px;text-align:center
 }
 .stat-label{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
 .stat-num{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:16px;font-weight:600}
@@ -522,13 +593,13 @@ html,body{max-width:100vw}
 /* Devices */
 .device{
   display:flex;align-items:center;gap:12px;
-  padding:11px 14px;cursor:pointer;border-radius:10px;
+  padding:11px 14px;cursor:pointer;border-radius:6px;
   border:1px solid transparent;transition:all .15s ease;
   margin-bottom:3px
 }
 .device:hover{background:var(--card-hover);border-color:var(--border-strong)}
 .device-avatar{
-  width:34px;height:34px;border-radius:10px;
+  width:34px;height:34px;border-radius:6px;
   display:flex;align-items:center;justify-content:center;
   background:var(--card);border:1px solid var(--border-strong);
   flex-shrink:0
@@ -540,7 +611,7 @@ html,body{max-width:100vw}
   padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;
   text-transform:uppercase;letter-spacing:0.04em
 }
-.badge-vpn{background:rgba(167,139,250,0.15);color:var(--accent)}
+.badge-vpn{background:rgba(94,106,210,0.15);color:var(--accent)}
 .badge-direct{background:rgba(52,211,153,0.12);color:var(--green)}
 
 /* Devices search + groups */
@@ -549,7 +620,7 @@ html,body{max-width:100vw}
 }
 .dev-search input{
   width:100%;padding:10px 14px 10px 36px;
-  border-radius:10px;background:var(--card-hover);
+  border-radius:6px;background:var(--card-hover);
   border:1px solid var(--border);color:var(--text);
   font-size:13px;outline:none;transition:border-color .15s
 }
@@ -572,7 +643,7 @@ html,body{max-width:100vw}
   padding:2px 7px;background:var(--card-hover);
   border-radius:8px;color:var(--text-muted);font-weight:700
 }
-.device-avatar.vpn{color:var(--accent);background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.2)}
+.device-avatar.vpn{color:var(--accent);background:rgba(94,106,210,0.1);border-color:rgba(94,106,210,0.2)}
 .device-avatar.direct{color:var(--green);background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2)}
 .device-avatar.unknown{color:var(--text-dim)}
 .dev-empty{
@@ -642,7 +713,7 @@ html,body{max-width:100vw}
 }
 .log-live::before{
   content:"";width:7px;height:7px;border-radius:50%;
-  background:var(--red);box-shadow:0 0 6px var(--red);
+  background:var(--red);
   animation:livePulse 1.2s infinite
 }
 .log-live.paused{background:var(--card-hover);color:var(--text-dim);border-color:var(--border-strong)}
@@ -679,7 +750,7 @@ html,body{max-width:100vw}
 .check{
   display:flex;align-items:flex-start;gap:12px;
   padding:11px 14px;margin-bottom:5px;
-  border-radius:10px;border:1px solid;
+  border-radius:6px;border:1px solid;
 }
 .check-icon{
   flex-shrink:0;width:20px;height:20px;border-radius:50%;
@@ -714,7 +785,7 @@ html,body{max-width:100vw}
 .check-summary{
   display:flex;justify-content:space-around;align-items:center;
   padding:14px;margin-top:14px;
-  background:var(--card);border:1px solid var(--border);border-radius:12px;
+  background:var(--card);border:1px solid var(--border);border-radius:6px;
   font-size:13px
 }
 .summary-item{display:flex;align-items:center;gap:6px}
@@ -727,7 +798,7 @@ html,body{max-width:100vw}
 }
 @media(max-width:640px){.metric-grid{grid-template-columns:1fr}}
 .metric{
-  padding:16px;border-radius:14px;
+  padding:16px;border-radius:8px;
   background:rgba(255,255,255,0.02);
   border:1px solid var(--border);
   display:flex;gap:14px;align-items:flex-start;
@@ -735,7 +806,7 @@ html,body{max-width:100vw}
 }
 .metric:hover{border-color:var(--border-strong)}
 .metric-icon{
-  flex-shrink:0;width:40px;height:40px;border-radius:10px;
+  flex-shrink:0;width:40px;height:40px;border-radius:6px;
   display:flex;align-items:center;justify-content:center;
   background:var(--card);border:1px solid var(--border-strong);
   color:var(--text-muted)
@@ -744,7 +815,7 @@ html,body{max-width:100vw}
 .metric.ok .metric-icon{color:var(--green);background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2)}
 .metric.warn .metric-icon{color:var(--yellow);background:rgba(251,191,36,0.08);border-color:rgba(251,191,36,0.2)}
 .metric.err .metric-icon{color:var(--red);background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.2)}
-.metric.info .metric-icon{color:var(--accent-cool);background:rgba(96,165,250,0.08);border-color:rgba(96,165,250,0.2)}
+.metric.info .metric-icon{color:var(--accent-cool);background:rgba(94,106,210,0.08);border-color:rgba(94,106,210,0.2)}
 .metric-body{flex:1;min-width:0}
 .metric-label{
   font-size:11px;text-transform:uppercase;letter-spacing:0.05em;
@@ -775,29 +846,29 @@ html,body{max-width:100vw}
 }
 .sys-bar-fill{
   height:100%;border-radius:3px;
-  background:linear-gradient(90deg, var(--accent-cool), var(--accent));
+  background:var(--accent);
   transition:width .4s ease
 }
-.sys-bar-fill.warn{background:linear-gradient(90deg, var(--yellow), var(--orange))}
-.sys-bar-fill.err{background:linear-gradient(90deg, var(--orange), var(--red))}
+.sys-bar-fill.warn{background:var(--yellow)}
+.sys-bar-fill.err{background:var(--red)}
 
 /* Bottom navigation (mobile) */
 .bottom-nav{
   display:none;
   position:fixed;left:0;right:0;bottom:0;z-index:60;
   padding:8px 6px calc(8px + env(safe-area-inset-bottom));
-  background:rgba(11,11,15,0.85);
+  background:rgba(8,9,10,0.85);
   backdrop-filter:saturate(140%) blur(18px);
   -webkit-backdrop-filter:saturate(140%) blur(18px);
   border-top:1px solid var(--border);
   justify-content:space-around;align-items:stretch;gap:2px
 }
-[data-theme="light"] .bottom-nav{background:rgba(248,250,252,0.9)}
+[data-theme="light"] .bottom-nav{background:rgba(252,252,253,0.9)}
 .bn-item{
   flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
   padding:6px 2px;background:transparent;border:0;cursor:pointer;
   color:var(--text-dim);font-family:inherit;font-size:9.5px;font-weight:500;
-  transition:color .15s;border-radius:10px;min-width:0;min-height:48px
+  transition:color .15s;border-radius:6px;min-width:0;min-height:48px
 }
 .bn-item svg{width:22px;height:22px}
 .bn-item span{
@@ -841,7 +912,7 @@ html,body{max-width:100vw}
   background:var(--card-hover);color:var(--text-muted);
   border:1px solid var(--border-strong)
 }
-.step.active .step-num{background:linear-gradient(135deg,var(--accent),var(--accent-cool));color:#fff;border-color:transparent}
+.step.active .step-num{background:var(--accent);color:#fff;border-color:transparent}
 .step.done .step-num{background:var(--green);color:#fff;border-color:transparent}
 .step-name{font-size:12px;color:var(--text-muted);font-weight:500}
 .step.active .step-name{color:var(--text)}
@@ -855,7 +926,7 @@ html,body{max-width:100vw}
 .onboard-pane .input{width:100%;margin-bottom:10px}
 .onboard-hint{
   font-size:12px;color:var(--text-dim);line-height:1.5;
-  padding:10px 12px;background:var(--card-hover);border-radius:10px;
+  padding:10px 12px;background:var(--card-hover);border-radius:6px;
   border-left:3px solid var(--accent-cool)
 }
 .onboard-loader{display:flex;justify-content:center;padding:30px 0}
@@ -871,9 +942,8 @@ html,body{max-width:100vw}
 }
 .footer-left{display:flex;align-items:center;gap:10px}
 .footer-brand{
-  font-weight:700;letter-spacing:-0.01em;
-  background:linear-gradient(120deg, var(--accent) 0%, var(--accent-cool) 60%, var(--accent-warm) 100%);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  font-weight:600;letter-spacing:-0.01em;
+  color:var(--text);
   font-size:13px
 }
 .footer-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -909,13 +979,18 @@ html,body{max-width:100vw}
 }
 .toast{
   display:flex;align-items:flex-start;gap:10px;
-  padding:12px 16px;border-radius:12px;font-size:13px;font-weight:500;
-  background:var(--card);border:1px solid var(--border-strong);
-  box-shadow:0 8px 28px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.1);
+  padding:12px 16px;border-radius:6px;font-size:13px;font-weight:500;
+  background:#1a1a24;border:1px solid rgba(255,255,255,0.14);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  box-shadow:0 12px 40px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3);
   opacity:0;transform:translateX(20px);
   transition:opacity .25s ease, transform .25s cubic-bezier(0.4,0,0.2,1);
   pointer-events:auto;position:relative;overflow:hidden;
-  min-width:240px;max-width:360px;line-height:1.45
+  min-width:260px;max-width:380px;line-height:1.45
+}
+[data-theme="light"] .toast{
+  background:#ffffff;border-color:rgba(0,0,0,0.12);
+  box-shadow:0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)
 }
 .toast.show{opacity:1;transform:translateX(0)}
 .toast.hide{opacity:0;transform:translateX(20px)}
@@ -967,23 +1042,23 @@ html,body{max-width:100vw}
   .logo{font-size:22px}
   .version{display:none}
   .header-actions{gap:6px}
-  .header-mini-toggle{display:inline-flex}
   .header .btn-icon{width:32px;height:32px;padding:6px}
 
-  .hero{padding:18px 18px;border-radius:18px;margin-bottom:14px}
+  .hero{padding:18px 18px;border-radius:10px;margin-bottom:14px}
   .hero-inner{flex-direction:row;gap:14px;align-items:center}
   .hero-status{gap:14px;flex:1;min-width:0}
-  .status-orb{width:44px;height:44px;flex-shrink:0}
-  .status-orb .dot{width:10px;height:10px}
+  .status-orb{width:36px;height:36px;flex-shrink:0}
+  .status-orb .dot{width:8px;height:8px}
   .status-text h1{font-size:20px;margin-bottom:6px}
+
+  /* Touch targets — Apple HIG ≥44pt; desktop's 6×12 is too tight for fingers */
+  .btn{padding:9px 14px;min-height:38px}
+  .btn-icon{min-width:38px}
   .status-text .meta{font-size:11.5px;gap:6px 12px}
   .status-text .meta span+span{padding-left:14px}
   .status-text .meta b{font-size:11px}
-  .toggle{width:54px;height:30px}
-  .toggle-knob{width:22px;height:22px}
-  .toggle input:checked~.toggle-knob{transform:translateX(24px)}
 
-  .card{padding:16px 16px;border-radius:14px;margin-bottom:12px}
+  .card{padding:16px 16px;border-radius:8px;margin-bottom:12px}
   .card-accent{padding-left:18px}
   .card-accent::before{top:10px;bottom:10px}
 
@@ -1021,7 +1096,7 @@ html,body{max-width:100vw}
   .toasts{left:14px;right:14px;bottom:calc(82px + env(safe-area-inset-bottom));max-width:none}
   .toast{min-width:0;max-width:none}
 
-  .onboard-card{max-width:none;border-radius:16px}
+  .onboard-card{max-width:none;border-radius:8px}
   .onboard-body{padding:22px 18px 20px}
   .onboard-head{padding:14px 16px}
   .step-name{display:none}
@@ -1069,11 +1144,11 @@ html,body{max-width:100vw}
 <div class="app">
   <div class="header" id="appHeader">
     <div class="brand">
-      <div class="logo">FlowVPN</div>
+      <div class="logo">EclipVPN</div>
       <div class="version">v4</div>
     </div>
+    <div class="header-info" id="headerInfo">Загрузка…</div>
     <div class="header-actions">
-      <div class="header-info" id="headerInfo">Загрузка…</div>
       <label class="header-mini-toggle" title="Вкл/Выкл VPN">
         <input type="checkbox" id="vpnMiniToggle" aria-label="Включить или выключить VPN" onchange="syncMiniToggle(this)">
         <div class="mt-track"></div>
@@ -1118,32 +1193,22 @@ html,body{max-width:100vw}
         <canvas id="speedSpark" class="spark" width="600" height="60"></canvas>
         <div class="speed-row">
           <div class="speed-item speed-down">
-            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-down"/></svg> Загрузка</div>
+            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-down"/></svg> Входящий</div>
             <div class="speed-value" id="speedDown">—</div>
           </div>
           <div class="speed-item speed-up">
-            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-up"/></svg> Отдача</div>
+            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-up"/></svg> Исходящий</div>
             <div class="speed-value" id="speedUp">—</div>
           </div>
         </div>
-        <div class="mini-stats" id="miniStats">
-          <div class="mini-stat" title="Активные соединения через VPN">
-            <div class="mini-stat-label">VPN</div>
-            <div class="mini-stat-val" id="statVpn" style="color:var(--accent)">—</div>
+        <div class="mini-stats" id="trafficStats">
+          <div class="mini-stat" title="Сколько данных прошло через VPN с момента запуска">
+            <div class="mini-stat-label">Через VPN</div>
+            <div class="mini-stat-val" id="sessionVpn" style="color:var(--accent)">—</div>
           </div>
-          <div class="mini-stat" title="Активные соединения напрямую (RU-сайты, Steam и т.д.)">
+          <div class="mini-stat" title="Сколько данных прошло напрямую с момента запуска">
             <div class="mini-stat-label">Напрямую</div>
-            <div class="mini-stat-val" id="statDirect" style="color:var(--green,#34d399)">—</div>
-          </div>
-        </div>
-        <div class="mini-stats" id="trafficStats" style="margin-top:6px">
-          <div class="mini-stat" title="Трафик через VPN с последнего перезапуска">
-            <div class="mini-stat-label">VPN сессия</div>
-            <div class="mini-stat-val" id="sessionVpn">—</div>
-          </div>
-          <div class="mini-stat" title="Трафик напрямую с последнего перезапуска">
-            <div class="mini-stat-label">Direct сессия</div>
-            <div class="mini-stat-val" id="sessionDirect">—</div>
+            <div class="mini-stat-val" id="sessionDirect" style="color:var(--green,#34d399)">—</div>
           </div>
         </div>
       </div>
@@ -1153,8 +1218,8 @@ html,body{max-width:100vw}
         <div class="card-head">
           <div class="card-title">Серверы</div>
           <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn" title="Измерить TCP RTT до каждого сервера">RTT</button>
-            <label class="toggle toggle-sm" title="Авто-режим: выбирает сервер с минимальным RTT (метеред пропускаются). Клик по серверу вручную выключает авто.">
+            <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn" title="TCP RTT — насколько быстро сервер откликается. Меньше = быстрее.">Проверить пинг</button>
+            <label class="toggle toggle-sm" title="Авто-режим: выбирает сервер с минимальным пингом (платные операторские пропускаются). Клик по серверу вручную выключает авто.">
               <input type="checkbox" id="autoModeToggle" onchange="toggleAutoMode(this.checked)" aria-label="Авто-выбор лучшего сервера">
               <span class="toggle-track"></span>
               <span class="toggle-knob"></span>
@@ -1162,6 +1227,7 @@ html,body{max-width:100vw}
             <span style="font-size:13px;color:var(--text-muted)">Авто</span>
           </div>
         </div>
+        <p id="autoModeHint" class="card-desc" style="margin:0 0 6px 0;font-size:11.5px"></p>
         <div id="serverList" class="server-list">
           <div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Загрузка…</div>
         </div>
@@ -1186,7 +1252,7 @@ html,body{max-width:100vw}
           <div class="mode-switch">
             <div class="mode-option" id="mode-all" onclick="setMode('all_vpn')" tabindex="0" role="button" aria-label="Режим: всё через VPN кроме РФ">
               <h3>Всё через VPN</h3>
-              <p>Российские сайты — напрямую, всё остальное защищено VPN</p>
+              <p>Российские сайты — напрямую, всё остальное через VPN</p>
             </div>
             <div class="mode-option" id="mode-block" onclick="setMode('blocklist')" tabindex="0" role="button" aria-label="Режим: только заблокированные через VPN">
               <h3>По списку</h3>
@@ -1195,33 +1261,37 @@ html,body{max-width:100vw}
           </div>
         </div>
 
-        <div class="card card-accent card-accent-direct">
-          <div class="card-head">
+        <div class="card card-accent card-accent-direct card-collapsible" id="directCard">
+          <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('directCard')}">
             <div>
               <div class="card-title">Исключения — минуя VPN</div>
               <p class="card-desc" style="margin:3px 0 0">Эти сайты откроются напрямую, без VPN</p>
             </div>
             <div class="stat-num" id="directCount" style="color:var(--green);font-size:13px">0</div>
           </div>
-          <div class="domains" id="directDomains"></div>
-          <div class="flex mt">
-            <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru" onkeydown="if(event.key==='Enter')addDomain('direct')">
-            <button class="btn btn-ghost btn-sm" onclick="addDomain('direct')">Добавить</button>
+          <div class="card-collapsible-body">
+            <div class="domains" id="directDomains"></div>
+            <div class="flex mt">
+              <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru" onkeydown="if(event.key==='Enter')addDomain('direct')">
+              <button class="btn btn-ghost btn-sm" onclick="addDomain('direct')">Добавить</button>
+            </div>
           </div>
         </div>
 
-        <div class="card card-accent card-accent-vpn">
-          <div class="card-head">
+        <div class="card card-accent card-accent-vpn card-collapsible" id="vpnCard">
+          <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('vpnCard')}">
             <div>
               <div class="card-title">Принудительно через VPN</div>
               <p class="card-desc" style="margin:3px 0 0">Всегда шифровать эти сайты, даже если они в списке РФ</p>
             </div>
             <div class="stat-num" id="vpnCount" style="color:var(--accent);font-size:13px">0</div>
           </div>
-          <div class="domains" id="vpnDomains"></div>
-          <div class="flex mt">
-            <input class="input flex-1" id="addVpnInput" placeholder="например: chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
-            <button class="btn btn-ghost btn-sm" onclick="addDomain('vpn')">Добавить</button>
+          <div class="card-collapsible-body">
+            <div class="domains" id="vpnDomains"></div>
+            <div class="flex mt">
+              <input class="input flex-1" id="addVpnInput" placeholder="например: chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
+              <button class="btn btn-ghost btn-sm" onclick="addDomain('vpn')">Добавить</button>
+            </div>
           </div>
         </div>
 
@@ -1254,16 +1324,12 @@ html,body{max-width:100vw}
           <div class="card-desc" style="margin-bottom:8px">С момента последнего перезапуска VPN</div>
           <div class="stats">
             <div class="stat" title="Трафик через VPN — сумма исходящего и входящего">
-              <div class="stat-label">VPN всего</div>
+              <div class="stat-label">Через VPN</div>
               <div class="stat-num" id="trafficVpn" style="color:var(--accent)">—</div>
             </div>
-            <div class="stat" title="Трафик напрямую (RU-сайты, кастомный direct)">
-              <div class="stat-label">Direct всего</div>
+            <div class="stat" title="Трафик напрямую (RU-сайты, кастомный список исключений)">
+              <div class="stat-label">Напрямую</div>
               <div class="stat-num" id="trafficDirect" style="color:var(--green)">—</div>
-            </div>
-            <div class="stat" title="Активные соединения через VPN / напрямую">
-              <div class="stat-label">Соединений</div>
-              <div class="stat-num"><span id="connVpn">—</span> / <span id="connDirect" style="color:var(--green)">—</span></div>
             </div>
           </div>
         </div>
@@ -1285,7 +1351,7 @@ html,body{max-width:100vw}
             <button class="log-filter" data-filter="direct" onclick="setLogFilter('direct',this)">Direct</button>
             <button class="log-filter" data-filter="error" onclick="setLogFilter('error',this)">Ошибки</button>
             <button class="log-filter" data-filter="dns" onclick="setLogFilter('dns',this)">DNS</button>
-            <button class="log-filter" data-filter="flow" onclick="setLogFilter('flow',this)">FlowVPN</button>
+            <button class="log-filter" data-filter="flow" onclick="setLogFilter('flow',this)">EclipVPN</button>
           </div>
           <div class="log-entries" id="logList">
             <div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Загрузка журнала…</div>
@@ -1315,7 +1381,7 @@ html,body{max-width:100vw}
             <div class="metric"><div class="metric-icon"><svg><use href="#i-gear"/></svg></div><div class="metric-body"><div class="metric-label">Время работы</div><div class="metric-value">—</div></div></div>
           </div>
           <div class="flex">
-            <button class="btn btn-secondary flex-1" onclick="measureServerPing()" id="pingCurBtn">Измерить RTT текущего сервера</button>
+            <button class="btn btn-secondary flex-1" onclick="measureServerPing()" id="pingCurBtn">Замерить пинг текущего сервера</button>
           </div>
         </div>
         <div class="card">
@@ -1336,7 +1402,7 @@ html,body{max-width:100vw}
           <div class="card-title">Подписка</div>
           <p class="card-desc">Ссылка на список VPN-серверов от вашего провайдера</p>
           <div class="flex">
-            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://…" aria-label="URL подписки на серверы">
+            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://…" aria-label="URL подписки на серверы" oninput="_syncUpdateBtn()">
             <button class="btn btn-primary btn-sm" onclick="saveSubUrl()">Сохранить</button>
           </div>
           <button class="btn btn-secondary mt" style="width:100%" onclick="doUpdate()" id="updateBtn">Обновить список серверов</button>
@@ -1378,7 +1444,7 @@ html,body{max-width:100vw}
           <div class="setting-status" id="autoUpdateStatus" style="margin-top:14px">Выключено</div>
         </div>
         <div class="card">
-          <div class="card-title">Настройки FlowVPN</div>
+          <div class="card-title">Настройки EclipVPN</div>
           <p class="card-desc">Экспортировать настройки для бэкапа или перенести на другой роутер</p>
           <div class="flex">
             <button class="btn btn-ghost flex-1" onclick="downloadBackup()">Скачать бэкап</button>
@@ -1389,10 +1455,11 @@ html,body{max-width:100vw}
         </div>
         <div class="card">
           <div class="card-title">Управление</div>
-          <div class="flex">
-            <button class="btn btn-ghost flex-1" onclick="doRestart()">Перезапустить</button>
-            <button class="btn btn-danger flex-1" onclick="doStop()">Остановить</button>
+          <div class="flex" style="gap:12px">
+            <button class="btn btn-ghost" style="flex:2" onclick="doRestart()" title="Перезагрузить xray и sing-box без сброса nftables правил">Перезапустить</button>
+            <button class="btn btn-danger" style="flex:1" onclick="doStop()" title="Полностью остановить VPN — весь трафик пойдёт напрямую">Остановить</button>
           </div>
+          <p class="card-desc" style="margin-top:8px;font-size:11.5px">Перезапуск помогает если что-то зависло. Остановка — выключает защиту целиком.</p>
         </div>
 
         <div class="card">
@@ -1410,7 +1477,7 @@ html,body{max-width:100vw}
 
   <footer class="footer">
     <div class="footer-left">
-      <span class="footer-brand">FlowVPN</span>
+      <span class="footer-brand">EclipVPN</span>
       <span class="footer-dim">v4 · OpenWrt</span>
     </div>
     <div class="footer-right">
@@ -1437,7 +1504,7 @@ html,body{max-width:100vw}
 
     <div class="onboard-body">
       <div class="onboard-pane active" id="onboardStep1">
-        <h2 id="onboardTitle">Добро пожаловать в FlowVPN</h2>
+        <h2 id="onboardTitle">Добро пожаловать в EclipVPN</h2>
         <p>Вставьте ссылку на подписку от вашего VPN-провайдера. Это URL, который заканчивается на <code>/sub</code> или содержит <code>?id=</code>.</p>
         <input class="input" id="onboardSubUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://example.com/api/sub/…" aria-label="URL подписки">
         <div class="onboard-hint">Где взять ссылку? В панели вашего VPN-провайдера (Remnawave, Marzban, x-ui) — раздел «Подписка» / «Subscription».</div>
@@ -1456,7 +1523,7 @@ html,body{max-width:100vw}
       <div class="onboard-pane" id="onboardStep3">
         <div style="font-size:48px;line-height:1;color:var(--green);margin-bottom:14px"><svg style="width:56px;height:56px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></div>
         <h2>Всё готово!</h2>
-        <p>FlowVPN настроен. Нажмите «Включить VPN», выберите сервер и открывайте заблокированные сайты.</p>
+        <p>EclipVPN настроен. Нажмите «Включить VPN», выберите сервер и открывайте заблокированные сайты.</p>
         <div class="onboard-actions">
           <button class="btn btn-primary" onclick="finishOnboard()">Начать пользоваться</button>
         </div>
@@ -1536,6 +1603,22 @@ toast.error=(m,d)=>toast(d?{title:m,desc:d}:m,'error');
 toast.info=(m,d)=>toast(d?{title:m,desc:d}:m,'info');
 toast.loading=(m)=>toast(m,{type:'loading',duration:0});
 function fmtUp(s){if(!s||s<=0)return'—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+' ч '+m+' мин';if(m>0)return m+' мин';return s+' сек'}
+// Human-readable "X ago" for unix timestamps. Used in watchdog toast so
+// the user knows whether the announcement is from 5 min ago or last night.
+function fmtAgo(ts){
+  if(!ts)return '';
+  const diff=Math.floor(Date.now()/1000-ts);
+  if(diff<60)return 'только что';
+  if(diff<3600)return Math.floor(diff/60)+' мин назад';
+  if(diff<86400){
+    const h=Math.floor(diff/3600);
+    return h+' '+(h===1?'час':h<5?'часа':'часов')+' назад';
+  }
+  const d=new Date(ts*1000);
+  const days=Math.floor(diff/86400);
+  if(days===1)return 'вчера в '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+  return days+' дн. назад';
+}
 function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(2)+' MB';if(b<1099511627776)return(b/1073741824).toFixed(2)+' GB';return(b/1099511627776).toFixed(2)+' TB'}
 
 // Render the subscription meta card: title, quota bar, expire date,
@@ -1621,6 +1704,63 @@ function showTabMobile(name){
   showTab(name,desktopTab||document.createElement('div'));
 }
 
+// Windows / Chrome on Windows / Brave-on-Windows / некоторые Linux distros
+// don't render flag emoji at all — Segoe UI Emoji (Windows) deliberately
+// strips the regional-indicator pairs. We probe with a canvas: render a
+// known flag emoji (🇫🇮 = blue cross on white), check if any actually-blue
+// pixel landed. If not, swap flag emoji for a 2-letter country code badge
+// in renderServers / wherever else flags appear.
+const FLAG_SUPPORT = (function(){
+  try{
+    const c=document.createElement('canvas');
+    c.width=20;c.height=20;
+    const ctx=c.getContext('2d');
+    ctx.font='16px sans-serif';
+    ctx.fillText('🇫🇮',0,16);  // 🇫🇮
+    const d=ctx.getImageData(0,0,20,20).data;
+    for(let i=0;i<d.length;i+=4){
+      // Look for a noticeably blue pixel — Finland flag's blue cross.
+      if(d[i+2]>120&&d[i]<80&&d[i+1]<140)return true;
+    }
+    return false;
+  }catch(_){return false}
+})();
+
+// Convert a flag emoji (regional indicator pair) to its ISO 3166-1 alpha-2
+// code. 🇫🇮 → "FI". Returns empty string on no match.
+function emojiToCountryCode(s){
+  if(!s)return '';
+  const m=s.match(/[\u{1F1E6}-\u{1F1FF}][\u{1F1E6}-\u{1F1FF}]/u);
+  if(!m)return '';
+  const a=m[0].codePointAt(0)-0x1F1A5;
+  const b=m[0].codePointAt(2)-0x1F1A5;
+  return String.fromCharCode(64+a)+String.fromCharCode(64+b);
+}
+
+// Render a flag for a server name. Returns either:
+//   - <span class="server-flag">🇫🇮</span>      — when emoji rendering works
+//   - <span class="country-code">FI</span>      — when it doesn't (Windows)
+function flagHTML(name){
+  const m=(name||'').match(/^(\p{RI}\p{RI})/u);
+  if(!m)return '';
+  if(FLAG_SUPPORT){
+    return '<span class="server-flag">'+esc(m[1])+'</span>';
+  }
+  const code=emojiToCountryCode(m[1]);
+  return '<span class="country-code">'+esc(code||'??')+'</span>';
+}
+
+// Full server-name display (flag + name) — for headers, badges, anywhere
+// the user sees a server name. Strips the regional indicator pair from
+// the name and renders it via flagHTML so the fallback works there too.
+function serverNameDisplay(name){
+  if(!name)return '—';
+  const m=name.match(/^(\p{RI}\p{RI})\s*(.*)/u);
+  if(!m)return esc(name);
+  const f=flagHTML(name);
+  return f + ' ' + esc(m[2]);
+}
+
 function isMeteredServer(name){
   // Must match _is_metered_server() in /usr/bin/flowvpn
   return /МТС|мтс|MTS|mts|Т2|т2|Tele2|tele2|\bБи\b|Билайн|билайн|Beeline|beeline|Мегафон|мегафон|Megafon|megafon/.test(name||'');
@@ -1636,13 +1776,13 @@ function renderServers(servers,sel,switchingIdx){
     const pingStr=p!==undefined?(p<0?'нет':p+' мс'):'—';
     const cls=p!==undefined?pingClass(p):'ping-none';
     const flagMatch=s.name.match(/^(\p{RI}\p{RI})\s*(.*)/u);
-    const flag=flagMatch?flagMatch[1]:'';
     const name=flagMatch?flagMatch[2]:s.name;
+    const flagBadge=flagHTML(s.name);
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     const metered=isMeteredServer(s.name);
     const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
     return `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}">
-      <span class="server-flag">${esc(flag)}</span>
+      ${flagBadge}
       <span class="server-name">${esc(name)}</span>
       ${meterTag}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>
@@ -1650,7 +1790,11 @@ function renderServers(servers,sel,switchingIdx){
   }).join('');
 }
 
-let _lastSwitchSeen=null,_lastUpdateSeen=null;
+// Persist across page reloads — otherwise an overnight watchdog switch is
+// missed: page opens, _lastSwitchSeen=null, code records `t` and skips the
+// toast, so the user sees a different server with no explanation.
+let _lastSwitchSeen=parseInt(localStorage.getItem('flowvpn.lastSwitchSeen'))||0;
+let _lastUpdateSeen=parseInt(localStorage.getItem('flowvpn.lastUpdateSeen'))||0;
 async function fetchStatus(){
   try{
     const r=await apiFetch(API+'?action=status');
@@ -1663,25 +1807,26 @@ async function fetchStatus(){
       fresh.selected=state.selected;
     }
     state=fresh;
-    // Detect watchdog failover: if last_switch.time is newer than what we've seen, show a toast.
+    // Detect watchdog failover: if last_switch.time is newer than what we've
+    // seen, show a toast. Persisted via localStorage so an overnight switch
+    // is announced when the user opens the UI in the morning.
     if(state.last_switch&&state.last_switch.time){
       const t=state.last_switch.time;
-      if(_lastSwitchSeen===null){
-        _lastSwitchSeen=t; // initial load — don't toast
-      }else if(t>_lastSwitchSeen){
+      if(t>_lastSwitchSeen){
         _lastSwitchSeen=t;
+        localStorage.setItem('flowvpn.lastSwitchSeen',t);
         const from=state.last_switch.from||'—',to=state.last_switch.to||'—';
-        toast.info('Сервер переключён',from+' → '+to+' (watchdog)');
+        // Sticky toast (duration:0) — easy to miss otherwise; user dismisses.
+        toast({title:'Сервер был переключён '+fmtAgo(t),desc:from+' → '+to+' (watchdog, защита от обрыва)'},{type:'info',duration:0});
       }
     }
     // Same pattern for subscription auto-update (cron). Only toast when the
     // server count actually changed — re-fetch with the same list is silent.
     if(state.last_update&&state.last_update.time){
       const t=state.last_update.time;
-      if(_lastUpdateSeen===null){
+      if(t>_lastUpdateSeen){
         _lastUpdateSeen=t;
-      }else if(t>_lastUpdateSeen){
-        _lastUpdateSeen=t;
+        localStorage.setItem('flowvpn.lastUpdateSeen',t);
         const cur=state.last_update.count||0,prev=state.last_update.prev_count||0;
         if(cur!==prev){
           const arrow=prev>0?(prev+' → '+cur):(cur+' серверов');
@@ -1698,21 +1843,31 @@ async function fetchStatus(){
     // finished saving and the user sees the toggle bounce.
     const am=document.getElementById('autoModeToggle');
     if(am&&!_autoModePending&&am.checked!==!!state.auto_mode)am.checked=!!state.auto_mode;
+    const hint=document.getElementById('autoModeHint');
+    if(hint){
+      if(state.auto_mode){
+        hint.textContent='Авто-режим — сервер выбирается автоматически по пингу. Клик по серверу выключает авто.';
+        hint.style.color='var(--accent)';
+      }else{
+        hint.textContent='Ручной режим — кликните на сервер, чтобы переключиться. Включите Авто, чтобы система выбирала за вас.';
+        hint.style.color='var(--text-muted)';
+      }
+    }
     const orb=document.getElementById('statusOrb');
     orb.classList.toggle('off',!on);
 
     if(on){
-      document.getElementById('statusTitle').textContent='Защищено';
+      document.getElementById('statusTitle').textContent='Подключено';
       const modeText=state.mode==='all_vpn'?'Весь трафик кроме РФ':'Только по списку';
       document.getElementById('statusMeta').innerHTML=
-        `<span><b>${esc(state.server||'—')}</b></span>`+
+        `<span><b>${serverNameDisplay(state.server||'—')}</b></span>`+
         `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
         `<span title="С момента последнего запуска или переключения сервера">${fmtUp(state.uptime)}</span>`+
         `<span>${modeText}</span>`;
       const hi=document.getElementById('headerInfo');
       hi.className='header-info on';
-      hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green)"></span> '
-        +esc(state.server||'')+'<span style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
+      hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--green)"></span> '
+        +serverNameDisplay(state.server||'')+'<span style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
       document.getElementById('vpnMiniToggle').checked=true;
     }else{
       document.getElementById('statusTitle').textContent='Отключено';
@@ -1724,6 +1879,7 @@ async function fetchStatus(){
     }
 
     document.getElementById('subUrl').value=state.subscription_url||'';
+    _syncUpdateBtn();
     document.getElementById('mode-all').classList.toggle('active',state.mode==='all_vpn');
     document.getElementById('mode-block').classList.toggle('active',state.mode==='blocklist');
     renderServers(state.servers,state.selected);
@@ -1852,7 +2008,7 @@ async function selectServer(i){
 async function doPing(){
   const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';
   try{const r=await apiFetch(API+'?action=ping');const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}
-  b.disabled=false;b.textContent='RTT'
+  b.disabled=false;b.textContent='Проверить пинг'
 }
 // Maps backend status code to a short Russian phrase for the toast log.
 const _AUTO_STATUS_RU={
@@ -1924,7 +2080,12 @@ async function doAutoSelect(){
   }
 }
 async function setMode(m){
+  if(state.mode===m){return}
   const name=m==='all_vpn'?'«Всё через VPN»':'«По списку»';
+  // Visual feedback on the clicked card immediately — user sees a pulse
+  // before the toast and before the backend round-trip completes.
+  const card=document.getElementById(m==='all_vpn'?'mode-all':'mode-block');
+  if(card){card.classList.add('applying');setTimeout(()=>card.classList.remove('applying'),900)}
   const tid=toast.loading('Применяем режим…');
   try{await apiFetch(API+'?action=set-mode&mode='+m);updateToast(tid,'Режим: '+name,{type:'success'})}
   catch(e){updateToast(tid,'Ошибка',{type:'error'})}
@@ -1938,6 +2099,14 @@ async function saveSubUrl(){
   catch(e){updateToast(tid,'Ошибка сохранения',{type:'error'})}
 }
 async function doUpdate(){
+  // Sanity check before the round-trip — empty subscription means the
+  // backend will return an error anyway, but the user gets immediate
+  // inline feedback (highlighted field) instead of a generic toast.
+  const subInp=document.getElementById('subUrl');
+  if(!subInp.value.trim()){
+    _showInputError(subInp,'Сначала вставьте ссылку на подписку и нажмите «Сохранить»');
+    subInp.focus();return;
+  }
   const b=document.getElementById('updateBtn');b.disabled=true;b.textContent='Обновляем…';
   const tid=toast.loading('Обновляем список серверов…');
   try{
@@ -1948,17 +2117,51 @@ async function doUpdate(){
   b.disabled=false;b.textContent='Обновить список серверов';
   scheduleStatus(2000);
 }
+// Disable Update button when subscription URL is empty so user sees
+// it's not actionable. Re-enabled by status sync when URL is filled.
+function _syncUpdateBtn(){
+  const b=document.getElementById('updateBtn');
+  const inp=document.getElementById('subUrl');
+  if(!b||!inp)return;
+  const empty=!inp.value.trim();
+  b.disabled=empty;
+  b.title=empty?'Заполните ссылку на подписку выше':'';
+  b.style.opacity=empty?'0.55':'';
+}
 async function doRestart(){
-  const tid=toast.loading('Перезапускаем FlowVPN…');
-  try{await apiFetch(API+'?action=restart');updateToast(tid,'FlowVPN перезапущен',{type:'success'})}
+  const tid=toast.loading('Перезапускаем EclipVPN…');
+  try{await apiFetch(API+'?action=restart');updateToast(tid,'EclipVPN перезапущен',{type:'success'})}
   catch(e){updateToast(tid,'Ошибка',{type:'error'})}
   scheduleStatus(3000);
 }
 async function doStop(){
+  if(!confirm('Остановить VPN?\n\nВесь трафик пойдёт напрямую (включая заблокированные сайты). Заново включить можно тем же переключателем.'))return;
   const tid=toast.loading('Останавливаем…');
   try{await apiFetch(API+'?action=stop');updateToast(tid,'VPN остановлен',{type:'success'})}
   catch(e){updateToast(tid,'Ошибка',{type:'error'})}
   scheduleStatus(2000);
+}
+
+// Collapse/expand a card. Persisted in localStorage so the user's preference
+// survives reloads — they expanded it once, no need to expand again every visit.
+function toggleCollapsible(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const open=!el.classList.contains('expanded');
+  el.classList.toggle('expanded',open);
+  const head=el.querySelector('.card-head');
+  if(head)head.setAttribute('aria-expanded',open?'true':'false');
+  try{localStorage.setItem('flowvpn.collapse.'+id,open?'1':'0')}catch(_){}
+}
+function restoreCollapsibles(){
+  ['directCard','vpnCard'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el)return;
+    const saved=localStorage.getItem('flowvpn.collapse.'+id);
+    if(saved==='1')el.classList.add('expanded');
+    const head=el.querySelector('.card-head');
+    if(head)head.setAttribute('aria-expanded',saved==='1'?'true':'false');
+  });
 }
 
 async function loadDomains(){
@@ -1984,14 +2187,36 @@ function toPunycode(s){
     return wild+u.hostname;
   }catch(_){return s}
 }
+function _showInputError(inp,msg){
+  inp.classList.add('error');
+  let m=inp.parentElement.parentElement.querySelector('.input-error-msg');
+  if(!m){
+    m=document.createElement('div');m.className='input-error-msg';
+    inp.parentElement.parentElement.insertBefore(m,inp.parentElement.nextSibling);
+  }
+  m.textContent=msg;m.classList.add('visible');
+  const clear=()=>{inp.classList.remove('error');m.classList.remove('visible');inp.removeEventListener('input',clear)};
+  inp.addEventListener('input',clear);
+}
 async function addDomain(list){
   const inp=document.getElementById(list==='direct'?'addDirectInput':'addVpnInput');
-  const raw=inp.value.trim();if(!raw)return;
+  const raw=inp.value.trim();
+  if(!raw){_showInputError(inp,'Введите домен, например: example.com');return}
+  // Local validation before round-trip — domain must look like a hostname
+  // (letters/digits/dots/hyphens), no protocol, no path. Catches typos like
+  // "https://example.com/page" before the backend rejects them.
   const d=toPunycode(raw);
-  try{await apiFetch(API+'?action=add-domain&domain='+encodeURIComponent(d)+'&list='+list);inp.value='';
+  if(!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d)){
+    _showInputError(inp,'Похоже на неверный домен. Введите как «example.com» — без https:// и /пути');return;
+  }
+  try{
+    const r=await apiFetch(API+'?action=add-domain&domain='+encodeURIComponent(d)+'&list='+list);
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.error){_showInputError(inp,j.error);return}
+    inp.value='';
     const display=raw!==d?(raw+' ('+d+')'):d;
-    toast.success('Домен добавлен',display+(list==='direct'?' → напрямую':' → через VPN'));loadDomains()}
-  catch(e){toast.error('Ошибка добавления')}
+    toast.success('Домен добавлен',display+(list==='direct'?' → напрямую':' → через VPN'));loadDomains();
+  }catch(e){_showInputError(inp,'Не удалось сохранить — попробуйте снова')}
 }
 async function removeDomain(d,list){
   try{await apiFetch(API+'?action=remove-domain&domain='+encodeURIComponent(d)+'&list='+list);toast.success('Удалён',d);loadDomains()}
@@ -2105,24 +2330,17 @@ async function toggleDeviceRoute(ip,route){
 async function loadTraffic(){
   try{
     const r=await apiFetch(API+'?action=get-traffic');const d=await r.json();
-    // "Сейчас активно" — counts of currently-open connections
-    const sv=document.getElementById('statVpn');
-    if(sv)sv.textContent=(d.vpn_conns||0)+' / '+fmtBytes((d.vpn_active||0));
-    const sd=document.getElementById('statDirect');
-    if(sd)sd.textContent=(d.direct_conns||0)+' / '+fmtBytes((d.direct_active||0));
-    // "Сессия" — cumulative since last sing-box restart, properly split by chain
+    // Cumulative since last sing-box restart, properly split by chain.
+    // Connection counts intentionally omitted — they confused users who
+    // read them as a "speed" or "usage" indicator.
     const sessionVpn=document.getElementById('sessionVpn');
     if(sessionVpn)sessionVpn.textContent=fmtBytes((d.vpn_dl||0)+(d.vpn_ul||0));
     const sessionDirect=document.getElementById('sessionDirect');
     if(sessionDirect)sessionDirect.textContent=fmtBytes((d.dir_dl||0)+(d.dir_ul||0));
-    // Stats card on the Devices tab — same source as the session totals
-    // above (was lying before v4.12: showed nft tproxy total under "Через VPN").
     const tv=document.getElementById('trafficVpn');
     if(tv)tv.textContent=fmtBytes((d.vpn_dl||0)+(d.vpn_ul||0));
     const td=document.getElementById('trafficDirect');
     if(td)td.textContent=fmtBytes((d.dir_dl||0)+(d.dir_ul||0));
-    const cv=document.getElementById('connVpn');if(cv)cv.textContent=d.vpn_conns||0;
-    const cd=document.getElementById('connDirect');if(cd)cd.textContent=d.direct_conns||0;
   }catch(e){}
 }
 
@@ -2166,7 +2384,7 @@ function drawSpark(){
     ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.lineJoin='round';ctx.stroke();
   };
   drawLine(speedHistory.down,'#34d399','rgba(52,211,153,0.25)');
-  drawLine(speedHistory.up,'#f472b6',null);
+  drawLine(speedHistory.up,'#5e6ad2',null);
 }
 
 let speedWs=null,wsBackoff=5000,_wsReconnectTimer=null;
@@ -2274,7 +2492,7 @@ async function loadLogs(){
         }else if(f==='dns'){
           msg='DNS-запросов в буфере нет — попробуйте обновить страницу или открыть сайт.';
         }else if(f==='flow'){
-          msg='Системных событий FlowVPN нет.';
+          msg='Системных событий EclipVPN нет.';
         }else{
           msg='Записей в буфере нет.';
         }
@@ -2324,7 +2542,7 @@ async function loadLogs(){
 async function clearLog(){try{await apiFetch(API+'?action=clear-log');_lastLogSig='';toast.success('Журнал очищен');loadLogs()}catch(e){toast.error('Ошибка')}}
 async function exportLog(){
   try{const r=await apiFetch(API+'?action=get-log&lines=1000&filter=all');const d=await r.json();
-    let txt='FlowVPN — журнал — '+new Date().toLocaleString('ru')+'\n'+'='.repeat(60)+'\n\n';
+    let txt='EclipVPN — журнал — '+new Date().toLocaleString('ru')+'\n'+'='.repeat(60)+'\n\n';
     const labels={vpn:'[VPN]    ',direct:'[DIRECT] ',error:'[ERROR]  ',dns:'[DNS]    ',flow:'[FLOW]   ',xray:'[XRAY]   '};
     d.forEach(e=>{txt+=`${e.time||''} ${labels[e.route]||''}${e.dst||''}\n`});
     txt+=`\nВсего записей: ${d.length}`;
@@ -2344,17 +2562,17 @@ function loadQuickDiag(){
   if(!grid)return;
   const on=state.running;
   const statusMetric=on
-    ?{cls:'ok',icon:'#i-shield',label:'Статус',value:'Защищено',sub:state.mode==='all_vpn'?'Весь трафик кроме РФ':'По списку блокировок'}
+    ?{cls:'ok',icon:'#i-shield',label:'Статус',value:'Подключено',sub:state.mode==='all_vpn'?'Весь трафик кроме РФ':'По списку блокировок'}
     :{cls:'err',icon:'#i-shield',label:'Статус',value:'Отключено',sub:'Включите VPN в верхнем блоке'};
   const serverName=state.server||'—';
   const cachedPing=(state.selected!==undefined&&pings[state.selected]!==undefined)?pings[state.selected]:null;
   const pingTxt=cachedPing!==null?(cachedPing<0?'нет связи':cachedPing+' мс'):'—';
   const pingCls=cachedPing===null?'':(cachedPing<0?'err':cachedPing<150?'ok':cachedPing<400?'warn':'err');
-  const serverMetric={cls:on?pingCls||'info':'',icon:'#i-globe',label:'Сервер',value:serverName,sub:'RTT: '+pingTxt};
+  const serverMetric={cls:on?pingCls||'info':'',icon:'#i-globe',label:'Сервер',valueHtml:serverNameDisplay(serverName),sub:'RTT: '+pingTxt};
   const ipMetric={cls:on?'info':'',icon:'#i-link',label:'Видимый IP',value:state.vpn_ip||'—',sub:on?'Так вас видят сайты':'Нет подключения',mono:true};
   const uptime=state.uptime||0;
   const uptimeMetric={cls:on?'ok':'',icon:'#i-gear',label:'VPN-сессия',value:on?fmtUp(uptime):'—',sub:on?'С последнего рестарта':'Не запущено'};
-  const build=(m)=>`<div class="metric ${m.cls}"><div class="metric-icon"><svg><use href="${m.icon}"/></svg></div><div class="metric-body"><div class="metric-label">${m.label}</div><div class="metric-value${m.mono?' mono':''}">${esc(m.value)}</div><div class="metric-sub">${esc(m.sub)}</div></div></div>`;
+  const build=(m)=>`<div class="metric ${m.cls}"><div class="metric-icon"><svg><use href="${m.icon}"/></svg></div><div class="metric-body"><div class="metric-label">${m.label}</div><div class="metric-value${m.mono?' mono':''}">${m.valueHtml||esc(m.value)}</div><div class="metric-sub">${esc(m.sub)}</div></div></div>`;
   grid.innerHTML=[statusMetric,serverMetric,ipMetric,uptimeMetric].map(build).join('');
 }
 
@@ -2383,7 +2601,7 @@ function checkAction(c){
   const n=(c.name||'').toLowerCase();
   if(n==='лог')return{label:'Очистить журнал',fn:'hcClearLog()'};
   if(n==='ошибки')return{label:'Открыть журнал ошибок',fn:'hcOpenErrors()'};
-  if(n==='xray'||n==='sing-box')return{label:'Перезапустить FlowVPN',fn:'doRestart()'};
+  if(n==='xray'||n==='sing-box')return{label:'Перезапустить EclipVPN',fn:'doRestart()'};
   return null;
 }
 async function hcClearLog(){
@@ -2459,7 +2677,7 @@ async function loadSystemInfo(){
     const memCls=memPct>90?'err':memPct>70?'warn':'';
     const flashCls=flashPct>90?'err':flashPct>80?'warn':'';
     const rows=[
-      ['FlowVPN','v'+(d.flowvpn||'—')],
+      ['EclipVPN','v'+(d.flowvpn||'—')],
       ['xray',d.xray||'—'],
       ['sing-box',d.singbox||'—'],
       ['Прошивка',d.openwrt||'—'],
@@ -2517,7 +2735,10 @@ async function restoreBackup(event){
   let parsed;
   try{parsed=JSON.parse(t)}
   catch(e){toast.error('Неверный формат файла');event.target.value='';return}
-  if(!parsed||typeof parsed.config!=='object'){toast.error('Не похоже на бэкап FlowVPN');event.target.value='';return}
+  if(!parsed||typeof parsed.config!=='object'){toast.error('Не похоже на бэкап EclipVPN');event.target.value='';return}
+  if(!confirm('Восстановить настройки из бэкапа?\n\nТекущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. VPN перезапустится.')){
+    event.target.value='';return;
+  }
   try{
     await apiFetch(API+'?action=restore',{method:'POST',body:t});
     toast.success('Настройки восстановлены');fetchStatus();
@@ -2532,8 +2753,13 @@ const THEME_LABELS={auto:'Авто',light:'Светлая',dark:'Тёмная'};
 function applyTheme(pref){
   const sysLight=window.matchMedia('(prefers-color-scheme: light)').matches;
   const effective=pref==='auto'?(sysLight?'light':'dark'):pref;
-  if(effective==='light')document.documentElement.setAttribute('data-theme','light');
-  else document.documentElement.removeAttribute('data-theme');
+  // Disable transitions for one frame so header/cards/etc snap together,
+  // not at 200ms intervals — see CSS rule for html.theme-switching.
+  const root=document.documentElement;
+  root.classList.add('theme-switching');
+  if(effective==='light')root.setAttribute('data-theme','light');
+  else root.removeAttribute('data-theme');
+  requestAnimationFrame(()=>requestAnimationFrame(()=>root.classList.remove('theme-switching')));
   const btn=document.getElementById('themeBtn');
   if(btn){btn.innerHTML='<svg class="icon"><use href="'+THEME_ICONS[pref]+'"/></svg>';btn.title='Тема: '+THEME_LABELS[pref]+' (клик: переключить)'}
 }
@@ -2574,6 +2800,37 @@ function syncMiniToggle(el){
     if(!ticking){requestAnimationFrame(update);ticking=true}
   },{passive:true});
   update();
+  // Mini-toggle visibility — track the main hero toggle, show mini only when
+  // the main one has scrolled off-screen. Threshold by scrollY would either
+  // overlap (mini shows while main still visible) or hide too long (main
+  // already gone but mini still hidden).
+  // IMPORTANT: observe the parent <label class="toggle">, not the <input>.
+  // The input itself is display:none (custom toggle UX hides the checkbox
+  // and styles the surrounding label). getBoundingClientRect on a
+  // display:none element returns all zeros, which would make r.bottom<=0
+  // true and incorrectly mark the page as "scrolled past hero" on init.
+  const mainToggleInput=document.getElementById('vpnToggle');
+  const mainToggle=mainToggleInput&&mainToggleInput.closest('.toggle');
+  if(mainToggle){
+    // Set initial compact state synchronously so there's no flash of
+    // mini-toggle before scroll listener fires.
+    const setCompact=()=>{
+      const r=mainToggle.getBoundingClientRect();
+      // Both checks needed: rect of zeros (pre-layout) shouldn't trigger
+      // compact, only an actual top-out (bottom strictly less than 0).
+      header.classList.toggle('compact',r.height>0&&r.bottom<0);
+    };
+    setCompact();
+    // Use a scroll-driven check instead of IntersectionObserver: IO's first
+    // async callback can fire with isIntersecting=false on iOS Safari when
+    // the page is still settling (dynamic toolbar resizing the visual
+    // viewport). getBoundingClientRect after layout is reliable. The cost
+    // is one rect read per scroll frame, which is negligible.
+    let ticking2=false;
+    window.addEventListener('scroll',()=>{
+      if(!ticking2){requestAnimationFrame(()=>{setCompact();ticking2=false});ticking2=true}
+    },{passive:true});
+  }
 })();
 
 // Onboarding
@@ -2653,7 +2910,7 @@ async function onboardNext1(){
 function finishOnboard(){
   localStorage.setItem('flowvpn-onboarded','1');
   _closeOnboard();
-  toast.success('FlowVPN готов к работе','Нажмите переключатель, чтобы подключиться');
+  toast.success('EclipVPN готов к работе','Нажмите переключатель, чтобы подключиться');
 }
 function maybeShowOnboard(){
   if(localStorage.getItem('flowvpn-onboarded')==='1')return;
@@ -2695,7 +2952,7 @@ document.addEventListener('keydown',(e)=>{
   }
 });
 
-fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();startSpeedMonitor();
+restoreCollapsibles();fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();startSpeedMonitor();
 // Skip polling when tab is hidden (battery-friendly).
 setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){fetchStatus();loadTraffic()}});
