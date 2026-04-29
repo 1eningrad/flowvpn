@@ -70,6 +70,7 @@ case "$action" in
     healthcheck)    /usr/bin/flowvpn healthcheck ;;
     system-info)    /usr/bin/flowvpn system-info ;;
     get-traffic)    /usr/bin/flowvpn get-traffic ;;
+    traffic-poll)   /usr/bin/flowvpn traffic-poll ;;
     reset-traffic)  /usr/bin/flowvpn reset-traffic ;;
     real-ping)      /usr/bin/flowvpn real-ping ;;
     get-incidents)  /usr/bin/flowvpn get-incidents ;;
