@@ -598,7 +598,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 /* Domain tags */
 .domains{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
 .domains.scrollable{max-height:280px;overflow-y:auto;padding:4px 6px 4px 0;
-  border-top:1px solid var(--border);margin-top:8px;align-content:flex-start}
+  border-top:1px solid var(--border);margin-top:8px;align-content:flex-start;
+  -webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .domains-note{color:var(--text-dim);font-size:11px;margin:4px 0 6px;line-height:1.45}
 .tag{
   display:inline-flex;align-items:center;gap:5px;
@@ -1320,14 +1321,14 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         </div>
 
         <div class="card card-accent card-accent-direct card-collapsible" id="directCard">
-          <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('directCard')}">
+          <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="directCardBody" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('directCard')}">
             <div>
               <div class="card-title">Исключения — минуя VPN</div>
               <p class="card-desc" style="margin:3px 0 0">Эти сайты откроются напрямую, без VPN</p>
             </div>
             <div class="stat-num" id="directCount" style="color:var(--green);font-size:13px">0</div>
           </div>
-          <div class="card-collapsible-body">
+          <div class="card-collapsible-body" id="directCardBody">
             <div class="domains" id="directDomains"></div>
             <div class="flex mt">
               <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru" onkeydown="if(event.key==='Enter')addDomain('direct')">
@@ -1337,14 +1338,14 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         </div>
 
         <div class="card card-accent card-accent-vpn card-collapsible" id="vpnCard">
-          <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('vpnCard')}">
+          <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="vpnCardBody" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('vpnCard')}">
             <div>
               <div class="card-title">Принудительно через VPN</div>
               <p class="card-desc" style="margin:3px 0 0">Всегда шифровать эти сайты, даже если они в списке РФ</p>
             </div>
             <div class="stat-num" id="vpnCount" style="color:var(--accent);font-size:13px">0</div>
           </div>
-          <div class="card-collapsible-body">
+          <div class="card-collapsible-body" id="vpnCardBody">
             <div class="domains" id="vpnDomains"></div>
             <div class="flex mt">
               <input class="input flex-1" id="addVpnInput" placeholder="например: chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
@@ -3177,7 +3178,18 @@ restoreCollapsibles();fetchStatus();loadDomains();loadSchedule();loadAutoUpdate(
 setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
 // Incidents change rarely — refresh every 30s instead of 5s.
 setInterval(()=>{if(!document.hidden)loadIncidents()},30000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){fetchStatus();loadTraffic();loadIncidents()}});
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) return;
+  fetchStatus(); loadTraffic(); loadIncidents();
+  // After a long background, the speed-monitor WS is closed and may be
+  // sitting on a 60s reconnect timer. Reset backoff and reconnect now —
+  // otherwise the speed widgets stay frozen until the timer fires.
+  if(!speedWs || speedWs.readyState===WebSocket.CLOSED){
+    if(_wsReconnectTimer){ clearTimeout(_wsReconnectTimer); _wsReconnectTimer=null; }
+    wsBackoff=5000;
+    startSpeedMonitor();
+  }
+});
 </script>
 </body>
 </html>
