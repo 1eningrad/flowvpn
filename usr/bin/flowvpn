@@ -424,13 +424,49 @@ cmd_probe_server() {
             '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
             "$test_cfg" > "$probe_cfg"
 
-        /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
-        probe_pid=$!
-        sleep 2
-
-        local t0 t1 elapsed test_ip
+        # Up to 3 spawn-and-test attempts. A freshly-spawned xray's very
+        # first request through VLESS+XHTTP+Reality occasionally hangs to
+        # full timeout (measured ~50% on DE/NL endpoints when probing while
+        # prod xray is connected to a different server — likely cold xmux
+        # state on the remote). Once a probe xray hits this, retrying *its*
+        # curl doesn't recover; only respawning xray does. The user-visible
+        # symptom was "не получается переключиться с первого раза" — the
+        # picker click triggered a flaky probe, toast said "Не удалось
+        # переключить", and the immediate second click succeeded.
+        # 3 attempts at ~7s worst-case each = ≤21s budget; an outright dead
+        # server is detected on attempt 1 because curl returns immediately
+        # (port unreachable) — this loop only burns time on flakes.
+        local t0 t1 elapsed test_ip="" attempt
         t0=$(date +%s%3N 2>/dev/null)
-        test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
+        for attempt in 1 2 3; do
+            # Spawn a fresh xray for each attempt — reusing a hung instance
+            # doesn't help (its outbound state is broken).
+            [ -n "$probe_pid" ] && {
+                kill "$probe_pid" 2>/dev/null
+                wait "$probe_pid" 2>/dev/null
+                probe_pid=""
+            }
+            /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
+            probe_pid=$!
+
+            # Wait for the SOCKS inbound to actually listen before curl-ing.
+            # busybox sleep doesn't accept fractional seconds, so this is
+            # 1s granularity, capped at 6s.
+            local ready=0 wait_i=0
+            while [ "$wait_i" -lt 6 ]; do
+                kill -0 "$probe_pid" 2>/dev/null || break
+                if netstat -tlnp 2>/dev/null | grep -q ":$probe_port "; then
+                    ready=1
+                    break
+                fi
+                sleep 1
+                wait_i=$((wait_i + 1))
+            done
+            [ "$ready" -eq 0 ] && continue
+
+            test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 6 https://api.ipify.org 2>/dev/null)
+            [ -n "$test_ip" ] && break
+        done
         t1=$(date +%s%3N 2>/dev/null)
         # Fallback: if busybox date doesn't support %3N, both are non-numeric.
         case "$t0$t1" in *[!0-9]*) elapsed=0;; *) elapsed=$((t1 - t0));; esac
