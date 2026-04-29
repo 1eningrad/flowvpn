@@ -1029,11 +1029,32 @@ cmd_get_log() {
     if [ "$filter" = "all" ] || [ "$filter" = "flow" ]; then
         local cleared_since=0
         [ -f "$FLOWVPN_TMP/log_cleared_ts" ] && cleared_since=$(cat "$FLOWVPN_TMP/log_cleared_ts" 2>/dev/null)
-        logread -e flowvpn 2>/dev/null | tail -100 | \
-            awk -v ts="${cleared_since:-0}" 'match($0, /\[[0-9]+\.[0-9]+\]/) {
-                e = substr($0, RSTART+1, RLENGTH-2); sub(/\..*/, "", e)
-                if (e+0 >= ts+0) print
-            }' | awk '{print "FLOW|"$0}' >> "$tmplog"
+        # logread on this busybox formats lines like
+        #   "Thu Apr 30 00:18:32 2026 user.notice flowvpn: ..."
+        # No epoch prefix and the time is in *local* timezone, but
+        # log_cleared_ts is `date +%s` (UTC epoch). Parse the textual
+        # date in awk and subtract TZ_OFFSET to compare apples to apples.
+        # mktime is gawk-only, so we build the epoch by hand.
+        logread 2>/dev/null | grep 'flowvpn:' | tail -100 | \
+            awk -v ts="${cleared_since:-0}" -v tz="${TZ_OFFSET:-3}" '
+                BEGIN {
+                    split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " ")
+                    for (i=1; i<=12; i++) mn[m[i]] = i
+                    split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
+                }
+                {
+                    if ($1 ~ /^[A-Z][a-z]{2}$/ && $2 in mn) {
+                        mo = mn[$2]; day = $3+0; year = $5+0
+                        split($4, hms, ":"); hh=hms[1]+0; mi=hms[2]+0; se=hms[3]+0
+                        days = (year - 1970) * 365 + int((year - 1969) / 4)
+                        for (i=1; i<mo; i++) days += dim[i]
+                        if (mo > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) days += 1
+                        days += day - 1
+                        # local epoch → UTC epoch.
+                        epoch = days * 86400 + hh*3600 + mi*60 + se - tz*3600
+                        if (epoch + 0 >= ts + 0) print
+                    }
+                }' | awk '{print "FLOW|"$0}' >> "$tmplog"
     fi
 
     # Sort and parse
