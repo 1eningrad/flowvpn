@@ -280,6 +280,13 @@ cmd_restart() {
             local sn vi
             sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
             vi=$(cat "$FLOWVPN_TMP/vpn_ip" 2>/dev/null)
+            # Explicit cleanup before fast-path return. The EXIT trap will
+            # eventually fire on script exit, but in ash the timing of
+            # function-set traps relative to early returns is fuzzy enough
+            # that the watchdog's stale-marker reaper has occasionally
+            # raced this. Cheap to be explicit.
+            _op_end
+            trap - EXIT INT TERM
             echo "{\"status\":\"unchanged\",\"server\":\"$sn\",\"vpn_ip\":\"$vi\",\"mode\":\"$mode\"}"
             return 0
         fi
