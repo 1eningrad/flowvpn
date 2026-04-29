@@ -2036,7 +2036,13 @@ function scheduleStatus(ms){
 // returns an HTML body which then fails JSON.parse and the catch block
 // swallows it as a generic 'Ошибка', hiding the real failure.
 async function apiFetch(url,opts){
-  const r=await fetch(url,opts);
+  // Force no-cache on every API call. Browsers were occasionally serving
+  // cached GET responses for endpoints whose state changes server-side
+  // (auto-update, schedule, status, get-domains), making toggles "stick"
+  // in their previous visual position after a successful action.
+  const merged=Object.assign({cache:'no-store',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}},opts||{});
+  if(opts&&opts.headers) merged.headers=Object.assign({},merged.headers,opts.headers);
+  const r=await fetch(url,merged);
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r;
 }
@@ -2901,26 +2907,57 @@ async function runHealthcheck(){
 
 // Schedule
 async function toggleSchedule(enable){
+  // Same visual-from-action pattern as setAutoUpdate. Earlier code called
+  // loadSchedule() (GET, cacheable) right after the action; some browsers
+  // returned stale state and reverted the toggle, so the user had to click
+  // twice to actually disable.
+  const tg=document.getElementById('schedToggle');
   const body=document.getElementById('schedBody');
+  const st=document.getElementById('schedStatus');
+  if(tg) tg.disabled=true;
   body.classList.toggle('disabled',!enable);
-  if(enable){await saveSchedule()}
-  else{try{await apiFetch(API+'?action=schedule&mode=disable');toast.info('Расписание отключено');loadSchedule()}catch(e){toast.error('Ошибка')}}
+  try{
+    if(enable){
+      await saveScheduleInner();
+    }else{
+      await apiFetch(API+'?action=schedule&mode=disable');
+      if(st){ st.className='setting-status'; st.textContent='Выключено'; }
+      toast.info('Расписание отключено');
+    }
+    if(tg) tg.checked=!!enable;
+  }catch(e){
+    if(tg) tg.checked=!enable;
+    body.classList.toggle('disabled',enable);
+    toast.error('Ошибка','Не удалось сохранить расписание');
+  }finally{
+    if(tg) tg.disabled=false;
+  }
 }
 async function saveSchedule(){
   if(!document.getElementById('schedToggle').checked)return;
+  try{ await saveScheduleInner(); }catch(e){ toast.error('Ошибка сохранения'); }
+}
+async function saveScheduleInner(){
   const on=document.getElementById('schedOn').value,off=document.getElementById('schedOff').value;
-  if(!on||!off){toast.error('Укажите время');return}
-  try{await apiFetch(API+'?action=schedule&on='+on+'&off='+off);toast.success('Расписание обновлено',on+' — '+off);loadSchedule()}
-  catch(e){toast.error('Ошибка сохранения')}
+  if(!on||!off){ toast.error('Укажите время'); throw new Error('time-missing'); }
+  await apiFetch(API+'?action=schedule&on='+on+'&off='+off);
+  const st=document.getElementById('schedStatus');
+  if(st){ st.className='setting-status on'; st.textContent='Активно: '+on+' — '+off; }
+  toast.success('Расписание обновлено',on+' — '+off);
 }
 async function loadSchedule(){
-  try{const r=await apiFetch(API+'?action=schedule');const d=await r.json();
+  // Cache-busted GET — browser was caching the previous answer and the
+  // toggle would render with stale state on tab switch.
+  try{const r=await apiFetch(API+'?action=schedule&_='+Date.now());const d=await r.json();
     const st=document.getElementById('schedStatus');
     const tg=document.getElementById('schedToggle');
     const body=document.getElementById('schedBody');
-    tg.checked=!!d.enabled;body.classList.toggle('disabled',!d.enabled);
-    if(d.enabled){st.className='setting-status on';st.textContent='Активно: '+d.on+' — '+d.off}
-    else{st.className='setting-status';st.textContent='Выключено'}
+    if(tg) tg.checked=!!d.enabled;
+    body.classList.toggle('disabled',!d.enabled);
+    if(st){
+      if(d.enabled){st.className='setting-status on';st.textContent='Активно: '+d.on+' — '+d.off}
+      else{st.className='setting-status';st.textContent='Выключено'}
+    }
     if(d.on)document.getElementById('schedOn').value=d.on;
     if(d.off)document.getElementById('schedOff').value=d.off;
   }catch(e){}
