@@ -139,15 +139,23 @@ flowvpn backup                      # Экспорт настроек
 
 - **xray ≥ 26.4.17** — версия из opkg (25.1.30) ломает XHTTP+Reality
 - **mark 0x8000** — обязателен для обхода правил fw4
-- **geosite-ru включает google.com** — Gemini / AI Studio добавляйте в «Принудительно через VPN»
-- **QUIC (UDP 443) блокируется** в режиме «Всё через VPN» — приложения откатываются на TCP
+- **geosite-ru включает google.com** — Gemini / AI Studio добавляйте в «Принудительно через VPN» (часть AI-сервисов уже встроена в дефолтный список)
+- **QUIC (UDP 443) блокируется** во всех режимах — приложения откатываются на TCP. Reject-правило стоит **до** force-VPN match'а, поэтому Gemini / ChatGPT по UDP не идут через VPN, а просто переходят на TCP. Это намеренно: QUIC поверх Reality+XHTTP нестабилен.
+- **DNS-direct идёт на 1.1.1.1**, не на DNS провайдера. Под CGNAT'ом, который перехватывает UDP/53 (например SevenSky), резолв «direct»-доменов может ломаться — тогда RU-сайты будут открываться через VPN.
+- **Datacenter-IP заблокированы у OpenAI / Anthropic / некоторых других AI-провайдеров.** Если ваш VPN-сервер у Hetzner / OVH / DigitalOcean — даже корректный маршрут даст 403. Решается только residential-IP сервером.
 - **Время на роутере должно быть синхронизировано** — иначе Reality handshake падает (NTP при первом запуске)
+- **Clash API доступен на `:9090` для всех на LAN.** Токен отдаётся UI через `/status`, любое устройство в той же Wi-Fi-сети может им воспользоваться. Подходит для модели «доверять домашнему LAN»; в публичном Wi-Fi не разворачивайте.
 
 ## Обновление существующей установки
 
 ```bash
-# Скопировать обновлённые файлы (тот же набор) → restart
-flowvpn restart
+# С исходников (одна команда):
+cd ~/flowvpn && ./deploy.sh                  # default root@192.168.1.1
+ROUTER=root@10.0.0.1 ./deploy.sh             # другой роутер
+# deploy.sh делает: git pull → tar-pipe всех скриптов/CGI/UI →
+# ash -n syntax-check → init.d stop → wipe stale rules + watchdog
+# state → kill orphan watchdogs → init.d restart → verification.
+
 # Hard reload UI в браузере: Cmd+Shift+R / Ctrl+Shift+R
 ```
 
