@@ -440,7 +440,7 @@ generate_singbox_config() {
         },
         dns: {
             servers: [
-                {tag: "dns-proxy", type: "tls", server: "1.1.1.1", detour: "default"},
+                {tag: "dns-proxy", type: "https", server: "1.1.1.1", server_port: 443, path: "/dns-query", detour: "default"},
                 {tag: "dns-direct", type: "udp", server: "1.1.1.1", detour: "direct"},
                 {tag: "dns-block", type: "udp", server: "127.0.0.127"}
             ],
