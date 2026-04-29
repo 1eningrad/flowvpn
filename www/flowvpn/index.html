@@ -2289,30 +2289,39 @@ async function loadDomains(){
     const vpnBuiltin=d.vpn_domains_builtin||[], vpnCustom=d.custom_vpn||[];
     document.getElementById('directCount').textContent=dirBuiltin.length+dirCustom.length;
     document.getElementById('vpnCount').textContent=vpnBuiltin.length+vpnCustom.length;
-    const customTag=(arr,list)=>arr.map(d=>`<span class="tag">${esc(d)}<span class="tag-remove" onclick="removeDomain('${esc(d)}','${list}')">×</span></span>`).join('');
-    const roTag=arr=>arr.map(d=>`<span class="tag tag-readonly">${esc(d)}</span>`).join('');
-    // Direct list: built-in (read-only) + your custom (with ×). geosite-ru
-    // still applies as a third layer — note explains the layering instead
-    // of pretending the built-in count is the whole story.
-    const dEl=document.getElementById('directDomains');
-    dEl.classList.add('scrollable');
-    dEl.innerHTML =
-      `<div class="domains-note" style="flex-basis:100%">`+
+    // Inline onclick="removeDomain('${...}')" was XSS-unsafe — esc() HTML-
+    // escapes but the browser decodes the attribute back before passing to
+    // the JS parser, so a single quote in a domain name escaped the string.
+    // Now: data-* attributes + delegated click on the container, value
+    // never crosses an HTML→JS boundary.
+    const customTag=(domain,list)=>{const e=esc(domain);return `<span class="tag">${e}<span class="tag-remove" role="button" tabindex="0" aria-label="Удалить ${e}" data-domain="${e}" data-list="${list}">×</span></span>`};
+    const roTag=domain=>{const e=esc(domain);return `<span class="tag tag-readonly">${e}</span>`};
+    const renderDomains = (el, builtin, custom, list, hint) => {
+      el.classList.add('scrollable');
+      el.innerHTML =
+        `<div class="domains-note" style="flex-basis:100%">${hint}</div>`+
+        custom.map(d=>customTag(d,list)).join('')+
+        builtin.map(roTag).join('');
+    };
+    renderDomains(document.getElementById('directDomains'), dirBuiltin, dirCustom, 'direct',
       `Встроенный список (${dirBuiltin.length}) — нельзя удалить · ваши добавления (${dirCustom.length}) — с ×.<br>`+
-      `Сверху действует geosite-ru (~5000 RU доменов) — там всё что не в этом списке.`+
-      `</div>`+
-      customTag(dirCustom,'direct')+roTag(dirBuiltin);
-    // VPN list: built-in AI services that 403 on RU IPs (OpenAI, Anthropic,
-    // Gemini, HuggingFace, Perplexity, Midjourney, …) + your custom additions.
-    const vEl=document.getElementById('vpnDomains');
-    vEl.classList.add('scrollable');
-    vEl.innerHTML =
-      `<div class="domains-note" style="flex-basis:100%">`+
-      `Встроенный список нейросетей и заблокированных от RU сервисов (${vpnBuiltin.length}) — нельзя удалить · ваши добавления (${vpnCustom.length}) — с ×.`+
-      `</div>`+
-      customTag(vpnCustom,'vpn')+roTag(vpnBuiltin);
+      `Сверху действует geosite-ru (~5000 RU доменов) — там всё что не в этом списке.`);
+    renderDomains(document.getElementById('vpnDomains'), vpnBuiltin, vpnCustom, 'vpn',
+      `Встроенный список нейросетей и заблокированных от RU сервисов (${vpnBuiltin.length}) — нельзя удалить · ваши добавления (${vpnCustom.length}) — с ×.`);
   }catch(e){}
 }
+
+// Delegated handler for tag-remove buttons (data-domain + data-list). Picks
+// up both click and keyboard activation (Enter/Space). Bound once.
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.tag-remove[data-domain]');
+  if (btn) removeDomain(btn.dataset.domain, btn.dataset.list);
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const btn = e.target.closest && e.target.closest('.tag-remove[data-domain]');
+  if (btn) { e.preventDefault(); removeDomain(btn.dataset.domain, btn.dataset.list); }
+});
 // Convert non-ASCII (Cyrillic etc.) domain to its ASCII Punycode form so
 // the CGI's strict ASCII-only validator accepts it. "сайт.рф" → "xn--80aswg.xn--p1ai".
 // Returns original on any error so unrelated input is preserved.

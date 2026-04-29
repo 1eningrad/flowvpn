@@ -169,7 +169,18 @@ parse_vless_url() {
             path) path="$val" ;;
             mode) mode="$val" ;;
             flow) flow="$val" ;;
-            extra) extra="$val" ;;
+            extra)
+                # `extra` from a hostile subscription server is later merged
+                # into the xray xhttp config via `jq '.[0] * .[1]'`. Reject
+                # anything that is not a syntactically-valid JSON object —
+                # malformed JSON would break xray startup, and crafted JSON
+                # could inject xhttp options (custom headers, absolute URLs).
+                if printf '%s' "$val" | jq -e 'type == "object"' >/dev/null 2>&1; then
+                    extra="$val"
+                else
+                    extra="{}"
+                fi
+                ;;
             encryption) ;; # always none for vless
         esac
     done
