@@ -484,16 +484,15 @@ _build_allvpn_rules() {
 
     # Force-VPN domains (built-in AI services + user's custom_vpn).
     # _fetch_vpn_domains rebuilds vpn_domains.list on every fetch_rules and
-    # on every add-domain/remove-domain, so this stays current.
+    # on every add-domain/remove-domain. We funnel the file through jq so
+    # any quote/backslash in a user-added domain becomes properly-escaped
+    # JSON instead of breaking the rule string we hand to sing-box.
     local vpn_rule=""
     if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
-        local vpn_suffixes=""
-        while IFS= read -r line; do
-            case "$line" in "#"*|"") continue ;; esac
-            [ -n "$vpn_suffixes" ] && vpn_suffixes="$vpn_suffixes,"
-            vpn_suffixes="$vpn_suffixes\"$line\""
-        done < "$SR_RULES_DIR/vpn_domains.list"
-        [ -n "$vpn_suffixes" ] && vpn_rule="{\"domain_suffix\":[$vpn_suffixes]}"
+        vpn_rule=$(grep -vE '^(#|$)' "$SR_RULES_DIR/vpn_domains.list" \
+            | jq -R -s '[split("\n")[] | select(length > 0)]
+                        | if length == 0 then null else {domain_suffix: .} end')
+        [ "$vpn_rule" = "null" ] && vpn_rule=""
     fi
 
     # Route rules:
@@ -561,16 +560,15 @@ _build_blocklist_rules() {
     # the UI) merged with user's custom_vpn additions. _fetch_vpn_domains
     # writes both to vpn_domains.list. In blocklist mode this is critical
     # because the curated blocklist source misses Gemini/Perplexity/HF.
+    # Funneled through jq for proper JSON escaping (defends against bad
+    # chars in custom_vpn domains).
     local custom_vpn_rule=""
     if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
-        local cv_suffixes=""
-        while IFS= read -r line; do
-            line="${line%$'\r'}"
-            case "$line" in "#"*|"") continue ;; esac
-            [ -n "$cv_suffixes" ] && cv_suffixes="$cv_suffixes,"
-            cv_suffixes="$cv_suffixes\"$line\""
-        done < "$SR_RULES_DIR/vpn_domains.list"
-        [ -n "$cv_suffixes" ] && custom_vpn_rule="{\"domain_suffix\":[$cv_suffixes]}"
+        custom_vpn_rule=$(tr -d '\r' < "$SR_RULES_DIR/vpn_domains.list" \
+            | grep -vE '^(#|$)' \
+            | jq -R -s '[split("\n")[] | select(length > 0)]
+                        | if length == 0 then null else {domain_suffix: .} end')
+        [ "$custom_vpn_rule" = "null" ] && custom_vpn_rule=""
     fi
 
     rules="[{\"action\":\"sniff\",\"timeout\":\"300ms\"}"
