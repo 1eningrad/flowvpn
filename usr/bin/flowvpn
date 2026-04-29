@@ -60,6 +60,24 @@ _op_end() {
     rm -f "$FLOWVPN_TMP/op.in_progress"
 }
 
+_ensure_watchdog() {
+    # Watchdog handles log rotation, auto-recovery, and auto-failover. It is
+    # spawned by /etc/init.d/flowvpn at boot, but any subsequent stop/start or
+    # restart through CLI/UI does NOT go through init.d — so without this guard
+    # a single user-initiated restart loses the watchdog until next reboot.
+    # Symptom seen 2026-04-29: logs ballooned to 40k lines (rotation runs only
+    # in the watchdog tick loop) and switch_failed on Нидерланды wasn't
+    # auto-recovered.
+    local lock="$FLOWVPN_TMP/watchdog.lock"
+    if [ -f "$lock" ]; then
+        local pid
+        pid=$(cat "$lock" 2>/dev/null)
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+    fi
+    /usr/bin/flowvpn watchdog >/dev/null 2>&1 &
+    echo $! > "$FLOWVPN_TMP/watchdog.pid"
+}
+
 _rotate_log() {
     # Size-based rotation with copytruncate semantics.
     # Earlier version did `tail > tmp && mv tmp file`. Rename swaps inode —
@@ -99,6 +117,7 @@ cmd_start() {
     _op_begin
     trap '_op_end' EXIT INT TERM
     _rotate_log
+    _ensure_watchdog
 
     local sub_url iface mode
     sub_url=$(get_config_val subscription_url "")
@@ -209,6 +228,7 @@ cmd_stop() {
 cmd_restart() {
     _op_begin
     trap '_op_end' EXIT INT TERM
+    _ensure_watchdog
     # Soft restart: keeps nftables rules + dnsmasq redirect in place so
     # that during the process-swap gap, traffic fails closed (no internet
     # for clients) instead of leaking direct (~5s of plaintext DNS + traffic).
