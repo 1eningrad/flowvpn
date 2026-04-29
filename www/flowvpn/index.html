@@ -2566,37 +2566,33 @@ function drawSpark(){
   drawLine(speedHistory.up,'#5e6ad2',null);
 }
 
-let speedWs=null,wsBackoff=5000,_wsReconnectTimer=null;
-function startSpeedMonitor(){
-  _wsReconnectTimer=null;
-  // Wait for clash_secret from /status before opening WebSocket
-  const tok=(state&&state.clash_secret)||'';
-  if(!tok){
-    if(_wsReconnectTimer)clearTimeout(_wsReconnectTimer);
-    _wsReconnectTimer=setTimeout(startSpeedMonitor,1000);
-    return;
-  }
+// Speed monitor — was a direct WebSocket from the browser to sing-box's
+// Clash API on :9090, which required leaking the API token to every LAN
+// device that hit /status. Now polled through CGI: clash_api binds to
+// 127.0.0.1, the secret never leaves the router, and the CGI shim returns
+// one snapshot per call. Loses ~1s of granularity vs the WS push.
+let _speedTimer=null;
+async function speedTick(){
+  if(document.hidden) return;
   try{
-    const proto=location.protocol==='https:'?'wss://':'ws://';
-    speedWs=new WebSocket(proto+location.hostname+':9090/traffic?token='+encodeURIComponent(tok));
-    speedWs.onopen=function(){wsBackoff=5000};
-    speedWs.onmessage=function(e){
-      const d=JSON.parse(e.data);
-      const down=d.down||0,up=d.up||0;
-      document.getElementById('speedDown').textContent=fmtSpeed(down);
-      document.getElementById('speedUp').textContent=fmtSpeed(up);
-      pushSpeed(down,up);
-    };
-    speedWs.onclose=function(){
-      wsBackoff=Math.min(wsBackoff*1.5,60000);
-      // Guard against duplicate reconnect loops if startSpeedMonitor is
-      // called externally while we're already scheduled.
-      if(_wsReconnectTimer)clearTimeout(_wsReconnectTimer);
-      _wsReconnectTimer=setTimeout(startSpeedMonitor,wsBackoff);
-    };
-    speedWs.onerror=function(){speedWs.close()};
+    const r=await apiFetch(API+'?action=traffic-poll');
+    const d=await r.json();
+    const down=d.down||0, up=d.up||0;
+    document.getElementById('speedDown').textContent=fmtSpeed(down);
+    document.getElementById('speedUp').textContent=fmtSpeed(up);
+    pushSpeed(down,up);
   }catch(e){}
 }
+function startSpeedMonitor(){
+  if(_speedTimer) clearInterval(_speedTimer);
+  speedTick();
+  _speedTimer=setInterval(speedTick,1000);
+}
+function stopSpeedMonitor(){
+  if(_speedTimer){ clearInterval(_speedTimer); _speedTimer=null; }
+}
+// Compatibility shims — older code paths reference these.
+let speedWs=null;
 // Polling pauses when tab is hidden — saves battery on iPhone where the
 // page may sit in a background tab for hours. visibilitychange triggers
 // an immediate refresh on return so data isn't stale.
@@ -3179,16 +3175,11 @@ setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
 // Incidents change rarely — refresh every 30s instead of 5s.
 setInterval(()=>{if(!document.hidden)loadIncidents()},30000);
 document.addEventListener('visibilitychange',()=>{
-  if(document.hidden) return;
+  if(document.hidden){ stopSpeedMonitor(); return; }
   fetchStatus(); loadTraffic(); loadIncidents();
-  // After a long background, the speed-monitor WS is closed and may be
-  // sitting on a 60s reconnect timer. Reset backoff and reconnect now —
-  // otherwise the speed widgets stay frozen until the timer fires.
-  if(!speedWs || speedWs.readyState===WebSocket.CLOSED){
-    if(_wsReconnectTimer){ clearTimeout(_wsReconnectTimer); _wsReconnectTimer=null; }
-    wsBackoff=5000;
-    startSpeedMonitor();
-  }
+  // Restart the polling loop with a fresh tick on tab return — otherwise
+  // the speed widgets show stale numbers for up to 1s.
+  startSpeedMonitor();
 });
 </script>
 </body>

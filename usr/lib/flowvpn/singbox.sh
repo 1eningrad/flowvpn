@@ -436,7 +436,7 @@ generate_singbox_config() {
         log: {level: "warn", timestamp: true},
         experimental: {
             cache_file: {enabled: true, path: "/tmp/flowvpn/cache.db"},
-            clash_api: {external_controller: "0.0.0.0:9090", secret: $clash_secret}
+            clash_api: {external_controller: "127.0.0.1:9090", secret: $clash_secret}
         },
         dns: {
             servers: [
