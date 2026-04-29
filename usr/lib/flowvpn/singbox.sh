@@ -171,6 +171,85 @@ DOMAIN-SUFFIX,prodoctorov.ru
 # Business tools
 DOMAIN-SUFFIX,sbis.ru
 DOMAIN-SUFFIX,dadata.ru
+# Yandex group (extras from v2fly canon)
+DOMAIN-SUFFIX,yango.com
+DOMAIN-SUFFIX,yango.kz
+DOMAIN-SUFFIX,naydex.net
+DOMAIN-SUFFIX,adfox.ru
+DOMAIN-SUFFIX,clck.ru
+# VK / Mail.ru group (extras)
+DOMAIN-SUFFIX,vk.ru
+DOMAIN-SUFFIX,my.com
+DOMAIN-SUFFIX,apiok.ru
+DOMAIN-SUFFIX,vkplay.ru
+DOMAIN-SUFFIX,vkplay.live
+DOMAIN-SUFFIX,rustore.ru
+# Ozon geo + ecosystem
+DOMAIN-SUFFIX,ozon.com
+DOMAIN-SUFFIX,ozon.kz
+DOMAIN-SUFFIX,ozon.by
+DOMAIN-SUFFIX,ozon.tech
+DOMAIN-SUFFIX,o3.ru
+# 2GIS geo
+DOMAIN-SUFFIX,2gis.kz
+DOMAIN-SUFFIX,2gis.by
+DOMAIN-SUFFIX,2gis.uz
+DOMAIN-SUFFIX,2gis.kg
+DOMAIN-SUFFIX,2gis.ae
+# HeadHunter geo
+DOMAIN-SUFFIX,hh.by
+DOMAIN-SUFFIX,hh.kz
+DOMAIN-SUFFIX,hhcdn.ru
+DOMAIN-SUFFIX,zarplata.ru
+DOMAIN-SUFFIX,talantix.ru
+# Antivirus / IT services
+DOMAIN-SUFFIX,kaspersky.ru
+DOMAIN-SUFFIX,kaspersky.com
+DOMAIN-SUFFIX,kontur.ru
+# Hosting / cloud
+DOMAIN-SUFFIX,selectel.ru
+DOMAIN-SUFFIX,selcdn.net
+DOMAIN-SUFFIX,timeweb.com
+DOMAIN-SUFFIX,timeweb.cloud
+DOMAIN-SUFFIX,beget.ru
+DOMAIN-SUFFIX,beget.com
+# Site builders / CMS
+DOMAIN-SUFFIX,tilda.cc
+DOMAIN-SUFFIX,tilda.ws
+DOMAIN-SUFFIX,tildacdn.com
+DOMAIN-SUFFIX,ucoz.ru
+# Education / health / weather
+DOMAIN-SUFFIX,gismeteo.ru
+DOMAIN-SUFFIX,skyeng.ru
+DOMAIN-SUFFIX,sky.pro
+DOMAIN-SUFFIX,medsi.ru
+DOMAIN-SUFFIX,mosgorzdrav.ru
+# Travel / transport
+DOMAIN-SUFFIX,aviasales.ru
+DOMAIN-SUFFIX,aviasales.com
+DOMAIN-SUFFIX,tutu.ru
+DOMAIN-SUFFIX,ostrovok.ru
+DOMAIN-SUFFIX,blablacar.ru
+DOMAIN-SUFFIX,mosmetro.ru
+DOMAIN-SUFFIX,whoosh.bike
+# Retail (X5 + others)
+DOMAIN-SUFFIX,x5.ru
+DOMAIN-SUFFIX,5ka.ru
+DOMAIN-SUFFIX,dixy.ru
+DOMAIN-SUFFIX,auchan.ru
+# Streaming extras
+DOMAIN-SUFFIX,smotreshka.tv
+DOMAIN-SUFFIX,viju.ru
+DOMAIN-SUFFIX,kinorium.com
+# Banks / finance (Central Bank + extras)
+DOMAIN-SUFFIX,cbr.ru
+DOMAIN-SUFFIX,ozonbank.ru
+# CRM / marketing tools
+DOMAIN-SUFFIX,mindbox.ru
+DOMAIN-SUFFIX,mindbox.cloud
+DOMAIN-SUFFIX,carrotquest.io
+# Office
+DOMAIN-SUFFIX,myoffice.ru
 RUEOF
     } > "$SR_RULES_DIR/ru_domains.list"
 
