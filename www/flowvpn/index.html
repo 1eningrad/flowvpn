@@ -2960,16 +2960,42 @@ async function loadSystemInfo(){
 }
 
 async function setAutoUpdate(mode){
-  try{await apiFetch(API+'?action=auto-update&mode='+mode);toast.success(mode==='enable'?'Автообновление включено':'Автообновление выключено');loadAutoUpdate()}
-  catch(e){toast.error('Ошибка')}
+  // Visually update toggle synchronously and lock it during the round-trip.
+  // Earlier version called loadAutoUpdate() (no await) after the action,
+  // and browsers occasionally served the cached GET reply — leaving the
+  // toggle stuck in its previous position even though the backend had
+  // applied the change. Now we set the visual state from the action
+  // result directly and only refetch as a finalizer.
+  const tg=document.getElementById('autoUpdateToggle');
+  const st=document.getElementById('autoUpdateStatus');
+  if(tg) tg.disabled=true;
+  try{
+    await apiFetch(API+'?action=auto-update&mode='+mode);
+    const enabled=(mode==='enable');
+    if(tg) tg.checked=enabled;
+    if(st){
+      st.className=enabled?'setting-status on':'setting-status';
+      st.textContent=enabled?'Включено — каждый день в 3:00':'Выключено';
+    }
+    toast.success(enabled?'Автообновление включено':'Автообновление выключено');
+  }catch(e){
+    if(tg) tg.checked=(mode!=='enable');  // revert visual on failure
+    toast.error('Ошибка','Не удалось сохранить автообновление');
+  }finally{
+    if(tg) tg.disabled=false;
+  }
 }
 async function loadAutoUpdate(){
-  try{const r=await apiFetch(API+'?action=auto-update');const d=await r.json();
+  // Cache-buster: same problem as above could leave us reading a stale
+  // copy of the toggle state on tab switch.
+  try{const r=await apiFetch(API+'?action=auto-update&_='+Date.now());const d=await r.json();
     const st=document.getElementById('autoUpdateStatus');
     const tg=document.getElementById('autoUpdateToggle');
-    tg.checked=!!d.auto_update;
-    if(d.auto_update){st.className='setting-status on';st.textContent='Включено — каждый день в 3:00'}
-    else{st.className='setting-status';st.textContent='Выключено'}
+    if(tg) tg.checked=!!d.auto_update;
+    if(st){
+      if(d.auto_update){st.className='setting-status on';st.textContent='Включено — каждый день в 3:00'}
+      else{st.className='setting-status';st.textContent='Выключено'}
+    }
   }catch(e){}
 }
 
