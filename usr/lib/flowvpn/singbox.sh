@@ -146,6 +146,8 @@ DOMAIN-SUFFIX,delivery-club.ru
 DOMAIN-SUFFIX,dodopizza.ru
 # Streaming / media
 DOMAIN-SUFFIX,okko.tv
+DOMAIN-SUFFIX,okko.ru
+DOMAIN-SUFFIX,okko.com
 DOMAIN-SUFFIX,start.ru
 DOMAIN-SUFFIX,more.tv
 DOMAIN-SUFFIX,amediateka.ru
