@@ -140,5 +140,14 @@ is_xray_running() {
 }
 
 test_xray() {
-    curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://api.ipify.org 2>/dev/null
+    # Two attempts: first short (8s) for steady-state checks, second longer (12s)
+    # to absorb a cold XHTTP+Reality handshake. A single 8s probe was enough to
+    # spuriously flag healthy servers right after a switch (incident 2026-04-29:
+    # 🇳🇱 Нидерланды, server actually up — second start of same index succeeded
+    # ~3s later). Worst case here is ~21s, only on a genuinely dead tunnel.
+    local ip
+    ip=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://api.ipify.org 2>/dev/null)
+    [ -n "$ip" ] && { echo "$ip"; return 0; }
+    sleep 1
+    curl -s --socks5-hostname 127.0.0.1:1080 --max-time 12 https://api.ipify.org 2>/dev/null
 }
