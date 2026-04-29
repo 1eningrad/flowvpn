@@ -1022,9 +1022,18 @@ cmd_get_log() {
             tail -50 | awk '{print "XRAY|"$0}' >> "$tmplog"
     fi
 
-    # Source 3: syslog flowvpn entries
+    # Source 3: syslog flowvpn entries. The syslog ringbuffer is shared
+    # router-wide and can't be truncated, so filter by the "log cleared"
+    # marker that cmd_clear_log writes — events older than that timestamp
+    # were dismissed by the user and shouldn't reappear in the UI.
     if [ "$filter" = "all" ] || [ "$filter" = "flow" ]; then
-        logread -e flowvpn 2>/dev/null | tail -100 | awk '{print "FLOW|"$0}' >> "$tmplog"
+        local cleared_since=0
+        [ -f "$FLOWVPN_TMP/log_cleared_ts" ] && cleared_since=$(cat "$FLOWVPN_TMP/log_cleared_ts" 2>/dev/null)
+        logread -e flowvpn 2>/dev/null | tail -100 | \
+            awk -v ts="${cleared_since:-0}" 'match($0, /\[[0-9]+\.[0-9]+\]/) {
+                e = substr($0, RSTART+1, RLENGTH-2); sub(/\..*/, "", e)
+                if (e+0 >= ts+0) print
+            }' | awk '{print "FLOW|"$0}' >> "$tmplog"
     fi
 
     # Sort and parse
@@ -2163,7 +2172,15 @@ case "$1" in
     get-domains)    cmd_get_domains ;;
     get-devices)    cmd_get_devices ;;
     get-log)        cmd_get_log "$2" "$3" ;;
-    clear-log)      > "$FLOWVPN_TMP/singbox.log"; echo '{"status":"cleared"}' ;;
+    clear-log)
+        # Truncate the two files we own and stamp a "cleared" marker so
+        # cmd_get_log can hide everything older from syslog (the syslog
+        # ringbuffer is router-wide and cannot be selectively cleared).
+        > "$FLOWVPN_TMP/singbox.log"
+        > "$FLOWVPN_TMP/xray.log"
+        date +%s > "$FLOWVPN_TMP/log_cleared_ts"
+        echo '{"status":"cleared"}'
+        ;;
     diagnose)       cmd_diagnose ;;
     healthcheck)    cmd_healthcheck ;;
     system-info)    cmd_system_info ;;
