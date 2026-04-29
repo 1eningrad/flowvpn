@@ -1192,7 +1192,6 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   <div class="header" id="appHeader">
     <div class="brand">
       <div class="logo">EclipVPN</div>
-      <div class="version">v4</div>
     </div>
     <div class="header-info" id="headerInfo">Загрузка…</div>
     <div class="header-actions">
@@ -1529,7 +1528,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   <footer class="footer">
     <div class="footer-left">
       <span class="footer-brand">EclipVPN</span>
-      <span class="footer-dim">v4 · OpenWrt</span>
+      <span class="footer-dim">для OpenWrt</span>
     </div>
     <div class="footer-right">
       <a href="https://github.com/1eningrad/flowvpn" target="_blank" rel="noopener" class="footer-link">GitHub</a>
@@ -1606,6 +1605,17 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 <script>
 const API='/cgi-bin/flowvpn';
 let state={},pings={},currentLogFilter='all',incidentStats={};
+let _realPingMs=null,_realPingErr='';
+async function loadRealPing(){
+  // No-op when VPN is off — backend would return error anyway.
+  if(!state||!state.running){_realPingMs=null;_realPingErr='';return}
+  try{
+    const r=await apiFetch(API+'?action=real-ping');
+    const d=await r.json();
+    if(d.ok&&typeof d.delay_ms==='number'){_realPingMs=d.delay_ms;_realPingErr=''}
+    else{_realPingMs=null;_realPingErr=d.error||'нет ответа'}
+  }catch(e){_realPingMs=null;_realPingErr='ошибка связи'}
+}
 
 const TOAST_ICONS={
   success:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
@@ -1969,10 +1979,14 @@ async function fetchStatus(){
     if(on){
       document.getElementById('statusTitle').textContent='Подключено';
       const modeText=state.mode==='all_vpn'?'Весь трафик кроме РФ':'Только по списку';
+      const realPingTxt=_realPingMs!=null
+        ? `<span title="Реальная задержка через VLESS+Reality до google. Ниже = быстрее ощущается">⚡ <b>${_realPingMs} мс</b></span>`
+        : (_realPingMs===null && _realPingErr ? `<span title="${esc(_realPingErr)}" style="color:var(--text-muted)">⚡ —</span>` : '');
       document.getElementById('statusMeta').innerHTML=
         `<span><b>${serverNameDisplay(state.server||'—')}</b></span>`+
         `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
         `<span title="С момента последнего запуска или переключения сервера">${fmtUp(state.uptime)}</span>`+
+        realPingTxt+
         `<span>${modeText}</span>`;
       const hi=document.getElementById('headerInfo');
       hi.className='header-info on';
@@ -2086,6 +2100,10 @@ async function selectServer(i){
     // but other UI bits (uptime, traffic stats card, mini-toggle) read
     // from `state`, so a fresh fetchStatus updates them all coherently.
     try{await fetchStatus()}catch(_){}
+    // Stale real-ping from the previous server is misleading — clear it
+    // immediately, then re-measure in the background once the new tunnel
+    // is up. The 30s tick would catch this eventually but feels laggy.
+    _realPingMs=null;_realPingErr='';loadRealPing();
 
     tid=updateToast(tid,name,{type:'success',desc:'IP: '+(sd.vpn_ip||pd.ip),duration:2500});
   }catch(e){
@@ -3136,12 +3154,15 @@ document.addEventListener('keydown',(e)=>{
   }
 });
 
-restoreCollapsibles();fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();
+restoreCollapsibles();fetchStatus().then(()=>loadRealPing());loadDomains();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();
 // Skip polling when tab is hidden (battery-friendly).
 setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
 // Incidents change rarely — refresh every 30s instead of 5s.
 setInterval(()=>{if(!document.hidden)loadIncidents()},30000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){fetchStatus();loadTraffic();loadIncidents()}});
+// Real-ping is heavier (4-7s curl through VLESS); refresh every 30s and
+// skip while hidden so a backgrounded tab doesn't keep waking the tunnel.
+setInterval(()=>{if(!document.hidden)loadRealPing()},30000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){fetchStatus();loadTraffic();loadIncidents();loadRealPing()}});
 </script>
 </body>
 </html>
