@@ -901,17 +901,28 @@ cmd_remove_domain() {
 }
 
 cmd_get_domains() {
-    local direct_domains="[]" vpn_domains="[]"
+    local direct_domains="[]" vpn_domains="[]" ru_builtin="[]"
     [ -f "$CUSTOM_DIRECT" ] && direct_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_DIRECT")
     [ -f "$CUSTOM_VPN" ] && vpn_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_VPN")
 
+    # Built-in RU list = all DOMAIN-SUFFIX entries in ru_domains.list minus
+    # the user's custom_direct entries (those are appended last by
+    # _fetch_ru_domains, with the same DOMAIN-SUFFIX prefix).
     local ru_count=0 blocked_count=0
-    [ -f "$SR_RULES_DIR/ru_domains.list" ] && ru_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/ru_domains.list" 2>/dev/null)
+    if [ -f "$SR_RULES_DIR/ru_domains.list" ]; then
+        ru_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/ru_domains.list" 2>/dev/null)
+        ru_builtin=$(awk -F, '/^DOMAIN-SUFFIX,/ {print $2}' "$SR_RULES_DIR/ru_domains.list" \
+            | jq -R -s --argjson custom "$direct_domains" \
+                'split("\n") | map(select(length > 0)) | . - $custom')
+    fi
     [ -f "$SR_RULES_DIR/domains.list" ] && blocked_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/domains.list" 2>/dev/null)
 
     jq -n --argjson direct "$direct_domains" --argjson vpn "$vpn_domains" \
+        --argjson ru_builtin "$ru_builtin" \
         --argjson ru_count "$ru_count" --argjson blocked_count "$blocked_count" \
-        '{custom_direct:$direct, custom_vpn:$vpn, ru_domains_count:$ru_count, blocked_domains_count:$blocked_count}'
+        '{custom_direct:$direct, custom_vpn:$vpn,
+          ru_domains_builtin:$ru_builtin,
+          ru_domains_count:$ru_count, blocked_domains_count:$blocked_count}'
 }
 
 # ============================================================

@@ -597,6 +597,9 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 
 /* Domain tags */
 .domains{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.domains.scrollable{max-height:280px;overflow-y:auto;padding:4px 6px 4px 0;
+  border-top:1px solid var(--border);margin-top:8px;align-content:flex-start}
+.domains-note{color:var(--text-dim);font-size:11px;margin:4px 0 6px;line-height:1.45}
 .tag{
   display:inline-flex;align-items:center;gap:5px;
   padding:5px 10px 5px 12px;border-radius:8px;
@@ -606,6 +609,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   transition:border-color .15s
 }
 .tag:hover{border-color:var(--accent)}
+.tag.tag-readonly{opacity:.65;padding-right:10px}
+.tag.tag-readonly:hover{border-color:var(--border-strong)}
 .tag-remove{
   cursor:pointer;color:var(--text-dim);font-weight:700;
   width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
@@ -2280,11 +2285,23 @@ function restoreCollapsibles(){
 
 async function loadDomains(){
   try{const r=await apiFetch(API+'?action=get-domains');const d=await r.json();
-    document.getElementById('directCount').textContent=(d.ru_domains_count||0)+(d.custom_direct?d.custom_direct.length:0);
+    const builtin=d.ru_domains_builtin||[], custom=d.custom_direct||[];
+    document.getElementById('directCount').textContent=builtin.length+custom.length;
     document.getElementById('vpnCount').textContent=d.custom_vpn?d.custom_vpn.length:0;
-    const tags=(arr,list)=>arr.map(d=>`<span class="tag">${esc(d)}<span class="tag-remove" onclick="removeDomain('${esc(d)}','${list}')">×</span></span>`).join('');
-    document.getElementById('directDomains').innerHTML=d.custom_direct&&d.custom_direct.length?tags(d.custom_direct,'direct'):'<div style="color:var(--text-dim);font-size:11px;padding:6px 2px">Используется стандартный список (~5000 российских доменов)</div>';
-    document.getElementById('vpnDomains').innerHTML=d.custom_vpn&&d.custom_vpn.length?tags(d.custom_vpn,'vpn'):'<div style="color:var(--text-dim);font-size:11px;padding:6px 2px">Ничего не добавлено</div>';
+    const customTag=(arr,list)=>arr.map(d=>`<span class="tag">${esc(d)}<span class="tag-remove" onclick="removeDomain('${esc(d)}','${list}')">×</span></span>`).join('');
+    const roTag=arr=>arr.map(d=>`<span class="tag tag-readonly">${esc(d)}</span>`).join('');
+    // Direct list: scrollable area with built-in (read-only) + your custom
+    // (with × to remove). geosite-ru still applies on top — we say so in the
+    // hint instead of pretending the built-in count is the whole story.
+    const dEl=document.getElementById('directDomains');
+    dEl.classList.add('scrollable');
+    dEl.innerHTML =
+      `<div class="domains-note" style="flex-basis:100%">`+
+      `Встроенный список (${builtin.length}) — нельзя удалить · ваши добавления (${custom.length}) — с ×.<br>`+
+      `Сверху действует geosite-ru (~5000 RU доменов) — там всё что не в этом списке.`+
+      `</div>`+
+      customTag(custom,'direct')+roTag(builtin);
+    document.getElementById('vpnDomains').innerHTML=d.custom_vpn&&d.custom_vpn.length?customTag(d.custom_vpn,'vpn'):'<div style="color:var(--text-dim);font-size:11px;padding:6px 2px">Ничего не добавлено</div>';
   }catch(e){}
 }
 // Convert non-ASCII (Cyrillic etc.) domain to its ASCII Punycode form so
