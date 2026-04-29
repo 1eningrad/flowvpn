@@ -880,9 +880,11 @@ cmd_add_domain() {
     grep -qxF "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
     # For 'direct' adds in all_vpn mode, the actual routing comes from
     # ru_domains.list which _fetch_ru_domains rebuilds locally (no network).
-    # Without this, the new domain sits in direct_domains.txt but sing-box
-    # never sees it until next full update.
+    # Same dance for 'vpn' adds — vpn_domains.list is the merged source.
+    # Without these, the new domain sits in {direct,vpn}_domains.txt but
+    # sing-box never sees it until next full update.
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
+    [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
     echo "{\"status\":\"added\",\"domain\":\"$domain\",\"list\":\"$list\"}"
 }
 
@@ -897,17 +899,17 @@ cmd_remove_domain() {
     esac
     [ -f "$file" ] && { grep -vxF "$domain" "$file" > "${file}.tmp"; mv "${file}.tmp" "$file"; }
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
+    [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
     echo "{\"status\":\"removed\",\"domain\":\"$domain\",\"list\":\"$list\"}"
 }
 
 cmd_get_domains() {
-    local direct_domains="[]" vpn_domains="[]" ru_builtin="[]"
+    local direct_domains="[]" vpn_domains="[]" ru_builtin="[]" vpn_builtin="[]"
     [ -f "$CUSTOM_DIRECT" ] && direct_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_DIRECT")
     [ -f "$CUSTOM_VPN" ] && vpn_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_VPN")
 
-    # Built-in RU list = all DOMAIN-SUFFIX entries in ru_domains.list minus
-    # the user's custom_direct entries (those are appended last by
-    # _fetch_ru_domains, with the same DOMAIN-SUFFIX prefix).
+    # Built-in lists = entries in {ru,vpn}_domains.list minus the user's
+    # custom additions (those are appended last by _fetch_*_domains).
     local ru_count=0 blocked_count=0
     if [ -f "$SR_RULES_DIR/ru_domains.list" ]; then
         ru_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/ru_domains.list" 2>/dev/null)
@@ -915,13 +917,18 @@ cmd_get_domains() {
             | jq -R -s --argjson custom "$direct_domains" \
                 'split("\n") | map(select(length > 0)) | . - $custom')
     fi
+    if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
+        vpn_builtin=$(grep -vE '^(#|$)' "$SR_RULES_DIR/vpn_domains.list" \
+            | jq -R -s --argjson custom "$vpn_domains" \
+                'split("\n") | map(select(length > 0)) | . - $custom')
+    fi
     [ -f "$SR_RULES_DIR/domains.list" ] && blocked_count=$(grep -c "^DOMAIN" "$SR_RULES_DIR/domains.list" 2>/dev/null)
 
     jq -n --argjson direct "$direct_domains" --argjson vpn "$vpn_domains" \
-        --argjson ru_builtin "$ru_builtin" \
+        --argjson ru_builtin "$ru_builtin" --argjson vpn_builtin "$vpn_builtin" \
         --argjson ru_count "$ru_count" --argjson blocked_count "$blocked_count" \
         '{custom_direct:$direct, custom_vpn:$vpn,
-          ru_domains_builtin:$ru_builtin,
+          ru_domains_builtin:$ru_builtin, vpn_domains_builtin:$vpn_builtin,
           ru_domains_count:$ru_count, blocked_domains_count:$blocked_count}'
 }
 
