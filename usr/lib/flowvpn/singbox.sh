@@ -290,7 +290,7 @@ generate_singbox_config() {
         --arg final_outbound "$([ "$mode" = "all_vpn" ] && echo "default" || echo "direct")" \
         --arg final_dns "$([ "$mode" = "all_vpn" ] && echo "dns-proxy" || echo "dns-direct")" \
     '{
-        log: {level: "info", timestamp: true},
+        log: {level: "warn", timestamp: true},
         experimental: {
             cache_file: {enabled: true, path: "/tmp/flowvpn/cache.db"},
             clash_api: {external_controller: "0.0.0.0:9090", secret: $clash_secret}

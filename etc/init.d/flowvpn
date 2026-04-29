@@ -15,15 +15,11 @@ start() {
     done
 
     if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        # cmd_start now spawns the watchdog itself via _ensure_watchdog —
+        # spawning it again here would race on watchdog.lock and leave the
+        # locking semantics half-broken (lock owned by one process, pidfile
+        # pointing at a different one).
         /usr/bin/flowvpn start >/dev/null 2>&1 &
-        # Spawn watchdog immediately and record its PID without a delay window —
-        # otherwise stop() called within ~10s leaves an orphan watchdog that
-        # restarts the VPN after stop() has finished.
-        # Watchdog's own loop begins with `sleep $interval`, so xray/sing-box
-        # have time to come up before the first probe.
-        mkdir -p /tmp/flowvpn
-        /usr/bin/flowvpn watchdog >/dev/null 2>&1 &
-        echo $! > /tmp/flowvpn/watchdog.pid
     else
         logger -t flowvpn "Network not ready, skipping autostart"
     fi
