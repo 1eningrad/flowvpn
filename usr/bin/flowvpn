@@ -82,7 +82,9 @@ _rotate_log() {
             if tail -n "$keep_lines" "$logfile" > "$tmp" 2>/dev/null; then
                 cat "$tmp" > "$logfile"  # truncate+write — keeps inode, daemons keep writing
                 rm -f "$tmp"
-                flog "Rotated log: $logfile ($lines → $keep_lines lines)"
+                # Rotation is housekeeping, not an event — silenced because it
+                # was 80% of syslog flowvpn output, drowning real switches/errors
+                # in the EclipVPN tab of the log viewer.
             fi
         fi
     done
@@ -1574,6 +1576,35 @@ cmd_get_traffic() {
     ) 200>"$state_file.lock"
 }
 
+cmd_real_ping() {
+    # Real end-to-end latency through VLESS+Reality+XHTTP, not just TCP RTT
+    # to :443. Uses sing-box's Clash-API delay endpoint, which dials the
+    # actual outbound and times an HTTP HEAD to gstatic.com/generate_204.
+    # Cheap (≤5s) and exact — what users actually feel.
+    if ! is_singbox_running; then
+        echo '{"ok":false, "error":"sing-box not running"}'
+        return
+    fi
+    local secret=$(_get_clash_secret)
+    local resp
+    resp=$(curl -s --max-time 7 -H "Authorization: Bearer $secret" \
+        "http://127.0.0.1:9090/proxies/default/delay?url=https://www.gstatic.com/generate_204&timeout=5000" 2>/dev/null)
+    if [ -z "$resp" ]; then
+        echo '{"ok":false, "error":"clash api unavailable"}'
+        return
+    fi
+    # Either {"delay":NN} on success or {"message":"..."} on failure.
+    local delay
+    delay=$(echo "$resp" | jq -r '.delay // empty' 2>/dev/null)
+    if [ -n "$delay" ] && [ "$delay" -gt 0 ] 2>/dev/null; then
+        echo "{\"ok\":true, \"delay_ms\":$delay}"
+    else
+        local msg
+        msg=$(echo "$resp" | jq -r '.message // "timeout"' 2>/dev/null)
+        echo "{\"ok\":false, \"error\":\"$msg\"}"
+    fi
+}
+
 cmd_reset_traffic() {
     # Reset cumulative per-chain counters (vpn_dl/ul, dir_dl/ul) and start a
     # fresh accounting window. Keeps `seen{}` populated with current
@@ -2021,6 +2052,7 @@ case "$1" in
     watchdog)       cmd_watchdog "$2" ;;
     get-traffic)    cmd_get_traffic ;;
     reset-traffic)  cmd_reset_traffic ;;
+    real-ping)      cmd_real_ping ;;
     get-incidents)  cmd_get_incidents ;;
     clear-incidents) cmd_clear_incidents ;;
     schedule)       cmd_schedule "$2" "$3" "$4" ;;
