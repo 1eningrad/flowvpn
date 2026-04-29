@@ -108,7 +108,11 @@ start_xray() {
             return 0
         fi
     done
-    kill -0 "$(cat /tmp/flowvpn/xray.pid)" 2>/dev/null
+    # Process alive but socks port never bound. Don't return success — the
+    # caller would then apply nftables tproxy rules pointing at an unbound
+    # port, stranding LAN clients. Surface the failure instead.
+    logger -t flowvpn "ERROR: xray started but socks port :1080 never opened"
+    return 1
 }
 
 stop_xray() {

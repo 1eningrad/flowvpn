@@ -632,7 +632,11 @@ start_singbox() {
         kill -0 "$(cat /tmp/flowvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/flowvpn/singbox.pid; return 1; }
         netstat -tlnp 2>/dev/null | grep -q ":2154" && return 0
     done
-    kill -0 "$(cat /tmp/flowvpn/singbox.pid)" 2>/dev/null
+    # Process alive but tproxy port never bound. Caller (cmd_start) would
+    # otherwise apply nftables rules redirecting LAN traffic to an unbound
+    # port — total internet outage on the LAN until manual intervention.
+    logger -t flowvpn "ERROR: sing-box started but tproxy port :2154 never opened"
+    return 1
 }
 
 stop_singbox() {
