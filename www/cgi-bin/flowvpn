@@ -70,6 +70,9 @@ case "$action" in
     healthcheck)    /usr/bin/flowvpn healthcheck ;;
     system-info)    /usr/bin/flowvpn system-info ;;
     get-traffic)    /usr/bin/flowvpn get-traffic ;;
+    reset-traffic)  /usr/bin/flowvpn reset-traffic ;;
+    get-incidents)  /usr/bin/flowvpn get-incidents ;;
+    clear-incidents) /usr/bin/flowvpn clear-incidents ;;
     set-config)
         if [ -n "$key" ]; then
             /usr/bin/flowvpn set-config "$key" "$value"

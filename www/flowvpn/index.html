@@ -356,6 +356,17 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
   font-size:14px;font-weight:700
 }
+.traffic-meta{
+  display:flex;justify-content:space-between;align-items:center;
+  font-size:11px;color:var(--text-dim);margin-top:6px;padding:0 2px
+}
+.traffic-since{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+.btn-link{
+  background:none;border:none;padding:0;cursor:pointer;
+  font-size:11px;color:var(--text-muted);text-decoration:underline;
+  text-underline-offset:2px;font-family:inherit
+}
+.btn-link:hover{color:var(--accent)}
 
 /* Speed display */
 .speed-row{display:flex;gap:8px;margin-top:8px}
@@ -442,6 +453,27 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   background:rgba(251,191,36,0.12);color:var(--yellow);
   border:1px solid rgba(251,191,36,0.25)
 }
+.server-fail{
+  font-size:10px;font-weight:700;letter-spacing:0.02em;
+  padding:2px 6px;border-radius:6px;flex-shrink:0;
+  background:rgba(239,68,68,0.12);color:var(--red,#ef4444);
+  border:1px solid rgba(239,68,68,0.28)
+}
+.server-fail.warn{background:rgba(251,191,36,0.12);color:var(--yellow);border-color:rgba(251,191,36,0.28)}
+.incident{
+  padding:9px 11px;border-radius:8px;margin-bottom:6px;
+  background:rgba(255,255,255,0.025);
+  border-left:3px solid var(--border-strong)
+}
+.incident.t-check_fail{border-left-color:#fbbf24}
+.incident.t-auto_switch{border-left-color:var(--accent)}
+.incident.t-switch_failed{border-left-color:#ef4444}
+.incident-row{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:2px}
+.incident-type{font-size:11px;font-weight:700;letter-spacing:0.03em;text-transform:uppercase;color:var(--text)}
+.incident-time{font-size:11px;color:var(--text-dim);font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+.incident-server{font-size:13px;color:var(--text);margin-bottom:1px}
+.incident-detail{font-size:11.5px;color:var(--text-muted);line-height:1.35}
+.incident-empty{color:var(--text-dim);font-size:12px;padding:16px;text-align:center}
 .server-metered.active{background:linear-gradient(135deg, rgba(251,191,36,0.08), rgba(251,191,36,0.02));border-color:rgba(251,191,36,0.3)}
 .ping-good .server-ping{color:var(--green);background:rgba(52,211,153,0.1)}
 .ping-mid .server-ping{color:var(--yellow);background:rgba(251,191,36,0.1)}
@@ -652,7 +684,22 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 }
 
 /* Logs */
-.log-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.log-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+.log-filter-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:18px;height:16px;padding:0 5px;margin-left:4px;
+  font-size:10px;font-weight:700;border-radius:8px;
+  background:rgba(239,68,68,0.18);color:#ef4444;
+  border:1px solid rgba(239,68,68,0.32)
+}
+.log-filter.active .log-filter-badge{background:rgba(255,255,255,0.22);color:#fff;border-color:rgba(255,255,255,0.4)}
+.log-filter-hint{
+  font-size:11.5px;color:var(--text-muted);
+  padding:8px 10px;margin-bottom:12px;border-radius:8px;
+  background:rgba(94,106,210,0.06);
+  border:1px solid rgba(94,106,210,0.18);
+  line-height:1.4
+}
 .log-filter{
   padding:5px 11px;border-radius:8px;
   font-size:11px;font-weight:500;cursor:pointer;
@@ -1202,14 +1249,18 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           </div>
         </div>
         <div class="mini-stats" id="trafficStats">
-          <div class="mini-stat" title="Сколько данных прошло через VPN с момента запуска">
+          <div class="mini-stat" id="statVpn" title="Через VPN — учёт ведётся, кликните чтобы увидеть с какого момента">
             <div class="mini-stat-label">Через VPN</div>
             <div class="mini-stat-val" id="sessionVpn" style="color:var(--accent)">—</div>
           </div>
-          <div class="mini-stat" title="Сколько данных прошло напрямую с момента запуска">
+          <div class="mini-stat" id="statDirect" title="Напрямую — учёт ведётся, кликните чтобы увидеть с какого момента">
             <div class="mini-stat-label">Напрямую</div>
             <div class="mini-stat-val" id="sessionDirect" style="color:var(--green,#34d399)">—</div>
           </div>
+        </div>
+        <div class="traffic-meta">
+          <span id="trafficSince" class="traffic-since" title="Учёт переживает рестарты sing-box. Сбрасывается только вручную.">—</span>
+          <button class="btn-link" onclick="resetTraffic()" title="Обнулить счётчики «Через VPN» и «Напрямую»">Сбросить</button>
         </div>
       </div>
 
@@ -1232,6 +1283,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           <div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Загрузка…</div>
         </div>
       </div>
+
     </div>
 
     <!-- Right column -->
@@ -1350,9 +1402,11 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <button class="log-filter" data-filter="vpn" onclick="setLogFilter('vpn',this)">VPN</button>
             <button class="log-filter" data-filter="direct" onclick="setLogFilter('direct',this)">Direct</button>
             <button class="log-filter" data-filter="error" onclick="setLogFilter('error',this)">Ошибки</button>
+            <button class="log-filter" data-filter="incidents" onclick="setLogFilter('incidents',this)">Сбои <span class="log-filter-badge" id="incidentsBadge" style="display:none">0</span></button>
             <button class="log-filter" data-filter="dns" onclick="setLogFilter('dns',this)">DNS</button>
             <button class="log-filter" data-filter="flow" onclick="setLogFilter('flow',this)">EclipVPN</button>
           </div>
+          <div class="log-filter-hint" id="logFilterHint">Все события: соединения через VPN, напрямую, DNS-запросы и системные сообщения роутера.</div>
           <div class="log-entries" id="logList">
             <div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Загрузка журнала…</div>
           </div>
@@ -1369,11 +1423,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
       <!-- Diagnose -->
       <div class="section" id="sec-diagnose">
         <div class="card">
-          <div class="card-head">
-            <div class="card-title">Быстрые метрики</div>
-            <button class="btn btn-ghost btn-sm" onclick="loadQuickDiag()">Обновить</button>
-          </div>
-          <p class="card-desc">Текущее состояние VPN и ключевые параметры подключения</p>
+          <div class="card-title">Быстрые метрики</div>
+          <p class="card-desc">Текущее состояние VPN и ключевые параметры подключения · обновляется автоматически</p>
           <div class="metric-grid" id="quickMetrics">
             <div class="metric"><div class="metric-icon"><svg><use href="#i-shield"/></svg></div><div class="metric-body"><div class="metric-label">Статус</div><div class="metric-value">—</div></div></div>
             <div class="metric"><div class="metric-icon"><svg><use href="#i-globe"/></svg></div><div class="metric-body"><div class="metric-label">Сервер</div><div class="metric-value">—</div></div></div>
@@ -1554,7 +1605,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 
 <script>
 const API='/cgi-bin/flowvpn';
-let state={},pings={},currentLogFilter='all';
+let state={},pings={},currentLogFilter='all',incidentStats={};
 
 const TOAST_ICONS={
   success:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
@@ -1781,15 +1832,73 @@ function renderServers(servers,sel,switchingIdx){
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     const metered=isMeteredServer(s.name);
     const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
-    return `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}">
+    const inc=s.host?incidentStats[s.host]:null;
+    const failTag=inc&&inc.count_24h>0
+      ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Откройте «История сбоев» ниже.">⚠ ${inc.count_24h}</span>`
+      :'';
+    return `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
       ${flagBadge}
       <span class="server-name">${esc(name)}</span>
       ${meterTag}
+      ${failTag}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>
     </div>`;
   }).join('');
 }
 
+const INCIDENT_LABEL={
+  check_fail:'Сбой проверки',
+  auto_switch:'Авто-переключение',
+  switch_failed:'Не удалось переключиться'
+};
+function fmtIncidentTime(ts){
+  const d=new Date(ts*1000);
+  const now=Date.now()/1000;
+  const ago=now-ts;
+  if(ago<60)return 'только что';
+  if(ago<3600)return Math.floor(ago/60)+' мин назад';
+  if(ago<86400)return Math.floor(ago/3600)+' ч назад';
+  if(ago<7*86400)return Math.floor(ago/86400)+' дн назад';
+  return d.toLocaleDateString('ru-RU')+' '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+}
+function renderIncidentsInLog(items){
+  const el=document.getElementById('logList');
+  if(!el)return;
+  if(!items||!items.length){
+    el.innerHTML='<div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Сбоев нет — все серверы стабильны</div>';
+    return;
+  }
+  el.innerHTML=items.map(it=>{
+    const label=INCIDENT_LABEL[it.type]||it.type;
+    return `<div class="incident t-${esc(it.type)}">
+      <div class="incident-row">
+        <span class="incident-type">${esc(label)}</span>
+        <span class="incident-time" title="${esc(new Date(it.ts*1000).toLocaleString('ru-RU'))}">${esc(fmtIncidentTime(it.ts))}</span>
+      </div>
+      <div class="incident-server">${it.server?serverNameDisplay(it.server):'—'}</div>
+      ${it.detail?`<div class="incident-detail">${esc(it.detail)}</div>`:''}
+    </div>`;
+  }).join('');
+}
+let _lastIncidentsCount=0;
+async function loadIncidents(){
+  try{
+    const r=await apiFetch(API+'?action=get-incidents');
+    const d=await r.json();
+    incidentStats={};
+    (d.stats||[]).forEach(s=>{ if(s.host) incidentStats[s.host]=s; });
+    const total=(d.incidents||[]).length;
+    _lastIncidentsCount=total;
+    const badge=document.getElementById('incidentsBadge');
+    if(badge){
+      if(total>0){badge.textContent=total;badge.style.display='inline-flex'}
+      else badge.style.display='none';
+    }
+    if(state&&state.servers)renderServers(state.servers,state.selected);
+    // If user is currently viewing incidents in the log tab, refresh the rendered list too.
+    if(currentLogFilter==='incidents')renderIncidentsInLog(d.incidents||[]);
+  }catch(e){}
+}
 // Persist across page reloads — otherwise an overnight watchdog switch is
 // missed: page opens, _lastSwitchSeen=null, code records `t` and skips the
 // toast, so the user sees a different server with no explanation.
@@ -1818,6 +1927,7 @@ async function fetchStatus(){
         const from=state.last_switch.from||'—',to=state.last_switch.to||'—';
         // Sticky toast (duration:0) — easy to miss otherwise; user dismisses.
         toast({title:'Сервер был переключён '+fmtAgo(t),desc:from+' → '+to+' (watchdog, защита от обрыва)'},{type:'info',duration:0});
+        loadIncidents();
       }
     }
     // Same pattern for subscription auto-update (cron). Only toast when the
@@ -1996,6 +2106,9 @@ async function selectServer(i){
     if(/unreachable/i.test(reason))humanReason='Сервер не отвечает';
     else if(/HTTP 5/.test(reason))humanReason='Ошибка роутера';
     tid=updateToast(tid,'Не удалось переключить',{type:'error',desc:humanReason,duration:4500});
+    // Backend logged a switch_failed incident — refresh panel so the user
+    // sees a fresh entry (and the badge on the failing server) immediately.
+    loadIncidents();
   }finally{
     _switchPending=false;
     // Render first, then unlock — avoids a microsecond gap where stale DOM
@@ -2327,21 +2440,50 @@ async function toggleDeviceRoute(ip,route){
   if(_devReloadTimer)clearTimeout(_devReloadTimer);
   _devReloadTimer=setTimeout(()=>{_devReloadTimer=null;loadDevices()},1000);
 }
+function fmtSinceShort(ts){
+  if(!ts||ts<=0)return '—';
+  const d=new Date(ts*1000);
+  const now=Date.now()/1000;
+  const ago=now-ts;
+  if(ago<60)return 'только что';
+  if(ago<3600)return 'за '+Math.floor(ago/60)+' мин';
+  if(ago<86400)return 'за '+Math.floor(ago/3600)+' ч';
+  if(ago<7*86400)return 'за '+Math.floor(ago/86400)+' дн';
+  return 'с '+d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'})+' '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+}
 async function loadTraffic(){
   try{
     const r=await apiFetch(API+'?action=get-traffic');const d=await r.json();
-    // Cumulative since last sing-box restart, properly split by chain.
-    // Connection counts intentionally omitted — they confused users who
-    // read them as a "speed" or "usage" indicator.
+    const vpnTotal=(d.vpn_dl||0)+(d.vpn_ul||0);
+    const dirTotal=(d.dir_dl||0)+(d.dir_ul||0);
     const sessionVpn=document.getElementById('sessionVpn');
-    if(sessionVpn)sessionVpn.textContent=fmtBytes((d.vpn_dl||0)+(d.vpn_ul||0));
+    if(sessionVpn)sessionVpn.textContent=fmtBytes(vpnTotal);
     const sessionDirect=document.getElementById('sessionDirect');
-    if(sessionDirect)sessionDirect.textContent=fmtBytes((d.dir_dl||0)+(d.dir_ul||0));
+    if(sessionDirect)sessionDirect.textContent=fmtBytes(dirTotal);
     const tv=document.getElementById('trafficVpn');
-    if(tv)tv.textContent=fmtBytes((d.vpn_dl||0)+(d.vpn_ul||0));
+    if(tv)tv.textContent=fmtBytes(vpnTotal);
     const td=document.getElementById('trafficDirect');
-    if(td)td.textContent=fmtBytes((d.dir_dl||0)+(d.dir_ul||0));
+    if(td)td.textContent=fmtBytes(dirTotal);
+    // Per-chain breakdown tooltips: dl/ul split is more useful than the sum
+    // when diagnosing "why is upload so high".
+    const statVpn=document.getElementById('statVpn');
+    if(statVpn)statVpn.title='Через VPN: ↓ '+fmtBytes(d.vpn_dl||0)+'  ↑ '+fmtBytes(d.vpn_ul||0);
+    const statDirect=document.getElementById('statDirect');
+    if(statDirect)statDirect.title='Напрямую: ↓ '+fmtBytes(d.dir_dl||0)+'  ↑ '+fmtBytes(d.dir_ul||0);
+    const since=document.getElementById('trafficSince');
+    if(since){
+      since.textContent='учёт '+fmtSinceShort(d.started);
+      if(d.started)since.title='Учёт начат '+new Date(d.started*1000).toLocaleString('ru-RU')+'. Переживает рестарты sing-box, сбрасывается только вручную.';
+    }
   }catch(e){}
+}
+async function resetTraffic(){
+  if(!confirm('Обнулить счётчики «Через VPN» и «Напрямую»? Скорость и графики не затрагиваются.'))return;
+  try{
+    await apiFetch(API+'?action=reset-traffic');
+    toast.success('Счётчики обнулены');
+    loadTraffic();
+  }catch(e){toast.error('Не удалось обнулить')}
 }
 
 // Speed history + sparkline
@@ -2424,11 +2566,22 @@ function startSpeedMonitor(){
 setInterval(()=>{if(!document.hidden)loadTraffic()},5000);
 
 // Logs
+const LOG_FILTER_HINTS={
+  all:'Все события: соединения через VPN, напрямую, DNS-запросы и системные сообщения роутера.',
+  vpn:'Соединения через VPN-туннель — эти запросы видны сайтам как иностранный IP.',
+  direct:'Соединения напрямую, минуя VPN. Сюда идут российские сайты и исключения — это ускоряет их загрузку и сохраняет домашний IP для них.',
+  error:'Только реальные сбои. Фоновый шум — таймауты к Яндексу через провайдера и DNS-всплески Apple — отфильтрован, чтобы не пугать без причины.',
+  incidents:'Сбои подключения и автопереключения серверов: единичные неудачные проверки watchdog, переключения на резервный сервер и неудавшиеся ручные смены.',
+  dns:'DNS-запросы: домен → IP. Полезно если сайт «не открывается» — здесь видно, переводится ли имя в адрес и как.',
+  flow:'Действия EclipVPN: запуск/остановка, переключения серверов, обновления подписки, события watchdog. Это лог утилиты, а не трафик.'
+};
 function setLogFilter(f,el){
   currentLogFilter=f;
   _lastLogSig='';
   document.querySelectorAll('.log-filter').forEach(b=>b.classList.remove('active'));
   el.classList.add('active');
+  const hint=document.getElementById('logFilterHint');
+  if(hint)hint.textContent=LOG_FILTER_HINTS[f]||'';
   const list=document.getElementById('logList');
   if(list)list.classList.add('updating');
   loadLogs().finally(()=>{if(list)list.classList.remove('updating')});
@@ -2466,6 +2619,29 @@ let _lastLogSig='',_logLoading=false;
 async function loadLogs(){
   if(_logLoading)return;
   _logLoading=true;
+  // Incidents are stored separately (not in singbox.log) — fetch via the
+  // dedicated endpoint and render with the incident-card style. Updates
+  // incidentStats too so server-list badges stay in sync.
+  if(currentLogFilter==='incidents'){
+    try{
+      const r=await apiFetch(API+'?action=get-incidents');
+      const d=await r.json();
+      incidentStats={};
+      (d.stats||[]).forEach(s=>{ if(s.host) incidentStats[s.host]=s; });
+      const total=(d.incidents||[]).length;
+      _lastIncidentsCount=total;
+      const badge=document.getElementById('incidentsBadge');
+      if(badge){
+        if(total>0){badge.textContent=total;badge.style.display='inline-flex'}
+        else badge.style.display='none';
+      }
+      if(state&&state.servers)renderServers(state.servers,state.selected);
+      renderIncidentsInLog(d.incidents||[]);
+      _lastLogSig='INC:'+total;
+    }catch(e){}
+    _logLoading=false;
+    return;
+  }
   try{
     const r=await apiFetch(API+'?action=get-log&lines=200&filter='+currentLogFilter);
     const d=await r.json();
@@ -2539,7 +2715,15 @@ async function loadLogs(){
   }catch(e){}
   finally{_logLoading=false}
 }
-async function clearLog(){try{await apiFetch(API+'?action=clear-log');_lastLogSig='';toast.success('Журнал очищен');loadLogs()}catch(e){toast.error('Ошибка')}}
+async function clearLog(){
+  if(currentLogFilter==='incidents'){
+    if(!confirm('Очистить всю историю сбоев?'))return;
+    try{await apiFetch(API+'?action=clear-incidents');_lastLogSig='';toast.success('История сбоев очищена');loadIncidents();loadLogs()}
+    catch(e){toast.error('Ошибка')}
+    return;
+  }
+  try{await apiFetch(API+'?action=clear-log');_lastLogSig='';toast.success('Журнал очищен');loadLogs()}catch(e){toast.error('Ошибка')}
+}
 async function exportLog(){
   try{const r=await apiFetch(API+'?action=get-log&lines=1000&filter=all');const d=await r.json();
     let txt='EclipVPN — журнал — '+new Date().toLocaleString('ru')+'\n'+'='.repeat(60)+'\n\n';
@@ -2952,10 +3136,12 @@ document.addEventListener('keydown',(e)=>{
   }
 });
 
-restoreCollapsibles();fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();startSpeedMonitor();
+restoreCollapsibles();fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();
 // Skip polling when tab is hidden (battery-friendly).
 setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){fetchStatus();loadTraffic()}});
+// Incidents change rarely — refresh every 30s instead of 5s.
+setInterval(()=>{if(!document.hidden)loadIncidents()},30000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){fetchStatus();loadTraffic();loadIncidents()}});
 </script>
 </body>
 </html>

@@ -147,6 +147,9 @@ cmd_start() {
     vpn_ip=$(test_xray)
     if [ -z "$vpn_ip" ]; then
         flog "ERROR: VPN connection test failed"
+        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "test_xray не прошёл при запуске"
         stop_xray
         echo '{"error":"VPN connection failed"}'
         return 1
@@ -265,7 +268,15 @@ cmd_restart() {
 
     local vpn_ip
     vpn_ip=$(test_xray)
-    [ -z "$vpn_ip" ] && { flog "ERROR: VPN connection test failed after restart"; stop_xray; echo '{"error":"VPN connection failed"}'; return 1; }
+    if [ -z "$vpn_ip" ]; then
+        flog "ERROR: VPN connection test failed after restart"
+        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "test_xray не прошёл при переключении"
+        stop_xray
+        echo '{"error":"VPN connection failed"}'
+        return 1
+    fi
     flog "xray reconnected, VPN IP: $vpn_ip"
 
     generate_singbox_config "$FLOWVPN_TMP/singbox.json" 1080 "$mode"
@@ -465,15 +476,51 @@ cmd_update() {
 
 cmd_ping() {
     [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
-    local results="[]" total=$(jq 'length' "$FLOWVPN_TMP/servers.json") i=0
+    local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    local tmpdir=$(mktemp -d "$FLOWVPN_TMP/ping.XXXXXX")
+
+    # Per-server probe runs in parallel. Strategy lifted from v2rayN/v2rayNG
+    # tcping: 3 attempts × 3s TCP-connect, take the minimum. Empirically
+    # observed ~20% TCP-RST flap on one upstream (Finland) — 2×2s gave 4%
+    # false-negatives, 3×3s drops that below 1%.
+    #
+    # ICMP fallback when all 3 TCP attempts fail: many providers RST :443
+    # bursts but ICMP keeps flowing, so we still surface a usable number
+    # instead of "нет" for a server that's actually reachable.
+    local i=0
     while [ "$i" -lt "$total" ]; do
         local host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+        local out="$tmpdir/$i"
+        (
+            best=-1
+            for attempt in 1 2 3; do
+                t=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+                if [ -n "$t" ] && [ "$t" != "0.000000" ]; then
+                    ms=$(echo "$t" | awk '{printf "%d", $1 * 1000}')
+                    if [ "$best" -lt 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
+                fi
+            done
+            if [ "$best" -lt 0 ]; then
+                # ICMP fallback — single packet, 2s deadline.
+                icmp=$(ping -c 1 -W 2 "$host" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," "); print int(a[1]+0.5); exit}')
+                [ -n "$icmp" ] && [ "$icmp" -gt 0 ] 2>/dev/null && best=$icmp
+            fi
+            echo "$best" > "$out"
+        ) &
+        i=$((i + 1))
+    done
+    wait
+
+    local results="[]"
+    i=0
+    while [ "$i" -lt "$total" ]; do
         local name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
-        local ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
-        [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+        local ms=$(cat "$tmpdir/$i" 2>/dev/null)
+        [ -z "$ms" ] && ms=-1
         results=$(echo "$results" | jq --arg n "$name" --argjson ms "$ms" --argjson i "$i" '. + [{name:$n, ping:$ms, index:$i}]')
         i=$((i + 1))
     done
+    rm -rf "$tmpdir"
     echo "$results" | jq '.'
 }
 
@@ -833,6 +880,12 @@ cmd_get_log() {
         *)      grep_filter="outbound/\|ERROR\|dns:.*exchanged" ;;
     esac
 
+    # Background-noise pattern shared with healthcheck — keeps the "Errors"
+    # filter focused on real problems instead of ISP-level direct timeouts
+    # to RU services and Apple push-DNS hiccups (apps retry these silently).
+    local noise_excludes=""
+    [ "$filter" = "error" ] && noise_excludes='\|outbound/direct.*i/o timeout\|dns: exchange failed'
+
     # Get timezone offset
     local tz_str=$(cat /etc/TZ 2>/dev/null)
     local TZ_OFFSET=$(echo "$tz_str" | sed 's/[A-Za-z]*//g; s/^-//' | awk '{print int($1)}')
@@ -849,7 +902,7 @@ cmd_get_log() {
     # Source 1: sing-box log (skip for flow-only filter)
     if [ "$filter" != "flow" ]; then
         grep "$grep_filter" "$FLOWVPN_TMP/singbox.log" 2>/dev/null | \
-            grep -v "packet connection$\|WARN\|cached\|inbound/\|1\.1\.1\.1:853\|1\.0\.0\.1:853\|8\.8\.8\.8:853\|8\.8\.4\.4:853\|127\.0\.0\.1:53\|127\.0\.0\.1:5354" | \
+            grep -v "packet connection$\|WARN\|cached\|inbound/\|1\.1\.1\.1:853\|1\.0\.0\.1:853\|8\.8\.8\.8:853\|8\.8\.4\.4:853\|127\.0\.0\.1:53\|127\.0\.0\.1:5354${noise_excludes}" | \
             sed 's/\x1b\[[0-9;]*m//g; s/\x1b\[0m//g' | \
             awk '{print "SING|"$0}' >> "$tmplog"
     fi
@@ -1166,6 +1219,53 @@ _record_switch() {
         > "$FLOWVPN_TMP/last_switch.json" 2>/dev/null
 }
 
+# Record a server-stability incident. Stored as a JSON array (last 200) keyed
+# by host so renumbering after an `update` doesn't lose history. Read by
+# cmd_get_incidents and rendered in the UI as per-server fail badges + history.
+_log_incident() {
+    local type="$1" host="$2" name="$3" detail="$4"
+    local f="$FLOWVPN_TMP/incidents.json"
+    mkdir -p "$FLOWVPN_TMP"
+    [ -f "$f" ] || echo '[]' > "$f"
+    local tmp="$f.tmp.$$"
+    jq --arg type "$type" --arg host "$host" --arg name "$name" --arg detail "$detail" \
+       --argjson ts "$(date +%s)" \
+       '. + [{ts:$ts, type:$type, host:$host, server:$name, detail:$detail}] | .[-200:]' \
+       "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" || rm -f "$tmp"
+}
+
+cmd_get_incidents() {
+    local f="$FLOWVPN_TMP/incidents.json"
+    if [ ! -f "$f" ]; then echo '{"incidents":[],"stats":[]}'; return; fi
+    local now=$(date +%s)
+    local h24=$((now - 86400))
+    local h7d=$((now - 604800))
+    jq --argjson h24 "$h24" --argjson h7d "$h7d" '
+      . as $all |
+      ($all | sort_by(-.ts) | .[0:200]) as $incidents |
+      ($all
+        | map(select(.host != null and .host != ""))
+        | group_by(.host)
+        | map({
+            host:      .[0].host,
+            server:    (max_by(.ts).server),
+            count_24h: (map(select(.ts >= $h24)) | length),
+            count_7d:  (map(select(.ts >= $h7d)) | length),
+            last_ts:   (max_by(.ts).ts),
+            last_type: (max_by(.ts).type)
+          })
+        | map(select(.count_7d > 0))
+        | sort_by(-.count_24h, -.count_7d)
+      ) as $stats |
+      {incidents: $incidents, stats: $stats}
+    ' "$f" 2>/dev/null || echo '{"incidents":[],"stats":[]}'
+}
+
+cmd_clear_incidents() {
+    echo '[]' > "$FLOWVPN_TMP/incidents.json"
+    echo '{"status":"cleared"}'
+}
+
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=3 fail_count=0 tick=0 silent_fails=0
 
@@ -1291,6 +1391,10 @@ cmd_watchdog() {
         # otherwise a permanent outage spams syslog every 20s forever.
         if [ "$fail_count" -le "$max_fails" ]; then
             logger -t flowvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
+            local _cur_idx=$(get_config_val selected_server 0)
+            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+            _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
         else
             silent_fails=$((silent_fails + 1))
             # One reminder every ~5 min while still down
@@ -1340,6 +1444,9 @@ cmd_watchdog() {
 
                 if [ -n "$test_ip" ]; then
                     logger -t flowvpn "Watchdog: switched to $cand_name ($test_ip)"
+                    local _from_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                    local _cand_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                    _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name ($why)"
                     _record_switch "$current" "$selected" "failover"
                     local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
                     save_config "$tmp"
@@ -1357,6 +1464,9 @@ cmd_watchdog() {
             # Stay on current server and back off — log once, not every tick.
             if [ "$found" -eq 0 ]; then
                 logger -t flowvpn "Watchdog: all $tried candidates failed, staying on current server"
+                local _cur_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_host=$(jq -r ".[$current].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                _log_incident "switch_failed" "$_cur_host" "$_cur_name" "все $tried серверов недоступны"
             fi
         fi
     done
@@ -1462,6 +1572,27 @@ cmd_get_traffic() {
                 api_ok: true
             }'
     ) 200>"$state_file.lock"
+}
+
+cmd_reset_traffic() {
+    # Reset cumulative per-chain counters (vpn_dl/ul, dir_dl/ul) and start a
+    # fresh accounting window. Keeps `seen{}` populated with current
+    # connection IDs so the next poll computes deltas from now, not from
+    # whatever bytes those open connections had accumulated before.
+    local state_file="$FLOWVPN_TMP/traffic_state.json"
+    mkdir -p "$FLOWVPN_TMP"
+    (
+        flock -x 200
+        local now=$(date +%s)
+        local seen='{}'
+        if [ -f "$state_file" ]; then
+            seen=$(jq '.seen // {}' "$state_file" 2>/dev/null || echo '{}')
+        fi
+        jq -n --argjson seen "$seen" --argjson ts "$now" \
+            '{vpn_dl:0, vpn_ul:0, dir_dl:0, dir_ul:0, started:$ts, seen:$seen}' \
+            > "$state_file.tmp" && mv "$state_file.tmp" "$state_file"
+    ) 200>"$state_file.lock"
+    echo "{\"status\":\"reset\",\"started\":$(date +%s)}"
 }
 
 # ============================================================
@@ -1781,11 +1912,44 @@ cmd_healthcheck() {
         fi
     fi
 
-    # 10. Errors
-    local sb_err=$(grep -c "ERROR" /tmp/flowvpn/singbox.log 2>/dev/null)
-    local xr_err=$(grep -ciE "error|fail" /tmp/flowvpn/xray.log 2>/dev/null)
-    [ "$sb_err" -eq 0 ] && [ "$xr_err" -eq 0 ] && _hc "Ошибки" "ok" "Нет ошибок" \
-        || _hc "Ошибки" "warn" "sing-box: $sb_err, xray: $xr_err"
+    # 10. Errors — count only "fresh" (last hour) and only real errors.
+    # Filtered out as background noise:
+    #   - "outbound/direct ... i/o timeout" — Yandex/RU sites unreachable via
+    #     ISP's direct path (Lovit CGNAT). Not a VPN bug, apps retry silently.
+    #   - "dns: exchange failed" — Apple push-DNS hiccups (iPhone retries).
+    # What still counts as a real error: xray crashes, sing-box panics,
+    # outbound/socks failures (= our VPN tunnel broke), config errors.
+    local cutoff_str=$(date -u -d "@$(($(date +%s) - 3600))" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    local sb_err=0 xr_err=0 sb_noise=0
+    if [ -n "$cutoff_str" ] && [ -f /tmp/flowvpn/singbox.log ]; then
+        local sb_counts
+        sb_counts=$(grep "ERROR" /tmp/flowvpn/singbox.log 2>/dev/null | awk -v c="$cutoff_str" '
+            {
+                if ($2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) next
+                ts=$2" "$3
+                if (ts < c) next
+                line=$0
+                if (line ~ /outbound\/direct.*i\/o timeout/ || line ~ /dns: exchange failed/) noise++
+                else real++
+            }
+            END { print (real+0)" "(noise+0) }')
+        sb_err="${sb_counts%% *}"
+        sb_noise="${sb_counts##* }"
+    fi
+    if [ -n "$cutoff_str" ] && [ -f /tmp/flowvpn/xray.log ]; then
+        xr_err=$(grep -iE "error|fail" /tmp/flowvpn/xray.log 2>/dev/null | awk -v c="$cutoff_str" '
+            { if ($1 ~ /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}$/) { gsub("/","-",$1); ts=$1" "$2; if (ts >= c) cnt++ } }
+            END { print cnt+0 }')
+    fi
+    if [ "$sb_err" -eq 0 ] && [ "$xr_err" -eq 0 ]; then
+        if [ "$sb_noise" -gt 0 ]; then
+            _hc "Ошибки" "ok" "Реальных ошибок нет ($sb_noise фоновых отфильтровано)"
+        else
+            _hc "Ошибки" "ok" "Нет свежих ошибок (за последний час)"
+        fi
+    else
+        _hc "Ошибки" "warn" "За последний час: sing-box: $sb_err, xray: $xr_err"
+    fi
 
     # 11. Resources
     local free_ram=$(free | grep Mem | awk '{print int($4/1024)}')
@@ -1856,6 +2020,9 @@ case "$1" in
     system-info)    cmd_system_info ;;
     watchdog)       cmd_watchdog "$2" ;;
     get-traffic)    cmd_get_traffic ;;
+    reset-traffic)  cmd_reset_traffic ;;
+    get-incidents)  cmd_get_incidents ;;
+    clear-incidents) cmd_clear_incidents ;;
     schedule)       cmd_schedule "$2" "$3" "$4" ;;
     auto-update)    cmd_auto_update "$2" ;;
     backup)         cmd_backup ;;
