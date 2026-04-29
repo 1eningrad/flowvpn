@@ -5,8 +5,12 @@ STOP=10
 
 start() {
     local auto_start
-    auto_start=$(jq -r '.auto_start // true' /etc/flowvpn/config.json 2>/dev/null)
-    [ "$auto_start" != "true" ] && return 0
+    # `.auto_start // true` looks correct but jq's // operator treats `false`
+    # as falsy and returns the alternative — so an explicit `false` from
+    # the UI toggle was being silently overridden to `true`. The explicit
+    # if-else handles all three cases (true / false / missing→default true).
+    auto_start=$(jq -r '.auto_start | if . == false then "false" else "true" end' /etc/flowvpn/config.json 2>/dev/null)
+    [ "$auto_start" = "false" ] && return 0
 
     local tries=0
     while [ "$tries" -lt 30 ]; do

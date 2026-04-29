@@ -1469,6 +1469,20 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         <div class="card">
           <div class="setting-row">
             <div class="setting-row-info">
+              <div class="setting-row-title">Автозапуск при включении роутера</div>
+              <div class="setting-row-desc">Запускать VPN автоматически после загрузки роутера или перезагрузки</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="autoStartToggle" aria-label="Автозапуск VPN при включении роутера" onchange="toggleAutoStart(this.checked)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-status" id="autoStartStatus" style="margin-top:14px">Выключено</div>
+        </div>
+        <div class="card">
+          <div class="setting-row">
+            <div class="setting-row-info">
               <div class="setting-row-title">Расписание</div>
               <div class="setting-row-desc">VPN автоматически включится и отключится в указанное время</div>
             </div>
@@ -1960,6 +1974,12 @@ async function fetchStatus(){
     // finished saving and the user sees the toggle bounce.
     const am=document.getElementById('autoModeToggle');
     if(am&&!_autoModePending&&am.checked!==!!state.auto_mode)am.checked=!!state.auto_mode;
+    // auto_start toggle. Default true (matches init.d's `// true` jq fallback).
+    const ast=document.getElementById('autoStartToggle');
+    const astOn = state.auto_start !== false;
+    if(ast && ast.checked !== astOn) ast.checked = astOn;
+    const astS = document.getElementById('autoStartStatus');
+    if(astS) astS.textContent = astOn ? 'Включено' : 'Выключено';
     const hint=document.getElementById('autoModeHint');
     if(hint){
       if(state.auto_mode){
@@ -2150,6 +2170,27 @@ function _formatAttempts(attempts){
 // _autoModePending blocks fetchStatus's toggle-sync from clobbering our
 // in-flight value (poll runs every 5s, this op can take 15s+).
 let _autoModePending=false;
+async function toggleAutoStart(enabled){
+  // Persists `auto_start` in /etc/flowvpn/config.json. Read by /etc/init.d/
+  // flowvpn at boot — if false, the service does not auto-start. Doesn't
+  // affect the currently-running VPN, only the next reboot.
+  const t=document.getElementById('autoStartToggle');
+  const s=document.getElementById('autoStartStatus');
+  if(t)t.disabled=true;
+  try{
+    await apiFetch(API+'?action=set-config&key=auto_start&value='+(enabled?'true':'false'));
+    state.auto_start=enabled;
+    if(s)s.textContent=enabled?'Включено':'Выключено';
+    toast.success(enabled?'Автозапуск включён':'Автозапуск выключен',
+                  enabled?'VPN будет запускаться после загрузки роутера':'После перезагрузки роутера VPN не запустится сам');
+  }catch(e){
+    if(t)t.checked=!enabled;
+    toast.error('Ошибка','Не удалось сохранить настройку');
+  }finally{
+    if(t)t.disabled=false;
+  }
+}
+
 async function toggleAutoMode(enabled){
   _autoModePending=true;
   const t=document.getElementById('autoModeToggle');

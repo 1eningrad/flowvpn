@@ -389,7 +389,7 @@ cmd_status() {
           vpn_ip:$vpn_ip,
           mode: ($c.mode // "all_vpn"),
           devices:$devices,
-          auto_start: ($c.auto_start // true),
+          auto_start: ($c.auto_start | if . == false then false else true end),
           auto_mode: ($c.auto_mode // false),
           running_intent: ($c.running_intent // false),
           device_rules: ($c.device_rules // {}),
