@@ -22,6 +22,9 @@ fetch_rules() {
         # Blocklist mode — blocked domains go through VPN
         _fetch_blocklist_domains
     fi
+    # Force-VPN list (AI services blocked from RU IPs) is rebuilt for both
+    # modes — the UI's vpn_domains.txt tab is exposed in either mode.
+    _fetch_vpn_domains
 }
 
 _fetch_ru_domains() {
@@ -262,6 +265,62 @@ RUEOF
     fi
 }
 
+_fetch_vpn_domains() {
+    # Force-VPN list — AI / chat services that 403 on Russian IPs.
+    # Built into a single file so _build_*_rules can read one source instead
+    # of merging heredoc + CUSTOM_VPN at every config rebuild.
+    {
+        cat << 'VPNEOF'
+# OpenAI
+openai.com
+chatgpt.com
+oaistatic.com
+oaiusercontent.com
+# Anthropic
+anthropic.com
+claude.ai
+# Google AI (specific subdomains — root google.com is in geosite-ru)
+gemini.google.com
+aistudio.google.com
+ai.google.dev
+notebooklm.google.com
+bard.google.com
+generativelanguage.googleapis.com
+deepmind.com
+# Hugging Face
+huggingface.co
+huggingface.com
+# Chat / search AI
+perplexity.ai
+you.com
+poe.com
+pi.ai
+character.ai
+character.com
+# Image / video gen
+midjourney.com
+stability.ai
+replicate.com
+runwayml.com
+# Microsoft Copilot
+copilot.microsoft.com
+# Other LLM providers
+mistral.ai
+cohere.com
+cohere.ai
+meta.ai
+VPNEOF
+    } > "$SR_RULES_DIR/vpn_domains.list"
+
+    # Append user's custom VPN-forced domains (one per line, comments stripped).
+    if [ -f "$CUSTOM_VPN" ]; then
+        while IFS= read -r line; do
+            case "$line" in "#"*|"") continue ;; esac
+            echo "$line" >> "$SR_RULES_DIR/vpn_domains.list"
+        done < "$CUSTOM_VPN"
+    fi
+}
+
 _fetch_blocklist_domains() {
     # Source choice: a curated "actually-needs-bypass" list works better for
     # Russia than dumping the full RKN registry — RKN includes lots of
@@ -423,15 +482,17 @@ _build_allvpn_rules() {
     local ru_rule=""
     [ -f "$SR_RULES_DIR/ru_domains.list" ] && ru_rule=$(convert_sr_to_singbox_rule "$SR_RULES_DIR/ru_domains.list")
 
-    # Custom VPN domains (force through VPN even if in RU list)
+    # Force-VPN domains (built-in AI services + user's custom_vpn).
+    # _fetch_vpn_domains rebuilds vpn_domains.list on every fetch_rules and
+    # on every add-domain/remove-domain, so this stays current.
     local vpn_rule=""
-    if [ -f "$CUSTOM_VPN" ]; then
+    if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
         local vpn_suffixes=""
         while IFS= read -r line; do
             case "$line" in "#"*|"") continue ;; esac
             [ -n "$vpn_suffixes" ] && vpn_suffixes="$vpn_suffixes,"
             vpn_suffixes="$vpn_suffixes\"$line\""
-        done < "$CUSTOM_VPN"
+        done < "$SR_RULES_DIR/vpn_domains.list"
         [ -n "$vpn_suffixes" ] && vpn_rule="{\"domain_suffix\":[$vpn_suffixes]}"
     fi
 
@@ -496,20 +557,19 @@ _build_blocklist_rules() {
     [ -f "$SR_RULES_DIR/meta_ips.list" ] && meta_ips_rule=$(convert_ip_list "$SR_RULES_DIR/meta_ips.list")
     [ -f "$SR_RULES_DIR/telegram_ips.list" ] && telegram_ips_rule=$(convert_ip_list "$SR_RULES_DIR/telegram_ips.list")
 
-    # Custom VPN domains added via UI ("Принудительно через VPN" tab).
-    # In blocklist mode these are critical: the curated source-list misses
-    # services like Gemini/Perplexity/HuggingFace, so users must be able to
-    # extend it. Built into the same JSON shape as the other rules so the
-    # forwarding loop below picks it up.
+    # Force-VPN domains: built-in AI list ("Принудительно через VPN" tab in
+    # the UI) merged with user's custom_vpn additions. _fetch_vpn_domains
+    # writes both to vpn_domains.list. In blocklist mode this is critical
+    # because the curated blocklist source misses Gemini/Perplexity/HF.
     local custom_vpn_rule=""
-    if [ -f "$CUSTOM_VPN" ]; then
+    if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
         local cv_suffixes=""
         while IFS= read -r line; do
             line="${line%$'\r'}"
             case "$line" in "#"*|"") continue ;; esac
             [ -n "$cv_suffixes" ] && cv_suffixes="$cv_suffixes,"
             cv_suffixes="$cv_suffixes\"$line\""
-        done < "$CUSTOM_VPN"
+        done < "$SR_RULES_DIR/vpn_domains.list"
         [ -n "$cv_suffixes" ] && custom_vpn_rule="{\"domain_suffix\":[$cv_suffixes]}"
     fi
 

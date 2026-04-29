@@ -2285,23 +2285,32 @@ function restoreCollapsibles(){
 
 async function loadDomains(){
   try{const r=await apiFetch(API+'?action=get-domains');const d=await r.json();
-    const builtin=d.ru_domains_builtin||[], custom=d.custom_direct||[];
-    document.getElementById('directCount').textContent=builtin.length+custom.length;
-    document.getElementById('vpnCount').textContent=d.custom_vpn?d.custom_vpn.length:0;
+    const dirBuiltin=d.ru_domains_builtin||[], dirCustom=d.custom_direct||[];
+    const vpnBuiltin=d.vpn_domains_builtin||[], vpnCustom=d.custom_vpn||[];
+    document.getElementById('directCount').textContent=dirBuiltin.length+dirCustom.length;
+    document.getElementById('vpnCount').textContent=vpnBuiltin.length+vpnCustom.length;
     const customTag=(arr,list)=>arr.map(d=>`<span class="tag">${esc(d)}<span class="tag-remove" onclick="removeDomain('${esc(d)}','${list}')">×</span></span>`).join('');
     const roTag=arr=>arr.map(d=>`<span class="tag tag-readonly">${esc(d)}</span>`).join('');
-    // Direct list: scrollable area with built-in (read-only) + your custom
-    // (with × to remove). geosite-ru still applies on top — we say so in the
-    // hint instead of pretending the built-in count is the whole story.
+    // Direct list: built-in (read-only) + your custom (with ×). geosite-ru
+    // still applies as a third layer — note explains the layering instead
+    // of pretending the built-in count is the whole story.
     const dEl=document.getElementById('directDomains');
     dEl.classList.add('scrollable');
     dEl.innerHTML =
       `<div class="domains-note" style="flex-basis:100%">`+
-      `Встроенный список (${builtin.length}) — нельзя удалить · ваши добавления (${custom.length}) — с ×.<br>`+
+      `Встроенный список (${dirBuiltin.length}) — нельзя удалить · ваши добавления (${dirCustom.length}) — с ×.<br>`+
       `Сверху действует geosite-ru (~5000 RU доменов) — там всё что не в этом списке.`+
       `</div>`+
-      customTag(custom,'direct')+roTag(builtin);
-    document.getElementById('vpnDomains').innerHTML=d.custom_vpn&&d.custom_vpn.length?customTag(d.custom_vpn,'vpn'):'<div style="color:var(--text-dim);font-size:11px;padding:6px 2px">Ничего не добавлено</div>';
+      customTag(dirCustom,'direct')+roTag(dirBuiltin);
+    // VPN list: built-in AI services that 403 on RU IPs (OpenAI, Anthropic,
+    // Gemini, HuggingFace, Perplexity, Midjourney, …) + your custom additions.
+    const vEl=document.getElementById('vpnDomains');
+    vEl.classList.add('scrollable');
+    vEl.innerHTML =
+      `<div class="domains-note" style="flex-basis:100%">`+
+      `Встроенный список нейросетей и заблокированных от RU сервисов (${vpnBuiltin.length}) — нельзя удалить · ваши добавления (${vpnCustom.length}) — с ×.`+
+      `</div>`+
+      customTag(vpnCustom,'vpn')+roTag(vpnBuiltin);
   }catch(e){}
 }
 // Convert non-ASCII (Cyrillic etc.) domain to its ASCII Punycode form so
