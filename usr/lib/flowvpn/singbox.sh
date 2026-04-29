@@ -105,6 +105,67 @@ DOMAIN-SUFFIX,magnit.ru
 DOMAIN-SUFFIX,sbermegamarket.ru
 DOMAIN-SUFFIX,vkusvill.ru
 DOMAIN-SUFFIX,1c.ru
+# Banks (extras)
+DOMAIN-SUFFIX,raiffeisen.ru
+DOMAIN-SUFFIX,gazprombank.ru
+DOMAIN-SUFFIX,otkritie.ru
+DOMAIN-SUFFIX,psbank.ru
+DOMAIN-SUFFIX,rshb.ru
+DOMAIN-SUFFIX,sovcombank.ru
+DOMAIN-SUFFIX,rosbank.ru
+DOMAIN-SUFFIX,mkb.ru
+DOMAIN-SUFFIX,yoomoney.ru
+DOMAIN-SUFFIX,yookassa.ru
+DOMAIN-SUFFIX,nspk.ru
+DOMAIN-SUFFIX,mironline.ru
+# Sber ecosystem
+DOMAIN-SUFFIX,sber.com
+DOMAIN-SUFFIX,sbermarket.ru
+DOMAIN-SUFFIX,megamarket.ru
+DOMAIN-SUFFIX,sberhealth.ru
+DOMAIN-SUFFIX,sberdevices.ru
+# Telcos / streaming bundles
+DOMAIN-SUFFIX,mts-link.ru
+DOMAIN-SUFFIX,kion.ru
+DOMAIN-SUFFIX,premier.one
+DOMAIN-SUFFIX,yota.ru
+DOMAIN-SUFFIX,rt.ru
+DOMAIN-SUFFIX,wink.ru
+# Gov / state
+DOMAIN-SUFFIX,nalog.ru
+DOMAIN-SUFFIX,pfr.gov.ru
+DOMAIN-SUFFIX,sfr.gov.ru
+DOMAIN-SUFFIX,mvd.ru
+DOMAIN-SUFFIX,rosreestr.ru
+DOMAIN-SUFFIX,emias.info
+DOMAIN-SUFFIX,mosreg.ru
+# Marketplaces / delivery
+DOMAIN-SUFFIX,aliexpress.ru
+DOMAIN-SUFFIX,joom.ru
+DOMAIN-SUFFIX,delivery-club.ru
+DOMAIN-SUFFIX,dodopizza.ru
+# Streaming / media
+DOMAIN-SUFFIX,okko.tv
+DOMAIN-SUFFIX,start.ru
+DOMAIN-SUFFIX,more.tv
+DOMAIN-SUFFIX,amediateka.ru
+DOMAIN-SUFFIX,1tv.ru
+DOMAIN-SUFFIX,channelone.ru
+# News / aggregators
+DOMAIN-SUFFIX,vc.ru
+DOMAIN-SUFFIX,dtf.ru
+DOMAIN-SUFFIX,afisha.ru
+DOMAIN-SUFFIX,rambler.ru
+# Jobs / education
+DOMAIN-SUFFIX,skillbox.ru
+DOMAIN-SUFFIX,superjob.ru
+DOMAIN-SUFFIX,rabota.ru
+# Reading / health
+DOMAIN-SUFFIX,litres.ru
+DOMAIN-SUFFIX,prodoctorov.ru
+# Business tools
+DOMAIN-SUFFIX,sbis.ru
+DOMAIN-SUFFIX,dadata.ru
 RUEOF
     } > "$SR_RULES_DIR/ru_domains.list"
 
