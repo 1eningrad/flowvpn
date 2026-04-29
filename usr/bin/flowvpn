@@ -62,17 +62,24 @@ _op_end() {
 
 _ensure_watchdog() {
     # Watchdog handles log rotation, auto-recovery, and auto-failover. It is
-    # spawned by /etc/init.d/flowvpn at boot, but any subsequent stop/start or
-    # restart through CLI/UI does NOT go through init.d — so without this guard
-    # a single user-initiated restart loses the watchdog until next reboot.
-    # Symptom seen 2026-04-29: logs ballooned to 40k lines (rotation runs only
-    # in the watchdog tick loop) and switch_failed on Нидерланды wasn't
-    # auto-recovered.
-    local lock="$FLOWVPN_TMP/watchdog.lock"
-    if [ -f "$lock" ]; then
-        local pid
-        pid=$(cat "$lock" 2>/dev/null)
-        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+    # the only place log rotation runs, so losing it silently lets logs grow
+    # unbounded (40k-line floods seen on SevenSky 2026-04-29).
+    #
+    # Idempotency check is by process scan, not by lock file. The lock-file
+    # path turned out to be unreliable: init.d used to spawn its own watchdog
+    # in parallel with cmd_start's, racing on the lock and leaving a state
+    # where the lock was empty/missing while a watchdog was alive — every
+    # subsequent _ensure_watchdog call then spawned a duplicate.
+    # `pgrep -f 'flowvpn watchdog'` would match itself — the pgrep process'
+    # own cmdline contains the substring it's searching for, so it always
+    # returned 0 and we never spawned. Using ps+grep with the classic
+    # `[/]` character-class self-exclusion trick: the grep cmdline contains
+    # `[/]usr/bin/flowvpn watchdog`, which includes the substring
+    # `]usr/bin/...` (no leading `/`), so the regex `/usr/bin/flowvpn watchdog`
+    # does not match grep itself. Real watchdog cmdline
+    # `/bin/ash /usr/bin/flowvpn watchdog` does match.
+    if ps w 2>/dev/null | grep -q '[/]usr/bin/flowvpn watchdog$'; then
+        return 0
     fi
     /usr/bin/flowvpn watchdog >/dev/null 2>&1 &
     echo $! > "$FLOWVPN_TMP/watchdog.pid"
@@ -90,7 +97,7 @@ _rotate_log() {
     # Fix: tail-into-temp, then `cat tmp > file` writes through the same
     # file descriptor that the daemons hold — truncate-then-overwrite
     # preserves the inode.
-    local max_lines=5000 keep_lines=1500
+    local max_lines=2000 keep_lines=500
     for logfile in "$FLOWVPN_TMP/singbox.log" "$FLOWVPN_TMP/xray.log"; do
         [ -f "$logfile" ] || continue
         local lines=$(wc -l < "$logfile" 2>/dev/null)
@@ -1327,20 +1334,30 @@ cmd_clear_incidents() {
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=3 fail_count=0 tick=0 silent_fails=0
 
-    # Single-instance lockfile. Stale lock from a dead process is ignored.
-    # Without this, two watchdogs racing on the same probe port (1081) would
-    # silently fail probes and trigger spurious failovers.
-    local lock="$FLOWVPN_TMP/watchdog.lock"
-    if [ -f "$lock" ]; then
-        local old_pid=$(cat "$lock" 2>/dev/null)
-        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            flog "Watchdog: another instance is running (pid $old_pid), exiting"
-            return 0
-        fi
-    fi
+    # Single-instance via atomic mkdir. The earlier file-based lock was
+    # unreliable: under the init.d/cmd_start spawn race the lock would end
+    # up empty/missing while a watchdog was alive, so every subsequent
+    # _ensure_watchdog spawned a duplicate. Killing peers from cmd_watchdog
+    # also raced with traps not yet installed, sometimes wiping all of them.
+    # mkdir is the only POSIX-portable atomic-create primitive available
+    # on busybox without flock — it gives "first wins, others exit cleanly".
+    local me=$$
+    local lockdir="$FLOWVPN_TMP/watchdog.lockdir"
     mkdir -p "$FLOWVPN_TMP"
-    echo $$ > "$lock"
-    trap 'rm -f "$lock"; flog "Watchdog stopped"; exit 0' TERM INT EXIT
+    while ! mkdir "$lockdir" 2>/dev/null; do
+        local owner
+        owner=$(cat "$lockdir/owner" 2>/dev/null)
+        if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+            rm -rf "$lockdir"  # stale — owner died without cleanup, retry
+            continue
+        fi
+        return 0  # peer alive, we're a duplicate
+    done
+    echo "$me" > "$lockdir/owner"
+    trap 'rm -rf "$lockdir"; flog "Watchdog stopped"; exit 0' TERM INT EXIT
+    # Mirror the owner PID into the legacy lock path for stop()/status code
+    # that still reads watchdog.lock.
+    echo "$me" > "$FLOWVPN_TMP/watchdog.lock"
 
     # Unique probe port per-process — survives concurrent set-server probes
     # and other ad-hoc xray runs that might collide on a fixed port.
@@ -1350,8 +1367,10 @@ cmd_watchdog() {
         sleep "$interval"
         tick=$((tick + 1))
 
-        # Rotate logs every ~10 minutes (30 ticks × 20s)
-        [ $((tick % 30)) -eq 0 ] && _rotate_log
+        # Rotate logs every ~3 minutes (10 ticks × 20s). Sing-box at warn
+        # level is quiet, but we still want quick recovery if log noise
+        # ever spikes (e.g. xray reconnect storm).
+        [ $((tick % 10)) -eq 0 ] && _rotate_log
 
         # Auto-mode periodic re-evaluation every ~20 minutes (60 ticks).
         # cmd_auto_eval has its own internal rate-limit and hysteresis,
