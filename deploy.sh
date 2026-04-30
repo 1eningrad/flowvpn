@@ -17,7 +17,11 @@ echo "→ git pull"
 git pull --rebase --autostash 2>&1 | tail -3
 
 echo "→ ship scripts/cgi/init.d to $ROUTER"
-tar c \
+# COPYFILE_DISABLE=1 keeps macOS BSD tar from embedding `._*` AppleDouble
+# resource forks; they end up next to every shipped file on the router and
+# clutter /usr/lib/flowvpn (the dispatcher only sources by exact filename,
+# so they're inert — just noise).
+COPYFILE_DISABLE=1 tar c \
     usr/bin/flowvpn \
     usr/lib/flowvpn/parse.sh \
     usr/lib/flowvpn/xray.sh \
@@ -72,10 +76,10 @@ echo "=== watchdog lockdir owner ==="
 cat /tmp/flowvpn/watchdog.lockdir/owner 2>/dev/null || echo "(missing)"
 echo
 echo "=== ru direct list ==="
-wc -l /tmp/flowvpn/rules/ru_domains.list 2>/dev/null
+wc -l /tmp/flowvpn/rules/ru_domains.list 2>/dev/null || echo "(not generated yet)"
 echo
 echo "=== logs (warn level — should be small) ==="
-wc -l /tmp/flowvpn/*.log 2>/dev/null
+wc -l /tmp/flowvpn/*.log 2>/dev/null || echo "(no logs yet)"
 echo
 echo "=== flowvpn status ==="
 /usr/bin/flowvpn status 2>/dev/null | head -10
