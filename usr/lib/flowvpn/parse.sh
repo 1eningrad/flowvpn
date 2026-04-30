@@ -43,6 +43,29 @@ fetch_subscription() {
     }
     [ -z "$raw" ] && { logger -t flowvpn "Subscription: empty response from server"; return 1; }
 
+    # EclipVPN's bot hands users the user-facing landing URL
+    # (eclip-sub.vercel.app/<token>) instead of the API endpoint
+    # (eclip-sub.vercel.app/api/sub/<token>). The landing page embeds the
+    # API path in its HTML — detect that and follow transparently so users
+    # don't need to know the difference.
+    case "$raw" in
+        *"<!DOCTYPE html"*|*"<!doctype html"*|*"<html"*)
+            local sub_path follow_url prefix
+            sub_path=$(printf '%s' "$raw" | grep -oE '/api/sub/[A-Za-z0-9_-]+' | head -1)
+            if [ -n "$sub_path" ]; then
+                prefix=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+).*#\1#')
+                follow_url="${prefix}${sub_path}"
+                logger -t flowvpn "Subscription: landing page detected, following ${sub_path}"
+                raw=$(curl -s --max-time 15 --proto '=http,https' \
+                    --dump-header "$hdr_file" "$follow_url") || {
+                    logger -t flowvpn "Subscription: follow-up fetch to api endpoint failed"
+                    return 1
+                }
+                [ -z "$raw" ] && { logger -t flowvpn "Subscription: api endpoint returned empty body"; return 1; }
+            fi
+            ;;
+    esac
+
     if echo "$raw" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
         :
     elif _b64_pad "$raw" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
