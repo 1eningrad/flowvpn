@@ -1160,7 +1160,7 @@ cmd_get_dns() {
     local dnsmasq_server=""
     dnsmasq_server=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
     jq -n --arg mode "$mode" --arg dnsmasq "$dnsmasq_server" \
-        '{mode:$mode, dnsmasq_server:$dnsmasq, proxy_dns:"tls://1.1.1.1", direct_dns:"udp://1.1.1.1",
+        '{mode:$mode, dnsmasq_server:$dnsmasq, proxy_dns:"tls://1.1.1.1", direct_dns:"udp://77.88.8.8",
           dot_blocked:true, quic_blocked:($mode != "all_vpn")}'
 }
 

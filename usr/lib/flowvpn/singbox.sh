@@ -441,7 +441,12 @@ generate_singbox_config() {
         dns: {
             servers: [
                 {tag: "dns-proxy", type: "https", server: "1.1.1.1", server_port: 443, path: "/dns-query", detour: "default"},
-                {tag: "dns-direct", type: "udp", server: "1.1.1.1", detour: "direct"},
+                # dns-direct uses Yandex DNS, not Cloudflare 1.1.1.1: VTB and some
+                # other RU banks have authoritative NS configured to refuse foreign
+                # resolvers, so 1.1.1.1 returns SERVFAIL for www.vtb.ru. Yandex
+                # also returns RU-locality CDN IPs for the same hostname, which
+                # resolves faster from inside RU than the foreign-pinned answer.
+                {tag: "dns-direct", type: "udp", server: "77.88.8.8", detour: "direct"},
                 {tag: "dns-block", type: "udp", server: "127.0.0.127"}
             ],
             rules: $dns_rules,
