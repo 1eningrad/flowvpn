@@ -1182,6 +1182,18 @@ cmd_set_config() {
         subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode) ;;
         *) echo '{"error":"invalid key"}'; return 1 ;;
     esac
+    # mode change needs to wipe rules and refetch them — same dance as
+    # cmd_set_mode. Without this delegation, `set-config?key=mode&value=...`
+    # via CGI saves the new mode to config but leaves the old mode's rules
+    # in place; sing-box restarts with the wrong list (e.g. blocklist mode
+    # without domains.list → all traffic goes direct).
+    [ "$key" = "mode" ] && { cmd_set_mode "$value"; return $?; }
+    # blocklist_source: validate value at the boundary (CGI lets any
+    # `[a-zA-Z0-9_-]` through, so a malformed value would silently fall
+    # through to the default branch in _fetch_blocklist_domains).
+    if [ "$key" = "blocklist_source" ]; then
+        case "$value" in curated|full) ;; *) echo '{"error":"blocklist_source must be curated or full"}'; return 1 ;; esac
+    fi
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,
     # so cmd_status's `// true` defaults work and the UI gets a real bool.
     local tmp
