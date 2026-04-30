@@ -80,8 +80,12 @@ setup_network() {
         done
     fi
 
-    # Detect LAN subnet from interface
-    local lan_subnet=$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9./]+' | awk '{print $2}')
+    # Detect LAN subnet from interface. NR==1 — alias interfaces and
+    # secondary IPv4s would otherwise concat into a multi-line string,
+    # the unquoted expansion below splits it into multiple nft args, and
+    # the rule silently fails to install (LAN never gets tproxied).
+    local lan_subnet
+    lan_subnet=$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9./]+' | awk 'NR==1{print $2; exit}')
     [ -z "$lan_subnet" ] && lan_subnet="192.168.1.0/24"
 
     # TPROXY: LAN clients → sing-box
