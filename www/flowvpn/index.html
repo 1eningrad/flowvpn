@@ -2406,18 +2406,39 @@ async function addDomain(list){
   if(!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d)){
     _showInputError(inp,'Похоже на неверный домен. Введите как «example.com» — без https:// и /пути');return;
   }
+  // Backend now soft-restarts sing-box inside add-domain so the new rule
+  // is live by the time we get the response (~5-7s). Show a loading toast
+  // immediately so the user sees that something's happening, then upgrade
+  // it to success/info when the response lands.
+  const loadingId=toast.loading('Применяется…');
   try{
     const r=await apiFetch(API+'?action=add-domain&domain='+encodeURIComponent(d)+'&list='+list);
     const j=await r.json().catch(()=>({}));
-    if(j&&j.error){_showInputError(inp,j.error);return}
+    if(j&&j.error){dismissToast(loadingId);_showInputError(inp,j.error);return}
     inp.value='';
     const display=raw!==d?(raw+' ('+d+')'):d;
-    toast.success('Домен добавлен',display+(list==='direct'?' → напрямую':' → через VPN'));loadDomains();
-  }catch(e){_showInputError(inp,'Не удалось сохранить — попробуйте снова')}
+    const desc=display+(list==='direct'?' → напрямую':' → через VPN');
+    if(j&&j.applied===false){
+      // VPN was off — saved to file but won't take effect until next start
+      updateToast(loadingId,{title:'Сохранено',desc:desc+' · применится при включении VPN'},{type:'info'});
+    }else{
+      updateToast(loadingId,{title:'Домен добавлен',desc:desc},{type:'success'});
+    }
+    loadDomains();
+  }catch(e){dismissToast(loadingId);_showInputError(inp,'Не удалось сохранить — попробуйте снова')}
 }
 async function removeDomain(d,list){
-  try{await apiFetch(API+'?action=remove-domain&domain='+encodeURIComponent(d)+'&list='+list);toast.success('Удалён',d);loadDomains()}
-  catch(e){toast.error('Ошибка')}
+  const loadingId=toast.loading('Применяется…');
+  try{
+    const r=await apiFetch(API+'?action=remove-domain&domain='+encodeURIComponent(d)+'&list='+list);
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.applied===false){
+      updateToast(loadingId,{title:'Удалён',desc:d+' · применится при включении VPN'},{type:'info'});
+    }else{
+      updateToast(loadingId,{title:'Удалён',desc:d},{type:'success'});
+    }
+    loadDomains();
+  }catch(e){dismissToast(loadingId);toast.error('Ошибка')}
 }
 
 function detectDeviceType(name){
