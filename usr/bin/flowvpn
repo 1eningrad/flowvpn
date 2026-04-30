@@ -1819,8 +1819,15 @@ cmd_schedule() {
 
 _setup_cron() {
     _remove_cron
-    local on_time=$(jq -r '.schedule.on // "07:00"' "$FLOWVPN_CONFIG")
-    local off_time=$(jq -r '.schedule.off // "23:00"' "$FLOWVPN_CONFIG")
+    local on_time off_time
+    on_time=$(jq -r '.schedule.on // "07:00"' "$FLOWVPN_CONFIG")
+    off_time=$(jq -r '.schedule.off // "23:00"' "$FLOWVPN_CONFIG")
+    # Re-validate HH:MM. The CGI checks at the boundary, but cmd_restore
+    # writes .schedule from a backup blob — a crafted backup could put
+    # "07:00; rm -rf /" in here and that string would otherwise land
+    # straight into a crontab line, executed by root.
+    case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.on '$on_time' — cron not installed"; return 1 ;; esac
+    case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.off '$off_time' — cron not installed"; return 1 ;; esac
     local on_h=${on_time%%:*} on_m=${on_time##*:}
     local off_h=${off_time%%:*} off_m=${off_time##*:}
     (crontab -l 2>/dev/null; echo "$on_m $on_h * * * /usr/bin/flowvpn start >/dev/null 2>&1 #flowvpn") | crontab -
@@ -1890,10 +1897,25 @@ cmd_restore() {
     if ! printf '%s' "$data" | jq -e '.config' >/dev/null 2>&1; then
         echo '{"error":"invalid backup format"}'; return 1
     fi
-    # printf '%s' (not echo) — avoids ash interpreting \n,\t in JSON string values
-    printf '%s' "$data" | jq -r '.config' > "$FLOWVPN_CONFIG"
-    printf '%s' "$data" | jq -r '.direct_domains // ""' > /etc/flowvpn/direct_domains.txt
-    printf '%s' "$data" | jq -r '.vpn_domains // ""' > /etc/flowvpn/vpn_domains.txt
+    # Route the config through save_config so we get atomic mv + chmod 600 +
+    # JSON re-validation. A raw `>` redirect would leave a world-readable
+    # file with the subscription URL on partial writes (OOM kill, reboot).
+    local cfg
+    cfg=$(printf '%s' "$data" | jq -c '.config')
+    save_config "$cfg" || { echo '{"error":"invalid config in backup"}'; return 1; }
+
+    # Domain lists are merged into ru_domains.list / vpn_domains.list at
+    # the next mode/start. A backup blob is untrusted input, so filter to
+    # the same shape the CGI's `domain` validator accepts: no leading dot,
+    # no consecutive dots, only [a-zA-Z0-9.*_-]. Anything else (control
+    # chars, shell metacharacters, blank lines) is dropped.
+    local re='^[a-zA-Z0-9*][a-zA-Z0-9.*_-]*$'
+    printf '%s' "$data" | jq -r '.direct_domains // ""' \
+        | tr -d '\r' | grep -v '\.\.' | grep -E "$re" \
+        > /etc/flowvpn/direct_domains.txt 2>/dev/null
+    printf '%s' "$data" | jq -r '.vpn_domains // ""' \
+        | tr -d '\r' | grep -v '\.\.' | grep -E "$re" \
+        > /etc/flowvpn/vpn_domains.txt 2>/dev/null
     echo '{"status":"restored"}'
 }
 
