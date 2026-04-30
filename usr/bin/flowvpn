@@ -889,6 +889,11 @@ cmd_set_mode() {
     local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$FLOWVPN_CONFIG")
     save_config "$tmp"
     rm -rf "$FLOWVPN_TMP/rules" "$FLOWVPN_TMP/singbox.json"
+    # Rebuild rule lists for the new mode. cmd_restart only regenerates the
+    # sing-box config from existing rule files — without this fetch_rules,
+    # both modes start with empty lists (RU heredoc / blocklist / force-VPN
+    # all missing) and routing collapses to the remote rule_sets only.
+    fetch_rules "$new_mode"
     is_xray_running && cmd_restart || echo "{\"status\":\"mode set\",\"mode\":\"$new_mode\"}"
 }
 
