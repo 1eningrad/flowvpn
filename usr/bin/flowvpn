@@ -908,14 +908,19 @@ cmd_add_domain() {
     esac
     mkdir -p /etc/flowvpn
     grep -qxF "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
-    # For 'direct' adds in all_vpn mode, the actual routing comes from
-    # ru_domains.list which _fetch_ru_domains rebuilds locally (no network).
-    # Same dance for 'vpn' adds — vpn_domains.list is the merged source.
-    # Without these, the new domain sits in {direct,vpn}_domains.txt but
-    # sing-box never sees it until next full update.
+    # _fetch_*_domains rebuilds the merged source list ({ru,vpn}_domains.list)
+    # from heredoc + the user's custom file. cmd_restart then bakes it into
+    # singbox.json's domain_suffix array — sing-box reads its config once at
+    # startup, so without restarting it the new domain stays inert no matter
+    # how many times we touch the merged list.
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
-    echo "{\"status\":\"added\",\"domain\":\"$domain\",\"list\":\"$list\"}"
+    local applied=false
+    if is_xray_running && cmd_restart >/dev/null 2>&1; then
+        applied=true
+    fi
+    jq -n --arg d "$domain" --arg l "$list" --argjson a "$applied" \
+        '{status:"added", domain:$d, list:$l, applied:$a}'
 }
 
 cmd_remove_domain() {
@@ -930,7 +935,12 @@ cmd_remove_domain() {
     [ -f "$file" ] && { grep -vxF "$domain" "$file" > "${file}.tmp"; mv "${file}.tmp" "$file"; }
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
-    echo "{\"status\":\"removed\",\"domain\":\"$domain\",\"list\":\"$list\"}"
+    local applied=false
+    if is_xray_running && cmd_restart >/dev/null 2>&1; then
+        applied=true
+    fi
+    jq -n --arg d "$domain" --arg l "$list" --argjson a "$applied" \
+        '{status:"removed", domain:$d, list:$l, applied:$a}'
 }
 
 cmd_get_domains() {
