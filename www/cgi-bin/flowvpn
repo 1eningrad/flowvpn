@@ -34,7 +34,7 @@ unset IFS
 [ -n "$route" ]    && case "$route"    in vpn|direct) ;; *)            _bad route;;  esac
 [ -n "$filter" ]   && case "$filter"   in *[!a-zA-Z]*)                 _bad filter;; esac
 [ -n "$key" ]      && case "$key"      in *[!a-zA-Z0-9_]*)             _bad key;;    esac
-[ -n "$domain" ]   && case "$domain"   in .*|*..*|*[!a-zA-Z0-9.*_-]*)  _bad domain;; esac
+[ -n "$domain" ]   && case "$domain"   in .*|*..*|*/*/*|*[!a-zA-Z0-9.*/_-]*) _bad domain;; esac
 [ -n "$on_time" ]  && case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) _bad on;;     esac
 [ -n "$off_time" ] && case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) _bad off;;    esac
 [ -n "$ip_addr" ]  && case "$ip_addr"  in
