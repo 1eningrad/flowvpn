@@ -85,6 +85,28 @@ _ensure_watchdog() {
     echo $! > "$FLOWVPN_TMP/watchdog.pid"
 }
 
+# Mirror VPN server IPs into zapret's user-exclude list. Without this,
+# zapret's NFQUEUE postrouting hook fragments xray's TLS/Reality
+# ClientHello to the VPN endpoint and the handshake fails (Reality
+# rejects malformed ClientHello). No-op if zapret isn't installed; the
+# write+restart is skipped when the list is unchanged so cron-driven
+# `flowvpn update` (returns the same servers most of the time) doesn't
+# churn zapret.
+_sync_zapret_exclude() {
+    local exclude_file="/opt/zapret/ipset/zapret-ip-user-exclude.txt"
+    [ -d /opt/zapret ] && [ -f "$FLOWVPN_TMP/servers.json" ] || return 0
+
+    local new_list current=""
+    new_list=$(jq -r '.[].host // empty' "$FLOWVPN_TMP/servers.json" 2>/dev/null | sort -u)
+    [ -z "$new_list" ] && return 0
+    [ -f "$exclude_file" ] && current=$(cat "$exclude_file")
+    [ "$new_list" = "$current" ] && return 0
+
+    printf '%s\n' "$new_list" > "$exclude_file"
+    /etc/init.d/zapret restart >/dev/null 2>&1
+    flog "synced VPN IPs to zapret exclude"
+}
+
 _rotate_log() {
     # Size-based rotation with copytruncate semantics.
     # Earlier version did `tail > tmp && mv tmp file`. Rename swaps inode —
@@ -557,6 +579,7 @@ cmd_update() {
         jq -n --argjson t "$(date +%s)" --argjson c "$count" --argjson p "$prev" \
             '{time:$t, count:$c, prev_count:$p}' > "$FLOWVPN_TMP/last_update.json"
         echo "{\"status\":\"updated\",\"servers\":$count,\"prev\":$prev}"
+        _sync_zapret_exclude
         is_xray_running && cmd_restart >/dev/null
     else
         echo '{"error":"update failed"}'
