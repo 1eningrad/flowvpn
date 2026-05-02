@@ -256,11 +256,20 @@ DOMAIN-SUFFIX,myoffice.ru
 RUEOF
     } > "$SR_RULES_DIR/ru_domains.list"
 
-    # Add custom direct domains from user config
+    # Add custom direct entries from user config. Lines that look like IPv4
+    # (with optional /CIDR) become IP-CIDR rules; everything else is treated
+    # as a domain suffix. Sniffing only catches TLS SNI, so apps that hit
+    # an IP directly (cached A record, hardcoded host) need an IP-based rule
+    # to bypass VPN.
     if [ -f "$CUSTOM_DIRECT" ]; then
         while IFS= read -r line; do
             case "$line" in "#"*|"") continue ;; esac
-            echo "DOMAIN-SUFFIX,$line" >> "$SR_RULES_DIR/ru_domains.list"
+            case "$line" in
+                [0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                    echo "IP-CIDR,$line" >> "$SR_RULES_DIR/ru_domains.list" ;;
+                *)
+                    echo "DOMAIN-SUFFIX,$line" >> "$SR_RULES_DIR/ru_domains.list" ;;
+            esac
         done < "$CUSTOM_DIRECT"
     fi
 }

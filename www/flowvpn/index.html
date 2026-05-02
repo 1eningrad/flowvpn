@@ -1331,7 +1331,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           <div class="card-collapsible-body" id="directCardBody">
             <div class="domains" id="directDomains"></div>
             <div class="flex mt">
-              <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru" onkeydown="if(event.key==='Enter')addDomain('direct')">
+              <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru или 194.221.61.0/24" onkeydown="if(event.key==='Enter')addDomain('direct')">
               <button class="btn btn-ghost btn-sm" onclick="addDomain('direct')">Добавить</button>
             </div>
           </div>
@@ -2398,13 +2398,18 @@ function _showInputError(inp,msg){
 async function addDomain(list){
   const inp=document.getElementById(list==='direct'?'addDirectInput':'addVpnInput');
   const raw=inp.value.trim();
-  if(!raw){_showInputError(inp,'Введите домен, например: example.com');return}
-  // Local validation before round-trip — domain must look like a hostname
-  // (letters/digits/dots/hyphens), no protocol, no path. Catches typos like
-  // "https://example.com/page" before the backend rejects them.
+  if(!raw){_showInputError(inp,'Введите домен или IP, например: example.com или 1.2.3.0/24');return}
+  // Domain → punycode + standard hostname check; bare IPv4 (with optional /CIDR)
+  // is also accepted in the direct list — apps that hit hardcoded IPs (camera
+  // streams, push services) need IP-based rules since SNI sniffing won't fire.
   const d=toPunycode(raw);
-  if(!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d)){
-    _showInputError(inp,'Похоже на неверный домен. Введите как «example.com» — без https:// и /пути');return;
+  const isIp4=/^(\d{1,3}\.){3}\d{1,3}(\/(3[0-2]|[12]?\d))?$/.test(d);
+  const isHost=/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d);
+  if(!isIp4 && !isHost){
+    _showInputError(inp,'Похоже на неверный домен/IP. Примеры: «example.com», «1.2.3.4», «1.2.3.0/24» — без https:// и /пути');return;
+  }
+  if(isIp4 && list==='vpn'){
+    _showInputError(inp,'IP-адреса можно добавлять только в список «Напрямую»');return;
   }
   // Backend now soft-restarts sing-box inside add-domain so the new rule
   // is live by the time we get the response (~5-7s). Show a loading toast
