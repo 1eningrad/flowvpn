@@ -321,6 +321,20 @@ meta.ai
 VPNEOF
     } > "$SR_RULES_DIR/vpn_domains.list"
 
+    # Append domains from any enabled service presets. Read once from
+    # config to avoid jq-per-name; loop in shell. Unknown names from
+    # config (e.g. an old preset removed in code) silently skip — the
+    # _preset_domains helper returns 1 with no output.
+    local enabled
+    enabled=$(jq -r '.enabled_presets // [] | .[]' "$FLOWVPN_CONFIG" 2>/dev/null)
+    for p in $enabled; do
+        if _preset_domains "$p" > /tmp/.preset.$$ 2>/dev/null; then
+            echo "# preset: $p" >> "$SR_RULES_DIR/vpn_domains.list"
+            cat /tmp/.preset.$$ >> "$SR_RULES_DIR/vpn_domains.list"
+        fi
+        rm -f /tmp/.preset.$$
+    done
+
     # Append user's custom VPN-forced domains (one per line, comments stripped).
     if [ -f "$CUSTOM_VPN" ]; then
         while IFS= read -r line; do
@@ -328,6 +342,76 @@ VPNEOF
             echo "$line" >> "$SR_RULES_DIR/vpn_domains.list"
         done < "$CUSTOM_VPN"
     fi
+}
+
+# Service-preset domain lists. UI shows these as one-click toggles. Names
+# referenced from cmd_preset and the UI must match these cases. Inline
+# (not separate files) so the script remains a single deployment unit.
+_preset_domains() {
+    case "$1" in
+        youtube) cat <<'EOF'
+youtube.com
+youtu.be
+youtube-nocookie.com
+ytimg.com
+googlevideo.com
+withyoutube.com
+youtubekids.com
+EOF
+            ;;
+        spotify) cat <<'EOF'
+spotify.com
+scdn.co
+spotifycdn.com
+spotify-everywhere.com
+EOF
+            ;;
+        twitter) cat <<'EOF'
+twitter.com
+x.com
+twimg.com
+t.co
+twttr.com
+tweetdeck.com
+EOF
+            ;;
+        instagram) cat <<'EOF'
+instagram.com
+cdninstagram.com
+instagramcdn.com
+EOF
+            ;;
+        facebook) cat <<'EOF'
+facebook.com
+fb.com
+fbcdn.net
+fbsbx.com
+messenger.com
+EOF
+            ;;
+        tiktok) cat <<'EOF'
+tiktok.com
+tiktokcdn.com
+tiktokv.com
+musical.ly
+byteoversea.com
+ibytedtos.com
+EOF
+            ;;
+        reddit) cat <<'EOF'
+reddit.com
+redd.it
+redditmedia.com
+redditstatic.com
+EOF
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Authoritative preset name list. Order = display order in UI.
+_preset_names() {
+    echo "youtube spotify twitter instagram facebook tiktok reddit"
 }
 
 _fetch_blocklist_domains() {

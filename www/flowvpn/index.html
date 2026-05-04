@@ -1354,6 +1354,19 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           </div>
         </div>
 
+        <div class="card card-accent card-accent-vpn card-collapsible" id="presetsCard">
+          <div class="card-head" onclick="toggleCollapsible('presetsCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="presetsCardBody" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('presetsCard')}">
+            <div>
+              <div class="card-title">Сервисы</div>
+              <p class="card-desc" style="margin:3px 0 0">Включить — все домены сервиса пойдут через VPN</p>
+            </div>
+            <div class="stat-num" id="presetsCount" style="color:var(--accent);font-size:13px">0</div>
+          </div>
+          <div class="card-collapsible-body" id="presetsCardBody">
+            <div id="presetsList"></div>
+          </div>
+        </div>
+
         <div class="card card-accent card-accent-dns">
           <div class="card-title">DNS защита</div>
           <p class="card-desc">DNS-запросы защищены от подмены провайдером</p>
@@ -1758,7 +1771,7 @@ function showTab(name,el){
   stopLive();
   if(name==='devices')loadDevices();
   if(name==='logs'){loadLogs();if(liveMode)startLive()}
-  if(name==='routing')loadDomains();
+  if(name==='routing'){loadDomains();loadPresets();}
   if(name==='diagnose')loadQuickDiag();
   if(name==='settings'){loadSchedule();loadAutoUpdate();loadSystemInfo()}
   // On mobile, scroll to the section (since left column is above it); on desktop stay in place
@@ -2358,6 +2371,59 @@ async function loadDomains(){
       `Встроенный список нейросетей и заблокированных от RU сервисов (${vpnBuiltin.length}) — нельзя удалить · ваши добавления (${vpnCustom.length}) — с ×.`);
   }catch(e){}
 }
+
+const PRESET_LABELS = {
+  youtube: 'YouTube', spotify: 'Spotify', twitter: 'Twitter / X',
+  instagram: 'Instagram', facebook: 'Facebook / Messenger',
+  tiktok: 'TikTok', reddit: 'Reddit'
+};
+async function loadPresets(){
+  try{
+    const r=await apiFetch(API+'?action=preset&op=list');
+    const d=await r.json();
+    const list=document.getElementById('presetsList');
+    if(!list||!d.presets){return}
+    const enabledCount=d.presets.filter(p=>p.enabled).length;
+    document.getElementById('presetsCount').textContent=
+      enabledCount?(enabledCount+' / '+d.presets.length):d.presets.length;
+    list.innerHTML=d.presets.map(p=>{
+      const label=PRESET_LABELS[p.name]||p.name;
+      return `<label class="preset-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;cursor:pointer">`+
+        `<input type="checkbox" data-preset="${esc(p.name)}" ${p.enabled?'checked':''}>`+
+        `<span style="flex:1">${esc(label)}</span>`+
+        `<span style="color:var(--muted);font-size:12px">${p.domain_count} домен.</span>`+
+      `</label>`;
+    }).join('');
+  }catch(e){}
+}
+async function togglePreset(name,enabled){
+  const op=enabled?'enable':'disable';
+  const loadingId=toast.loading('Применяется…');
+  try{
+    const r=await apiFetch(API+'?action=preset&op='+op+'&name='+encodeURIComponent(name));
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.error){
+      dismissToast(loadingId);
+      toast.error('Ошибка',j.error);
+      loadPresets();  // revert checkbox state
+      return;
+    }
+    const label=PRESET_LABELS[name]||name;
+    updateToast(loadingId,
+      {title:enabled?'Включён':'Выключен',desc:label+(enabled?' → через VPN':' → по умолчанию')},
+      {type:'success'});
+    loadPresets();
+    loadDomains();  // vpn_domains.list mutated — refresh tag count
+  }catch(e){
+    dismissToast(loadingId);
+    toast.error('Не удалось применить');
+    loadPresets();
+  }
+}
+document.addEventListener('change',e=>{
+  const cb=e.target.closest('input[type="checkbox"][data-preset]');
+  if(cb)togglePreset(cb.dataset.preset,cb.checked);
+});
 
 // Delegated handler for tag-remove buttons (data-domain + data-list). Picks
 // up both click and keyboard activation (Enter/Space). Bound once.
@@ -3299,7 +3365,7 @@ document.addEventListener('keydown',(e)=>{
   }
 });
 
-restoreCollapsibles();fetchStatus();loadDomains();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();
+restoreCollapsibles();fetchStatus();loadDomains();loadPresets();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();
 // Skip polling when tab is hidden (battery-friendly).
 setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
 // Incidents change rarely — refresh every 30s instead of 5s.
