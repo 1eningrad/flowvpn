@@ -1482,6 +1482,24 @@ _record_switch() {
 # cmd_get_incidents and rendered in the UI as per-server fail badges + history.
 _log_incident() {
     local type="$1" host="$2" name="$3" detail="$4"
+
+    # Suppress incidents while a user-initiated lifecycle op is in flight
+    # (deploy.sh, manual flowvpn restart, UI restart button, set-server).
+    # The owner process — whose PID is in op.in_progress — is allowed to
+    # log its own diagnostics: cmd_restart's test_xray miss IS something
+    # the operator wants to see. But watchdog probing concurrently with a
+    # restart shouldn't pollute the journal with "switch_failed" entries
+    # whose root cause is just "we were mid-restart". Self-vs-other check
+    # by PID lets cmd_restart still record its own failures.
+    local op_marker="$FLOWVPN_TMP/op.in_progress"
+    if [ -f "$op_marker" ]; then
+        local op_pid
+        op_pid=$(cat "$op_marker" 2>/dev/null)
+        if [ -n "$op_pid" ] && [ "$op_pid" != "$$" ] && kill -0 "$op_pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
     local f="$FLOWVPN_TMP/incidents.json"
     mkdir -p "$FLOWVPN_TMP"
     [ -f "$f" ] || echo '[]' > "$f"
