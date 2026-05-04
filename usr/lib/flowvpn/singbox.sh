@@ -154,6 +154,7 @@ DOMAIN-SUFFIX,okko.com
 DOMAIN-SUFFIX,okkoapi.tv
 DOMAIN-SUFFIX,okko.sport
 DOMAIN-SUFFIX,playfamily.ru
+DOMAIN-SUFFIX,trbcdn.net
 DOMAIN-SUFFIX,start.ru
 DOMAIN-SUFFIX,more.tv
 DOMAIN-SUFFIX,amediateka.ru
