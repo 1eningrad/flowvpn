@@ -12,21 +12,41 @@ start() {
     auto_start=$(jq -r '.auto_start | if . == false then "false" else "true" end' /etc/flowvpn/config.json 2>/dev/null)
     [ "$auto_start" = "false" ] && return 0
 
+    # Wait up to 60s for WAN. Bumped from 30s after observing slow CGNAT
+    # providers (SevenSky and similar) where DHCP lease + initial CGN
+    # NAT-table entry took 35-45s. At 30s init script was occasionally
+    # giving up and leaving the LAN with no VPN until manual intervention.
     local tries=0
-    while [ "$tries" -lt 30 ]; do
+    while [ "$tries" -lt 60 ]; do
         if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then break; fi
         sleep 1; tries=$((tries + 1))
     done
 
-    if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
-        # cmd_start now spawns the watchdog itself via _ensure_watchdog —
-        # spawning it again here would race on watchdog.lock and leave the
-        # locking semantics half-broken (lock owned by one process, pidfile
-        # pointing at a different one).
-        /usr/bin/flowvpn start >/dev/null 2>&1 &
-    else
-        logger -t flowvpn "Network not ready, skipping autostart"
+    if ! ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        logger -t flowvpn "Network not ready after 60s, skipping autostart"
+        return 0
     fi
+
+    # Wait for NTP-driven clock sync before letting xray dial out. Reality
+    # handshake performs TLS-style cert-time validation; if the router
+    # still has its 1970-01-01 default clock, every initial connect fails
+    # the cert window and watchdog burns its first failover budget for no
+    # reason. Cap at 20s so a broken NTP doesn't block boot forever —
+    # watchdog will recover anyway, this is just an optimization.
+    local ntp_tries=0
+    while [ "$ntp_tries" -lt 20 ]; do
+        [ "$(date +%Y)" -ge 2025 ] 2>/dev/null && break
+        sleep 1; ntp_tries=$((ntp_tries + 1))
+    done
+    if ! [ "$(date +%Y)" -ge 2025 ] 2>/dev/null; then
+        logger -t flowvpn "Clock not synced after 20s, starting anyway — watchdog will retry on Reality failure"
+    fi
+
+    # cmd_start now spawns the watchdog itself via _ensure_watchdog —
+    # spawning it again here would race on watchdog.lock and leave the
+    # locking semantics half-broken (lock owned by one process, pidfile
+    # pointing at a different one).
+    /usr/bin/flowvpn start >/dev/null 2>&1 &
 }
 
 stop() {
