@@ -1454,8 +1454,112 @@ cmd_clear_incidents() {
     echo '{"status":"cleared"}'
 }
 
+# Multi-endpoint probe via SOCKS:$1. Returns 0 on success (≥1 endpoint OK),
+# 1 on fail (all down). Sets WD_PROBE_WHY for incident logging on failure.
+# Endpoint order: cheapest/most-reliable first. cp.cloudflare.com & gstatic
+# are captive-portal probes — both return HTTP 204 with empty body, ~200B
+# wire size. ipify is heavier (returns IP as text) but useful as third
+# opinion if both CF and Google are simultaneously routing-flaky.
+_watchdog_probe_via_socks() {
+    local socks_port="${1:-1080}"
+    WD_PROBE_WHY=""
+    local first_rc="" first_code="" first_time=""
+    for url in https://cp.cloudflare.com/generate_204 \
+               http://www.gstatic.com/generate_204 \
+               https://api.ipify.org; do
+        local out rc code total_time
+        out=$(curl -s --socks5-hostname "127.0.0.1:$socks_port" --max-time 6 \
+              -o /dev/null -w "%{http_code} %{time_total}" "$url" 2>/dev/null)
+        rc=$?
+        code="${out%% *}"; total_time="${out##* }"
+        if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+            return 0
+        fi
+        # Save reason from FIRST endpoint that failed — most informative
+        # because subsequent ones may legitimately differ (e.g. CF blocked
+        # but gstatic ok = not really "VPN broken").
+        [ -z "$first_rc" ] && { first_rc=$rc; first_code=$code; first_time=$total_time; }
+    done
+    case "$first_rc" in
+        0)  WD_PROBE_WHY="HTTP $first_code за ${first_time}с" ;;
+        6)  WD_PROBE_WHY="DNS не разрешился" ;;
+        7)  WD_PROBE_WHY="прокси не отвечает (xray:$socks_port)" ;;
+        28) WD_PROBE_WHY="таймаут >6с (HTTP $first_code)" ;;
+        35) WD_PROBE_WHY="ошибка TLS handshake" ;;
+        52) WD_PROBE_WHY="пустой ответ от сервера" ;;
+        56) WD_PROBE_WHY="разрыв соединения" ;;
+        *)  WD_PROBE_WHY="curl rc=$first_rc, HTTP $first_code" ;;
+    esac
+    return 1
+}
+
+# Direct (non-SOCKS) WAN reachability test. Detects "ISP outage" so we don't
+# blame the VPN server for problems upstream of us. 1.1.1.1 and 9.9.9.9 are
+# anycast and effectively never down simultaneously — if both refuse a
+# 3-second TCP connect, the WAN itself is the problem, not the tunnel.
+# Note: curl exit 0 means the TLS handshake completed (and got a response,
+# even a redirect). exit 7/28 = no route / timeout. We only need a connect.
+_watchdog_check_wan() {
+    curl -sS --max-time 3 --connect-timeout 3 -o /dev/null https://1.1.1.1 2>/dev/null && return 0
+    curl -sS --max-time 3 --connect-timeout 3 -o /dev/null https://9.9.9.9 2>/dev/null && return 0
+    return 1
+}
+
+# Pick best non-metered, non-current candidate by measured latency. Echoes
+# "<idx> <ms>" or empty if no candidate answered. Spawns a probe-xray for
+# each candidate sequentially; total time ≈ N × (2s warmup + 5s probe).
+# Sequential (not parallel) on purpose: parallel xrays would race for the
+# same probe port; using N unique ports complicates teardown on busybox.
+_watchdog_pick_best() {
+    local current="$1" total="$2" probe_port="$3"
+    local servers_json="$FLOWVPN_TMP/servers.json"
+    local best_idx="" best_ms=99999
+    local i=0
+    while [ "$i" -lt "$total" ]; do
+        if [ "$i" -eq "$current" ]; then i=$((i+1)); continue; fi
+        local cand_name=$(jq -r ".[$i].name" "$servers_json" 2>/dev/null)
+        if _is_metered_server "$cand_name"; then
+            i=$((i+1)); continue
+        fi
+
+        # xray requires .json suffix; mktemp+rename to get it.
+        local _wt _wp wd_test wd_probe
+        _wt=$(mktemp "$FLOWVPN_TMP/xray_test.XXXXXX")
+        _wp=$(mktemp "$FLOWVPN_TMP/xray_probe.XXXXXX")
+        wd_test="${_wt}.json"; wd_probe="${_wp}.json"
+        mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
+        generate_xray_config "$servers_json" "$i" "$wd_test"
+        jq --argjson p "$probe_port" \
+            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+            "$wd_test" > "$wd_probe"
+        /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
+        local probe_pid=$!
+        sleep 2
+
+        local out
+        out=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 \
+              -o /dev/null -w "%{http_code} %{time_total}" \
+              https://cp.cloudflare.com/generate_204 2>/dev/null)
+        kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null
+        rm -f "$wd_test" "$wd_probe"
+
+        local code="${out%% *}" t="${out##* }"
+        if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+            local ms=$(awk -v t="$t" 'BEGIN { printf "%d", t*1000 }')
+            logger -t flowvpn "Watchdog: $cand_name probe ${ms}ms"
+            if [ "$ms" -lt "$best_ms" ]; then
+                best_ms=$ms; best_idx=$i
+            fi
+        else
+            logger -t flowvpn "Watchdog: $cand_name probe failed (code=$code)"
+        fi
+        i=$((i+1))
+    done
+    [ -n "$best_idx" ] && echo "$best_idx $best_ms"
+}
+
 cmd_watchdog() {
-    local interval="${1:-20}" max_fails=3 fail_count=0 tick=0 silent_fails=0
+    local interval="${1:-20}" max_fails=5 fail_count=0 tick=0 silent_fails=0
 
     # Single-instance via atomic mkdir. The earlier file-based lock was
     # unreliable: under the init.d/cmd_start spawn race the lock would end
@@ -1551,40 +1655,34 @@ cmd_watchdog() {
         # Skip if not running (intent=false — user wanted VPN off)
         is_xray_running || continue
 
-        # Test VPN connectivity via current SOCKS. 8s timeout — 4s was too
-        # tight for SOCKS+VLESS+Reality+TLS+HTTP under load and produced
-        # spurious failovers when transient jitter happened to line up two
-        # ticks in a row (real-world: 22 isolated failures across 5h, then
-        # one back-to-back pair → false-positive switch from a healthy server).
-        # Capture both http_code and curl's exit code so failures can be
-        # explained ("timeout" vs "DNS" vs "connect refused"), not just counted.
-        local probe_out probe_rc probe_code probe_time
-        probe_out=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code} %{time_total}" https://cp.cloudflare.com/generate_204 2>/dev/null)
-        probe_rc=$?
-        probe_code="${probe_out%% *}"
-        probe_time="${probe_out##* }"
-        if [ "$probe_code" = "204" ] || [ "$probe_code" = "200" ]; then
-            # If we just recovered from a long outage, log it once.
+        # Multi-endpoint VPN connectivity probe: try CF, gstatic, ipify in
+        # order. Success on the first that responds 200/204. Reduces false
+        # positives where one captive-portal endpoint glitches but the
+        # tunnel is fine (real-world: cp.cloudflare.com periodically returns
+        # 5xx during CF maintenance windows — a single-endpoint probe would
+        # have failed-over the user to a worse server for no reason).
+        if _watchdog_probe_via_socks 1080; then
             [ "$silent_fails" -gt 0 ] && logger -t flowvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
             fail_count=0
             silent_fails=0
             continue
         fi
+        local why="$WD_PROBE_WHY"
 
-        # Map curl exit code to a human reason. Codes per curl(1):
-        # 6=DNS, 7=connect, 28=timeout, 35=TLS handshake, 52=empty reply,
-        # 56=recv reset, 92=HTTP/2 stream error.
-        local why
-        case "$probe_rc" in
-            0)  why="HTTP $probe_code за ${probe_time}с" ;;
-            6)  why="DNS не разрешился" ;;
-            7)  why="прокси не отвечает (xray:1080)" ;;
-            28) why="таймаут >8с (HTTP $probe_code)" ;;
-            35) why="ошибка TLS handshake" ;;
-            52) why="пустой ответ от сервера" ;;
-            56) why="разрыв соединения" ;;
-            *)  why="curl rc=$probe_rc, HTTP $probe_code" ;;
-        esac
+        # WAN sanity check: if our own internet is down, the VPN server is
+        # not at fault — switching would just pick a random working-looking
+        # candidate (or none) and pollute incidents with false-positives.
+        # Record the WAN outage as its own incident type and skip the
+        # fail_count bump so the user doesn't see a phantom server-degraded
+        # warning during ISP downtime.
+        if ! _watchdog_check_wan; then
+            [ "$fail_count" -eq 0 ] && logger -t flowvpn "Watchdog: probe failed but WAN is down — provider issue, not switching ($why)"
+            local _cur_idx=$(get_config_val selected_server 0)
+            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+            _log_incident "wan_down" "$_cur_host" "$_cur_name" "WAN недоступен ($why)"
+            continue
+        fi
 
         fail_count=$((fail_count + 1))
         # Throttle "check failed" logs after the failover loop already ran —
@@ -1605,68 +1703,38 @@ cmd_watchdog() {
             logger -t flowvpn "Watchdog: switching server (cause: $why)"
 
             local current=$(get_config_val selected_server 0)
-            local selected="$current"
             local total=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
             [ -z "$total" ] && continue
 
-            # Try next servers (skip metered/RU-safe ones)
-            local tried=0 found=0
-            while [ "$tried" -lt "$total" ]; do
-                selected=$(( (selected + 1) % total ))
-                tried=$((tried + 1))
-
+            # Probe ALL non-metered, non-current candidates and pick the one
+            # with lowest latency — not the first one that happens to answer.
+            # Old round-robin from current+1 caused USA to win whenever
+            # Germany failed (next index) even though Finland & Netherlands
+            # were both noticeably faster.
+            local pick=$(_watchdog_pick_best "$current" "$total" "$probe_port")
+            if [ -n "$pick" ]; then
+                local selected="${pick% *}" best_ms="${pick##* }"
                 local cand_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
-                if _is_metered_server "$cand_name"; then
-                    logger -t flowvpn "Watchdog: skip metered server $cand_name"
-                    continue
-                fi
-
-                # Quick test this server via a temporary probe xray on a unique
-                # port and unique config files so cmd_probe_server (UI) running
-                # at the same time can't clobber our config or vice versa.
-                # xray requires .json suffix; mktemp+rename to get it.
-                local wd_test wd_probe _wt _wp
-                _wt=$(mktemp "$FLOWVPN_TMP/xray_test.XXXXXX")
-                _wp=$(mktemp "$FLOWVPN_TMP/xray_probe.XXXXXX")
-                wd_test="${_wt}.json"; wd_probe="${_wp}.json"
-                mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
-                generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$wd_test"
-                jq --argjson p "$probe_port" \
-                    '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
-                    "$wd_test" > "$wd_probe"
-                /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
-                local probe_pid=$!
-                sleep 3
-
-                local test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 https://api.ipify.org 2>/dev/null)
-                kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null
-                rm -f "$wd_test" "$wd_probe"
-
-                if [ -n "$test_ip" ]; then
-                    logger -t flowvpn "Watchdog: switched to $cand_name ($test_ip)"
-                    local _from_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                    local _cand_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                    _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name ($why)"
-                    _record_switch "$current" "$selected" "failover"
-                    local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-                    save_config "$tmp"
-                    cmd_restart >/dev/null 2>&1
-                    fail_count=0
-                    silent_fails=0
-                    found=1
-                    # Give the new server time to stabilize before next probe.
-                    # Without this, a flaky network triggers cascading failovers.
-                    sleep $((interval * 3))
-                    break
-                fi
-            done
-            # Failover loop exhausted without finding a working candidate.
-            # Stay on current server and back off — log once, not every tick.
-            if [ "$found" -eq 0 ]; then
-                logger -t flowvpn "Watchdog: all $tried candidates failed, staying on current server"
+                local _cand_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                local _from_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                logger -t flowvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
+                _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
+                _record_switch "$current" "$selected" "failover"
+                local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+                save_config "$tmp"
+                cmd_restart >/dev/null 2>&1
+                fail_count=0
+                silent_fails=0
+                # Give the new server time to stabilize before next probe.
+                # Without this, a flaky network triggers cascading failovers.
+                sleep $((interval * 3))
+            else
+                # No candidate answered — could be everything blocked, key
+                # rotation, or a flaky upstream. Stay put, back off.
+                logger -t flowvpn "Watchdog: no working candidates — staying on current server ($why)"
                 local _cur_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
                 local _cur_host=$(jq -r ".[$current].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                _log_incident "switch_failed" "$_cur_host" "$_cur_name" "все $tried серверов недоступны"
+                _log_incident "switch_failed" "$_cur_host" "$_cur_name" "все кандидаты недоступны"
             fi
         fi
     done
