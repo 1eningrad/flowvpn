@@ -26,6 +26,27 @@ There are no unit/integration tests — the `test-results/` dir is for old scree
 
 For UI changes, hard-reload in the browser (`Cmd+Shift+R`) — the CGI sends no-cache headers but the static `index.html` is cached aggressively.
 
+## CLI surface (existing commands)
+
+Top-level user commands already implemented in `usr/bin/flowvpn` — check here before adding a new one:
+
+```
+start | stop | restart | status         lifecycle
+set-server N                             pick server by index
+set-mode all_vpn|blocklist               routing mode
+update                                   refresh subscription + RU/blocklist domain rules
+ping | real-ping                         TCP probe (with ICMP fallback) / VLESS-Reality probe
+diagnose | healthcheck                   quick metrics / full check (DNS, leaks, processes)
+add-domain DOM vpn|direct                user override list
+get-log N FILTER                         tail logs (filter: all|vpn|direct|errors|incidents|dns|flowvpn)
+get-incidents | clear-incidents          failover history
+reset-traffic                            zero per-chain byte counters
+backup                                   export config as JSON
+watchdog                                 internal — single-instance, do not call directly
+```
+
+CGI surface is the same set, dispatched via query string in `www/cgi-bin/flowvpn`.
+
 ## Code layout
 
 ```
@@ -86,6 +107,9 @@ These are documented in inline comments at the relevant call sites — read them
 - **CGI input validation at the boundary** in `www/cgi-bin/flowvpn` uses `case` patterns, not regex. Every parameter forwarded as a CLI arg is validated; POST bodies for `set-config` and `restore` are passed via stdin (avoids argv injection).
 - **`save_config` is the *only* writer of config.json.** It validates JSON with `jq '.'` before `mv`-ing. Bypassing it has lost subscriptions to corrupt writes.
 - **Boolean keys in config are stored as JSON `true`/`false`**, not strings. `auto_start` defaults via the explicit `if . == false then false else true end` pattern in `cmd_status` — `// true` is wrong here because jq's `//` treats `false` as falsy.
+- **DNS-direct goes to Yandex 77.88.8.8 (UDP), not Cloudflare 1.1.1.1.** Cloudflare returns SERVFAIL for VTB and a few other RU bank domains — their authoritative NS refuse foreign resolvers. Yandex resolves everything and returns nearby RU CDN endpoints. Don't "modernize" this back to Cloudflare. Under CGNAT that hijacks UDP/53 (e.g. SevenSky), direct resolution can break — RU sites then go via VPN.
+- **QUIC (UDP 443) reject sits *before* the force-VPN match** in the nft chain. Intentional: QUIC over Reality+XHTTP is unstable, so we want Gemini / ChatGPT etc. to fall back to TCP rather than tunnel QUIC. If you reorder force-VPN above the QUIC reject, AI services will try QUIC through the VPN and break.
+- **Clash API on `:9090` is LAN-exposed.** Token is created lazily, persisted to `/etc/flowvpn/clash_secret`, and handed to the UI through `/status`. Threat model is "trust the home LAN" — anyone on the same Wi-Fi can read traffic stats / switch proxies. Don't deploy this to a public Wi-Fi router without rethinking that.
 
 ## Adding a new command
 
@@ -98,4 +122,6 @@ These are documented in inline comments at the relevant call sites — read them
 ## Other
 
 - `docs/ROADMAP.md` is a wish-list of features inspired by competitor tools (ZeroBlock, Passwall, OpenClash, etc.). Not a binding plan; consult before suggesting big new directions.
+- `docs/flowvpn_manual.pdf` is the user-facing manual (RU). Source: `docs/flowvpn_manual.tex`, build with `tectonic`.
 - The `/eclipvpn/` rebrand keeps a meta-refresh redirect at `/flowvpn/index.html` — don't break it.
+- README.md (root) is the single source of truth for user-facing docs and has additional operational notes (datacenter-IP blocks at OpenAI/Anthropic, NTP requirement for Reality handshake, troubleshooting flow). Worth a skim when a question is operational rather than architectural.
