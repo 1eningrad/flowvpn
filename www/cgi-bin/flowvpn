@@ -10,7 +10,7 @@ _bad() { echo "{\"error\":\"invalid $1\"}"; exit 0; }
 
 # Parse query string
 action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
-on_time="" off_time="" ip_addr="" route=""
+on_time="" off_time="" ip_addr="" route="" op="" preset_name=""
 IFS='&'
 for pair in $QUERY_STRING; do
     k="${pair%%=*}"; v="${pair#*=}"
@@ -21,6 +21,7 @@ for pair in $QUERY_STRING; do
         lines) lines="$v" ;; filter) filter="$v" ;;
         on) on_time="$v" ;; off) off_time="$v" ;;
         ip) ip_addr="$v" ;; route) route="$v" ;;
+        op) op="$v" ;; name) preset_name="$v" ;;
     esac
 done
 unset IFS
@@ -35,6 +36,8 @@ unset IFS
 [ -n "$filter" ]   && case "$filter"   in *[!a-zA-Z]*)                 _bad filter;; esac
 [ -n "$key" ]      && case "$key"      in *[!a-zA-Z0-9_]*)             _bad key;;    esac
 [ -n "$domain" ]   && case "$domain"   in .*|*..*|*/*/*|*[!a-zA-Z0-9.*/_-]*) _bad domain;; esac
+[ -n "$op" ]       && case "$op"       in list|enable|disable) ;; *)   _bad op;;     esac
+[ -n "$preset_name" ] && case "$preset_name" in *[!a-z]*)              _bad name;;   esac
 [ -n "$on_time" ]  && case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) _bad on;;     esac
 [ -n "$off_time" ] && case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) _bad off;;    esac
 [ -n "$ip_addr" ]  && case "$ip_addr"  in
@@ -63,6 +66,7 @@ case "$action" in
     add-domain)     /usr/bin/flowvpn add-domain "$domain" "$list" ;;
     remove-domain)  /usr/bin/flowvpn remove-domain "$domain" "$list" ;;
     get-domains)    /usr/bin/flowvpn get-domains ;;
+    preset)         /usr/bin/flowvpn preset "${op:-list}" "$preset_name" ;;
     get-devices)    /usr/bin/flowvpn get-devices ;;
     get-log)        /usr/bin/flowvpn get-log "${lines:-100}" "${filter:-all}" ;;
     clear-log)      /usr/bin/flowvpn clear-log ;;

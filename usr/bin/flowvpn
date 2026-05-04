@@ -996,6 +996,76 @@ cmd_get_domains() {
 }
 
 # ============================================================
+# Service presets — one-click toggles for popular services that
+# would otherwise require the user to hand-type domain lists.
+# Underlying domains live in singbox.sh::_preset_domains; this
+# layer just maintains config.enabled_presets and rebuilds the
+# vpn_domains.list + bounces sing-box.
+# ============================================================
+
+cmd_preset() {
+    local op="${1:-list}" name="$2"
+
+    # _preset_names and _preset_domains live in singbox.sh which is sourced
+    # at startup, so they're already in scope here.
+    _preset_known() {
+        local n
+        for n in $(_preset_names); do
+            [ "$n" = "$1" ] && return 0
+        done
+        return 1
+    }
+
+    case "$op" in
+        list)
+            # Echo {presets: [{name, enabled, domain_count}]}. Domain count
+            # comes from running _preset_domains and counting non-comment
+            # non-empty lines, so it auto-tracks edits to the inline lists.
+            local enabled_json
+            enabled_json=$(jq -c '.enabled_presets // []' "$FLOWVPN_CONFIG" 2>/dev/null)
+            [ -z "$enabled_json" ] && enabled_json='[]'
+            local arr='[]'
+            for n in $(_preset_names); do
+                local cnt
+                cnt=$(_preset_domains "$n" | grep -cvE '^(#|$)')
+                arr=$(echo "$arr" | jq --arg n "$n" --argjson c "$cnt" --argjson e "$enabled_json" \
+                    '. + [{name:$n, enabled:($e | index($n) != null), domain_count:$c}]')
+            done
+            echo "$arr" | jq '{presets: .}'
+            ;;
+        enable|disable)
+            [ -z "$name" ] && { echo '{"error":"name required"}'; return 1; }
+            if ! _preset_known "$name"; then
+                echo "{\"error\":\"unknown preset: $name\"}"
+                return 1
+            fi
+            local tmp
+            if [ "$op" = "enable" ]; then
+                tmp=$(jq --arg n "$name" \
+                    '.enabled_presets = (((.enabled_presets // []) + [$n]) | unique)' \
+                    "$FLOWVPN_CONFIG")
+            else
+                tmp=$(jq --arg n "$name" \
+                    '.enabled_presets = ((.enabled_presets // []) - [$n])' \
+                    "$FLOWVPN_CONFIG")
+            fi
+            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+
+            # Rebuild vpn_domains.list and reload sing-box rules. Same flow
+            # as add-domain — sing-box restart is what makes new VPN routes
+            # take effect.
+            _fetch_vpn_domains 2>/dev/null
+            is_xray_running && start_singbox >/dev/null 2>&1
+            echo "{\"status\":\"$op\",\"preset\":\"$name\"}"
+            ;;
+        *)
+            echo "{\"error\":\"unknown op: $op (use list/enable/disable)\"}"
+            return 1
+            ;;
+    esac
+}
+
+# ============================================================
 # Info commands
 # ============================================================
 
@@ -2331,6 +2401,7 @@ case "$1" in
     add-domain)     cmd_add_domain "$2" "$3" ;;
     remove-domain)  cmd_remove_domain "$2" "$3" ;;
     get-domains)    cmd_get_domains ;;
+    preset)         cmd_preset "$2" "$3" ;;
     get-devices)    cmd_get_devices ;;
     get-log)        cmd_get_log "$2" "$3" ;;
     clear-log)
