@@ -29,11 +29,11 @@ if [ ! -f /etc/openwrt_release ]; then
     exit 1
 fi
 
-echo "[1/5] Installing dependencies..."
+echo "[1/6] Installing dependencies..."
 opkg update >/dev/null 2>&1
 opkg install jq coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed" || true
 
-echo "[2/5] Installing xray-core 26.4.17..."
+echo "[2/6] Installing xray-core 26.4.17..."
 case "$ARCH" in
     aarch64) XRAY_ARCH="arm64-v8a" ;;
     armv7l)  XRAY_ARCH="arm32-v7a" ;;
@@ -56,7 +56,7 @@ chmod +x /usr/bin/xray
 rm -f /tmp/xray.zip /tmp/xray
 echo "  xray $(/usr/bin/xray version 2>&1 | head -1)"
 
-echo "[3/5] Downloading EclipVPN..."
+echo "[3/6] Downloading EclipVPN..."
 # /www/eclipvpn/ is the canonical UI path (rebrand April 2026).
 # /www/flowvpn/index.html stays as a meta-refresh redirect for old bookmarks.
 mkdir -p /usr/lib/flowvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/flowvpn /tmp/flowvpn
@@ -87,10 +87,42 @@ cat > /www/flowvpn/index.html <<'EOF'
 <p>Адрес изменился. Открываю <a href="/eclipvpn/">/eclipvpn/</a>…</p>
 EOF
 
-echo "[4/5] Initial configuration..."
+echo "[4/6] Initial configuration..."
 /usr/bin/flowvpn >/dev/null 2>&1 || true  # Creates default config
 
-echo "[5/5] Done!"
+echo "[5/6] Optional: RemoteRouteRich (always-on remote access via vendor Tailscale)..."
+# Vendor-hosted Headscale at rc.routerich.ru — works under CGNAT, no white IP, free.
+# Opt-in: WITH_REMOTE=1 sh install.sh. Only works on RouteRich firmware (their opkg
+# repo ships tailscale-lite + luci-app-tailscale; stock OpenWrt does not).
+if [ "$WITH_REMOTE" = "1" ]; then
+    if grep -q "DISTRIB_ID='RouteRich'" /etc/openwrt_release 2>/dev/null; then
+        if ! opkg list-installed 2>/dev/null | grep -q '^tailscale-lite'; then
+            opkg install tailscale-lite luci-app-tailscale luci-i18n-tailscale-ru 2>&1 \
+                | grep -E "Installing|installed" || true
+        else
+            echo "  tailscale already installed, reusing"
+        fi
+        uci set tailscale.settings.login_server='https://rc.routerich.ru/'
+        uci set tailscale.settings.enabled='1'
+        uci commit tailscale
+        /etc/init.d/tailscale enable >/dev/null 2>&1 || true
+        /etc/init.d/tailscale restart
+        sleep 4
+        AUTH_URL=$(tailscale status 2>&1 | awk '/Log in at:/ {print $4}')
+        if [ -n "$AUTH_URL" ]; then
+            echo "  Авторизуй роутер: $AUTH_URL"
+            echo "  (если tailnet ещё нет — создай на https://remote.routerich.ru/create-tailnet)"
+        else
+            echo "  Tailscale запущен. Статус: tailscale status"
+        fi
+    else
+        echo "  пропущено: не RouteRich-прошивка (tailscale-lite доступен только в их opkg)"
+    fi
+else
+    echo "  пропущено (для включения: WITH_REMOTE=1 sh install.sh)"
+fi
+
+echo "[6/6] Done!"
 echo ""
 echo "=============================="
 echo "  EclipVPN installed!"

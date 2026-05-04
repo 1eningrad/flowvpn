@@ -146,6 +146,35 @@ flowvpn backup                      # Экспорт настроек
 - **Время на роутере должно быть синхронизировано** — иначе Reality handshake падает (NTP при первом запуске)
 - **Clash API доступен на `:9090` для всех на LAN.** Токен отдаётся UI через `/status`, любое устройство в той же Wi-Fi-сети может им воспользоваться. Подходит для модели «доверять домашнему LAN»; в публичном Wi-Fi не разворачивайте.
 
+## Удалённый доступ к роутеру (RemoteRouteRich)
+
+На прошивке Routerich есть встроенная штука для управления роутером из любой точки — **RemoteRouteRich**: самохостед Tailscale на серверах вендора. Работает под CGNAT, без белого IP, бесплатно. После настройки — SSH и web-UI EclipVPN всегда доступны по Tailscale-IP роутера (`100.x.y.z`).
+
+```bash
+# Включение через install.sh:
+WITH_REMOTE=1 sh install.sh
+
+# Или на уже установленном роутере:
+ssh root@router-ip
+opkg update && opkg install tailscale-lite luci-app-tailscale luci-i18n-tailscale-ru
+uci set tailscale.settings.login_server='https://rc.routerich.ru/'
+uci set tailscale.settings.enabled='1'
+uci commit tailscale
+/etc/init.d/tailscale enable && /etc/init.d/tailscale restart
+sleep 4 && tailscale status   # покажет URL вида https://rc.routerich.ru/a/r/XXXX
+```
+
+Дальше:
+1. Открыть выданный URL в браузере. Если tailnet ещё нет — создать на https://remote.routerich.ru/create-tailnet (один клик, выдаст имя сети и два ключа — **сохрани, показывают один раз, действуют 1 год**).
+2. Поставить Tailscale-клиент на телефон/ноутбук, ввести то же имя tailnet и тот же `login_server`.
+3. После подключения — `ssh root@<tailscale-ip>` и `http://<tailscale-ip>/eclipvpn/` работают из любой сети.
+
+Нюансы:
+- В RU App Store / Google Play клиент Tailscale **недоступен**. Вендор даёт APK и TestFlight-инвайт по ссылкам в [docs.routerich.ru/ru/remote](https://docs.routerich.ru/ru/remote).
+- Hostname роутера не должен содержать `_` или `.` (только буквы/цифры/дефис) — иначе Tailscale откажется регистрироваться.
+- Лимит — 2 tailnet'а в сутки с одного публичного IP.
+- `accept_routes='0'` и `accept_dns='0'` оставляем как есть: иначе Tailscale полезет в DNS и в маршруты, что конфликтует с tproxy/перехватом DNS EclipVPN.
+
 ## Обновление существующей установки
 
 ```bash
