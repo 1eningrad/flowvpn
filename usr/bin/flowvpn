@@ -1750,6 +1750,20 @@ cmd_watchdog() {
         # 5xx during CF maintenance windows — a single-endpoint probe would
         # have failed-over the user to a worse server for no reason).
         if _watchdog_probe_via_socks 1080; then
+            # If we were tracking a WAN outage, close it out with a single
+            # "recovered" incident and clear the streak markers. Without
+            # this, an outage that started at 08:24 and ended at 08:28
+            # would just leave the journal stuck on its last wan_down line
+            # with no indication things came back.
+            local wan_marker="$FLOWVPN_TMP/wan_down_since"
+            if [ -f "$wan_marker" ]; then
+                local since=$(cat "$wan_marker" 2>/dev/null)
+                local ticks=$(cat "$FLOWVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
+                local duration_s=$(( $(date +%s) - ${since:-$(date +%s)} ))
+                logger -t flowvpn "Watchdog: WAN recovered after ${duration_s}s ($ticks ticks)"
+                _log_incident "wan_recovered" "" "" "восстановлен через ${duration_s}с (было ${ticks} проверок без связи)"
+                rm -f "$wan_marker" "$FLOWVPN_TMP/wan_down_ticks"
+            fi
             [ "$silent_fails" -gt 0 ] && logger -t flowvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
             fail_count=0
             silent_fails=0
@@ -1763,24 +1777,44 @@ cmd_watchdog() {
         # Record the WAN outage as its own incident type and skip the
         # fail_count bump so the user doesn't see a phantom server-degraded
         # warning during ISP downtime.
+        #
+        # Dedup: we log only on the FIRST tick of a WAN outage (no marker
+        # yet) and silently count subsequent ticks. Prevents the journal
+        # from filling with 12 identical wan_down entries during a 4-min
+        # ISP glitch — the recovery path above will emit a single
+        # wan_recovered line summarising the streak.
         if ! _watchdog_check_wan; then
-            [ "$fail_count" -eq 0 ] && logger -t flowvpn "Watchdog: probe failed but WAN is down — provider issue, not switching ($why)"
-            local _cur_idx=$(get_config_val selected_server 0)
-            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-            _log_incident "wan_down" "$_cur_host" "$_cur_name" "WAN недоступен ($why)"
+            local wan_marker="$FLOWVPN_TMP/wan_down_since"
+            if [ ! -f "$wan_marker" ]; then
+                date +%s > "$wan_marker"
+                echo 1 > "$FLOWVPN_TMP/wan_down_ticks"
+                logger -t flowvpn "Watchdog: WAN down — provider issue, not switching ($why)"
+                local _cur_idx=$(get_config_val selected_server 0)
+                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                _log_incident "wan_down" "$_cur_host" "$_cur_name" "WAN недоступен ($why)"
+            else
+                local n=$(cat "$FLOWVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
+                echo $((n + 1)) > "$FLOWVPN_TMP/wan_down_ticks"
+            fi
             continue
         fi
 
         fail_count=$((fail_count + 1))
         # Throttle "check failed" logs after the failover loop already ran —
         # otherwise a permanent outage spams syslog every 20s forever.
+        # Persist incident only at >=3/5 — single isolated failures (1/5,
+        # 2/5) are typically transient TLS jitter that resolves on the
+        # next tick and used to clutter the journal with false positives.
+        # The 5/5 final fail still drives the switch path unchanged.
         if [ "$fail_count" -le "$max_fails" ]; then
             logger -t flowvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
-            local _cur_idx=$(get_config_val selected_server 0)
-            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-            _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
+            if [ "$fail_count" -ge 3 ]; then
+                local _cur_idx=$(get_config_val selected_server 0)
+                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
+            fi
         else
             silent_fails=$((silent_fails + 1))
             # One reminder every ~5 min while still down
