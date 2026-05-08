@@ -4,8 +4,12 @@
 # Mode "blocklist": only blocked domains through VPN (Shadowrocket lists)
 
 SR_RULES_DIR="/tmp/flowvpn/rules"
+RULESET_DIR="/etc/flowvpn/rules"
 CUSTOM_DIRECT="/etc/flowvpn/direct_domains.txt"
 CUSTOM_VPN="/etc/flowvpn/vpn_domains.txt"
+
+GEOSITE_RU_URL="https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs"
+GEOIP_RU_URL="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs"
 
 # ============================================================
 # Download rule lists
@@ -25,6 +29,47 @@ fetch_rules() {
     # Force-VPN list (AI services blocked from RU IPs) is rebuilt for both
     # modes — the UI's vpn_domains.txt tab is exposed in either mode.
     _fetch_vpn_domains
+    # Refresh sing-box .srs rule sets too — cmd_update is the natural moment
+    # to pick up upstream geosite/geoip changes. Force-redownload regardless
+    # of cache age.
+    _fetch_rule_sets force
+}
+
+# Persist sing-box .srs rule sets to /etc/flowvpn/rules/ so sing-box loads
+# them as type=local and never blocks startup on raw.githubusercontent.com.
+# That host is reachable from RU only sporadically (~50% per attempt against
+# round-robin IPs), and sing-box's startup fetch hits a hard timeout long
+# before retries would bail it out — leading to "tproxy port :2154 never
+# opened" failures on fresh installs.
+#
+# $1 = "force" → re-download even if a cached copy exists.
+_fetch_rule_sets() {
+    local force="${1:-}"
+    mkdir -p "$RULESET_DIR"
+    _fetch_one_srs "$RULESET_DIR/geosite-category-ru.srs" "$GEOSITE_RU_URL" "$force" || return 1
+    _fetch_one_srs "$RULESET_DIR/ru.srs"                  "$GEOIP_RU_URL"   "$force" || return 1
+}
+
+_fetch_one_srs() {
+    local dest="$1" url="$2" force="$3"
+    # Existing non-trivial cache wins unless caller forces refresh.
+    if [ -z "$force" ] && [ -s "$dest" ] && [ "$(wc -c < "$dest")" -gt 1024 ]; then
+        return 0
+    fi
+    local tmp="${dest}.tmp.$$"
+    local i=0
+    while [ "$i" -lt 5 ]; do
+        if curl -sSL --max-time 20 -o "$tmp" "$url" 2>/dev/null \
+           && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ]; then
+            mv "$tmp" "$dest"
+            return 0
+        fi
+        rm -f "$tmp"
+        i=$((i + 1))
+        sleep 2
+    done
+    flog "ERROR: failed to fetch $(basename "$dest") from $url after 5 attempts"
+    return 1
 }
 
 _fetch_ru_domains() {
@@ -501,6 +546,12 @@ convert_ip_list() {
 generate_singbox_config() {
     local output="$1" xray_socks_port="$2" mode="$3"
 
+    # Sing-box reads geosite-ru/geoip-ru as local files (see rule_set block
+    # below). Make sure they exist before we even write the config — sing-box
+    # refuses to start with a missing local rule_set path. Cached files from a
+    # prior run are reused; only the first install pays the curl-retry cost.
+    _fetch_rule_sets
+
     local rules dns_rules
 
     if [ "$mode" = "all_vpn" ]; then
@@ -560,12 +611,10 @@ generate_singbox_config() {
             default_mark: 32768,
             rules: $rules,
             rule_set: [
-                {type: "remote", tag: "geosite-ru", format: "binary",
-                 url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs",
-                 download_detour: "direct"},
-                {type: "remote", tag: "geoip-ru", format: "binary",
-                 url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs",
-                 download_detour: "direct"}
+                {type: "local", tag: "geosite-ru", format: "binary",
+                 path: "/etc/flowvpn/rules/geosite-category-ru.srs"},
+                {type: "local", tag: "geoip-ru", format: "binary",
+                 path: "/etc/flowvpn/rules/ru.srs"}
             ],
             final: $final_outbound,
             auto_detect_interface: true
