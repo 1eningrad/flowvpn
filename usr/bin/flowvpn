@@ -148,6 +148,14 @@ cmd_start() {
     _rotate_log
     _ensure_watchdog
 
+    # Repair stale DNS state from older code (uci-committed redirect to a
+    # not-yet-running sing-box). Without this, a power-yank reboot leaves
+    # /etc/resolv.conf → dnsmasq → dead :5354, the subscription URL fails
+    # to resolve, and we never fetch servers.json. New code uses
+    # /tmp/dnsmasq.d which auto-clears on reboot, but routers upgraded
+    # from the old persistence path still need this one-shot cleanup.
+    ensure_dns_sane
+
     local sub_url iface mode
     sub_url=$(get_config_val subscription_url "")
     iface=$(get_config_val interface "br-lan")
