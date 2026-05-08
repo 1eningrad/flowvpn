@@ -29,10 +29,12 @@ fetch_rules() {
     # Force-VPN list (AI services blocked from RU IPs) is rebuilt for both
     # modes — the UI's vpn_domains.txt tab is exposed in either mode.
     _fetch_vpn_domains
-    # Refresh sing-box .srs rule sets too — cmd_update is the natural moment
-    # to pick up upstream geosite/geoip changes. Force-redownload regardless
-    # of cache age.
-    _fetch_rule_sets force
+    # Sing-box .srs rule sets: ensure cache exists, but do NOT force-refresh
+    # here. fetch_rules is also called by cmd_start when /tmp is wiped (cold
+    # boot), and force-refreshing across raw.githubusercontent.com (which
+    # times out half the time from RU networks) added 60-90s to start time.
+    # cmd_update calls _fetch_rule_sets force itself for the periodic refresh.
+    _fetch_rule_sets
 }
 
 # Persist sing-box .srs rule sets to /etc/flowvpn/rules/ so sing-box loads

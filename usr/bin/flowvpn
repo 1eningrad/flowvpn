@@ -47,17 +47,39 @@ save_config() {
 # Core commands
 # ============================================================
 
-# Operation sentinel — set while a user-initiated lifecycle command (start,
-# stop, restart, set-server, set-mode) is in flight. Watchdog defers its
-# revival check while this is held; otherwise watchdog races with cmd_restart's
-# brief stop_xray window and spawns a parallel xray, leading to zombies and
-# port-1080 conflicts.
+# Operation lock — held while a user-initiated lifecycle command (start,
+# stop, restart, set-server, set-mode) is in flight.
+#
+# Real mutex via mkdir, not just a pidfile marker: lifecycle commands can
+# arrive simultaneously (init.d's S99flowvpn races with the UI's "включить"
+# button on a slow boot, or the watchdog reviver fires on a borderline
+# tick). Two concurrent cmd_start invocations both passed the old marker
+# write and ran end-to-end, leaving two xray processes fighting for
+# 127.0.0.1:1080. The watchdog's deferral check still reads the PID file —
+# kept identical for compatibility — but the gate is now mkdir's atomicity.
+#
+# Returns 0 on acquire, 1 if another live owner holds the lock. Stale lock
+# (owner PID dead) is reclaimed transparently.
 _op_begin() {
     mkdir -p "$FLOWVPN_TMP"
-    echo $$ > "$FLOWVPN_TMP/op.in_progress"
+    if mkdir "$FLOWVPN_TMP/op.lockdir" 2>/dev/null; then
+        echo $$ > "$FLOWVPN_TMP/op.in_progress"
+        return 0
+    fi
+    local owner
+    owner=$(cat "$FLOWVPN_TMP/op.in_progress" 2>/dev/null)
+    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+        rm -rf "$FLOWVPN_TMP/op.lockdir"
+        if mkdir "$FLOWVPN_TMP/op.lockdir" 2>/dev/null; then
+            echo $$ > "$FLOWVPN_TMP/op.in_progress"
+            return 0
+        fi
+    fi
+    return 1
 }
 _op_end() {
     rm -f "$FLOWVPN_TMP/op.in_progress"
+    rmdir "$FLOWVPN_TMP/op.lockdir" 2>/dev/null
 }
 
 _ensure_watchdog() {
@@ -143,7 +165,10 @@ cmd_start() {
         return 1
     fi
     mkdir -p "$FLOWVPN_TMP"
-    _op_begin
+    if ! _op_begin; then
+        echo '{"error":"another lifecycle op in progress"}'
+        return 1
+    fi
     trap '_op_end' EXIT INT TERM
     _rotate_log
     _ensure_watchdog
@@ -246,7 +271,10 @@ cmd_start() {
 }
 
 cmd_stop() {
-    _op_begin
+    if ! _op_begin; then
+        echo '{"error":"another lifecycle op in progress"}'
+        return 1
+    fi
     trap '_op_end' EXIT INT TERM
     flog "Stopping FlowVPN"
     # Clear intent first — watchdog runs every 20s and would otherwise
@@ -263,7 +291,10 @@ cmd_stop() {
 }
 
 cmd_restart() {
-    _op_begin
+    if ! _op_begin; then
+        echo '{"error":"another lifecycle op in progress"}'
+        return 1
+    fi
     trap '_op_end' EXIT INT TERM
     _ensure_watchdog
     # Soft restart: keeps nftables rules + dnsmasq redirect in place so
@@ -580,6 +611,11 @@ cmd_update() {
     local mode=$(get_config_val mode "all_vpn")
     rm -rf "$FLOWVPN_TMP/rules"
     fetch_rules "$mode"
+    # Periodic refresh of sing-box .srs rule sets — cmd_update is the
+    # natural moment to redownload upstream geosite/geoip without paying
+    # the cost on every cmd_start. Failure leaves the cached copy in
+    # place; logs note the warning but cmd_update doesn't fail on it.
+    _fetch_rule_sets force || true
     if [ "$count" -gt 0 ] 2>/dev/null; then
         # Record the run for the UI's status polling — last_update lets the
         # frontend show a toast only when prev != count (avoids "updated:
