@@ -96,27 +96,68 @@ setup_network() {
     _setup_dnsmasq_redirect
 }
 
+# DNS-redirect drop-in for OpenWrt's dnsmasq. We write to /tmp/dnsmasq.d/
+# (which the default OpenWrt dnsmasq.conf includes via conf-dir) instead of
+# committing to /etc/config/dhcp because:
+#
+#  1. Power-yank survival. uci commit is persistent — after a hard reboot,
+#     dnsmasq came up with `server=127.0.0.1#5354` pointing at a sing-box
+#     that hasn't started yet. DNS resolution failed for everything
+#     including the subscription URL, so cmd_start couldn't fetch servers
+#     and the VPN never came up. /tmp wipes on reboot → bad state can't
+#     persist past a power loss.
+#  2. /etc/config/dhcp churn. uci writes can race with LuCI/Tailscale and
+#     leave the file partly-rewritten.
+DNSMASQ_REDIRECT_CONF="/tmp/dnsmasq.d/flowvpn.conf"
+
 _setup_dnsmasq_redirect() {
-    if [ ! -f /tmp/flowvpn/dnsmasq_backup ]; then
-        uci show dhcp.@dnsmasq[0] > /tmp/flowvpn/dnsmasq_backup 2>/dev/null
-    fi
-    uci set dhcp.@dnsmasq[0].noresolv='1'
-    uci delete dhcp.@dnsmasq[0].server 2>/dev/null
-    uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5354'
-    uci set dhcp.@dnsmasq[0].cachesize='0'
-    uci commit dhcp
+    _clean_legacy_dnsmasq_uci
+    mkdir -p /tmp/dnsmasq.d
+    cat > "$DNSMASQ_REDIRECT_CONF" <<EOF
+no-resolv
+server=127.0.0.1#5354
+cache-size=0
+EOF
     /etc/init.d/dnsmasq restart
 }
 
 _restore_dnsmasq() {
-    if [ -f /tmp/flowvpn/dnsmasq_backup ]; then
-        uci delete dhcp.@dnsmasq[0].server 2>/dev/null
-        uci set dhcp.@dnsmasq[0].noresolv='0'
-        uci delete dhcp.@dnsmasq[0].cachesize 2>/dev/null
-        uci commit dhcp
-        /etc/init.d/dnsmasq restart
-        rm -f /tmp/flowvpn/dnsmasq_backup
-    fi
+    rm -f "$DNSMASQ_REDIRECT_CONF"
+    _clean_legacy_dnsmasq_uci
+    /etc/init.d/dnsmasq restart
+}
+
+# Migration: pre-fix versions persisted the redirect via uci commit dhcp.
+# Routers that ran old code keep that state across upgrade — strip it on
+# every setup/teardown so old installs self-heal on first start, and after
+# a full uninstall the user's dnsmasq is left clean.
+_clean_legacy_dnsmasq_uci() {
+    local servers
+    servers=$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)
+    case " $servers " in
+        *" 127.0.0.1#5354 "*|*"127.0.0.1#5354"*)
+            uci delete dhcp.@dnsmasq[0].server 2>/dev/null
+            uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
+            uci delete dhcp.@dnsmasq[0].cachesize 2>/dev/null
+            uci commit dhcp
+            ;;
+    esac
+    rm -f /tmp/flowvpn/dnsmasq_backup
+}
+
+# Safe to call before any subscription fetch on cmd_start: undoes a stale
+# committed redirect (left by an upgraded-from-old-code install or by a
+# crashed uninstall) so /etc/resolv.conf → dnsmasq actually resolves.
+ensure_dns_sane() {
+    local servers
+    servers=$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)
+    case " $servers " in
+        *"127.0.0.1#5354"*)
+            _clean_legacy_dnsmasq_uci
+            /etc/init.d/dnsmasq restart >/dev/null 2>&1
+            sleep 1
+            ;;
+    esac
 }
 
 teardown_network() {
