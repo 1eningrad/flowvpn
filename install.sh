@@ -30,15 +30,35 @@ if [ ! -f /etc/openwrt_release ]; then
 fi
 
 echo "[1/6] Installing dependencies..."
-opkg update >/dev/null 2>&1
-opkg install jq coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed" || true
+# OpenWrt 24.10+/25.x replaced opkg with apk (apk-tools 3). Detect either so
+# the installer works on both. opkg-only broke silently on modern firmware.
+if command -v apk >/dev/null 2>&1; then
+    PKG_INSTALL="apk add"; apk update >/dev/null 2>&1 || true
+elif command -v opkg >/dev/null 2>&1; then
+    PKG_INSTALL="opkg install"; opkg update >/dev/null 2>&1 || true
+else
+    echo "ERROR: no package manager (apk/opkg) found"; exit 1
+fi
+# curl is a hard runtime dependency (subscription fetch, all probes, Clash
+# API, rule-set downloads) and is NOT in busybox base — it was missing here.
+$PKG_INSTALL jq curl ca-bundle coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed|Installed" || true
+# Hard-verify mandatory binaries — the grep above can swallow a failed install.
+for b in jq curl sing-box; do
+    command -v "$b" >/dev/null 2>&1 || { echo "ERROR: required dependency '$b' missing after install ($PKG_INSTALL)"; exit 1; }
+done
 
 echo "[2/6] Installing xray-core 26.4.17..."
 case "$ARCH" in
-    aarch64) XRAY_ARCH="arm64-v8a" ;;
-    armv7l)  XRAY_ARCH="arm32-v7a" ;;
-    x86_64)  XRAY_ARCH="64" ;;
-    *)       echo "ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
+    aarch64)   XRAY_ARCH="arm64-v8a" ;;
+    armv7l)    XRAY_ARCH="arm32-v7a" ;;
+    x86_64)    XRAY_ARCH="64" ;;
+    i386|i686) XRAY_ARCH="32" ;;
+    # mips endianness isn't reliably distinguishable via uname -m on all
+    # builds; this covers the common case (BE=mips32, LE=mipsel→mips32le).
+    mips)      XRAY_ARCH="mips32" ;;
+    mipsel)    XRAY_ARCH="mips32le" ;;
+    riscv64)   XRAY_ARCH="riscv64" ;;
+    *)         echo "ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
 XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-${XRAY_ARCH}.zip"

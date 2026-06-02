@@ -59,19 +59,47 @@ _fetch_one_srs() {
         return 0
     fi
     local tmp="${dest}.tmp.$$"
+    # Bounded cold-boot budget: 3 tries x ~11s = ~33s/file (~66s for both),
+    # down from 5x22s. This runs synchronously inside generate_singbox_config
+    # before sing-box launches, so a long retry loop looks like a hang during
+    # cmd_start and can blow past init.d/watchdog expectations.
     local i=0
-    while [ "$i" -lt 5 ]; do
-        if curl -sSL --max-time 20 -o "$tmp" "$url" 2>/dev/null \
+    while [ "$i" -lt 3 ]; do
+        if curl -fsSL --max-time 10 -o "$tmp" "$url" 2>/dev/null \
            && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ]; then
             mv "$tmp" "$dest"
             return 0
         fi
         rm -f "$tmp"
         i=$((i + 1))
-        sleep 2
+        sleep 1
     done
-    flog "ERROR: failed to fetch $(basename "$dest") from $url after 5 attempts"
+    flog "ERROR: failed to fetch $(basename "$dest") from $url after 3 attempts"
     return 1
+}
+
+# Guarantee both local rule_set files exist so sing-box can load its config.
+# On a fresh install where the fetch failed AND there is no cache (raw.gh
+# blocked from inside RU), compile a valid EMPTY .srs via sing-box itself
+# rather than letting startup fail with a missing rule_set path.
+_ensure_srs_present() {
+    local f
+    for f in geosite-category-ru ru; do
+        [ -s "$RULESET_DIR/$f.srs" ] && continue
+        if _make_empty_srs "$RULESET_DIR/$f.srs"; then
+            flog "WARN: $f.srs missing — using empty fallback (RU routing via manual list until next update)"
+        else
+            flog "ERROR: could not create fallback $f.srs — sing-box may refuse to start"
+        fi
+    done
+}
+_make_empty_srs() {
+    local dest="$1" src="${1}.src.json"
+    printf '%s' '{"version":1,"rules":[]}' > "$src"
+    sing-box rule-set compile --output "$dest" "$src" 2>/dev/null
+    local rc=$?
+    rm -f "$src"
+    [ "$rc" -eq 0 ] && [ -s "$dest" ]
 }
 
 _fetch_ru_domains() {
@@ -494,13 +522,17 @@ _fetch_blocklist_domains() {
     # Telegram + Discord lists supplement domain-based routing for these
     # specific apps (their domain routing alone is unreliable due to
     # CDN sharding). Both are well-maintained.
-    curl -s --max-time 15 -o "$SR_RULES_DIR/telegram.list" \
+    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/telegram.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Telegram/Telegram.list"
-    curl -s --max-time 15 -o "$SR_RULES_DIR/discord.list" \
+    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/discord.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Discord/Discord.list"
-    curl -s --max-time 15 -o "$SR_RULES_DIR/meta_ips.list" \
+    # github.com/.../releases/latest/download/ ALWAYS 302-redirects to
+    # objects.githubusercontent.com — WITHOUT -L curl writes the empty redirect
+    # body, convert_ip_list emits nothing, and the Meta/Telegram IP-CIDR bypass
+    # rules silently never load. -f also drops error pages instead of caching them.
+    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/meta_ips.list" \
         "https://github.com/toneywhitez/zkeen_rules/releases/latest/download/meta_ips.list"
-    curl -s --max-time 15 -o "$SR_RULES_DIR/telegram_ips.list" \
+    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/telegram_ips.list" \
         "https://github.com/toneywhitez/zkeen_rules/releases/latest/download/telegram_ips.list"
 }
 
@@ -549,10 +581,13 @@ generate_singbox_config() {
     local output="$1" xray_socks_port="$2" mode="$3"
 
     # Sing-box reads geosite-ru/geoip-ru as local files (see rule_set block
-    # below). Make sure they exist before we even write the config — sing-box
-    # refuses to start with a missing local rule_set path. Cached files from a
+    # below). They MUST exist or sing-box refuses to start. Cached files from a
     # prior run are reused; only the first install pays the curl-retry cost.
-    _fetch_rule_sets
+    # If the fetch fails and there's no cache, _ensure_srs_present compiles an
+    # empty .srs so the VPN still comes up (degraded RU routing) instead of
+    # failing to start entirely.
+    _fetch_rule_sets || flog "WARN: rule-set fetch failed; relying on cache or empty fallback"
+    _ensure_srs_present
 
     local rules dns_rules
 

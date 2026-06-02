@@ -36,9 +36,9 @@ fetch_subscription() {
     # (Subscription-Userinfo) are sensitive while we're writing them.
     umask 077
     local raw
-    raw=$(curl -s --max-time 15 --proto '=http,https' \
+    raw=$(curl -fsS --max-time 15 --proto '=http,https' \
         --dump-header "$hdr_file" "$url") || {
-        logger -t flowvpn "Subscription: fetch failed (network/TLS error)"
+        logger -t flowvpn "Subscription: fetch failed (HTTP >=400, network, or TLS error)"
         return 1
     }
     [ -z "$raw" ] && { logger -t flowvpn "Subscription: empty response from server"; return 1; }
@@ -55,8 +55,8 @@ fetch_subscription() {
             if [ -n "$sub_path" ]; then
                 prefix=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+).*#\1#')
                 follow_url="${prefix}${sub_path}"
-                logger -t flowvpn "Subscription: landing page detected, following ${sub_path}"
-                raw=$(curl -s --max-time 15 --proto '=http,https' \
+                logger -t flowvpn "Subscription: landing page detected, following /api/sub/<redacted>"
+                raw=$(curl -fsS --max-time 15 --proto '=http,https' \
                     --dump-header "$hdr_file" "$follow_url") || {
                     logger -t flowvpn "Subscription: follow-up fetch to api endpoint failed"
                     return 1
@@ -66,9 +66,13 @@ fetch_subscription() {
             ;;
     esac
 
-    if echo "$raw" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
-        :
-    elif _b64_pad "$raw" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
+    # Normalize before decoding: strip all whitespace/newlines (so _b64_pad's
+    # length math is correct) and translate URL-safe base64 (-_ -> +/) so
+    # providers using either alphabet decode. If the result isn't valid
+    # base64 (body is already a plaintext vless:// list), keep the raw body.
+    local b64
+    b64=$(printf '%s' "$raw" | tr -d '[:space:]' | tr '_-' '/+')
+    if _b64_pad "$b64" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
         :
     else
         printf '%s' "$raw" > "$out"
