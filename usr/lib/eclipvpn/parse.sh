@@ -66,13 +66,17 @@ fetch_subscription() {
             ;;
     esac
 
-    # Normalize before decoding: strip all whitespace/newlines (so _b64_pad's
-    # length math is correct) and translate URL-safe base64 (-_ -> +/) so
-    # providers using either alphabet decode. If the result isn't valid
-    # base64 (body is already a plaintext vless:// list), keep the raw body.
-    local b64
-    b64=$(printf '%s' "$raw" | tr -d '[:space:]' | tr '_-' '/+')
-    if _b64_pad "$b64" | base64 -d 2>/dev/null > "$out" && [ -s "$out" ]; then
+    # Decode the subscription body. Panels return one of: standard base64 of
+    # vless:// lines (EclipVPN, most), URL-safe base64 (-_ instead of +/), or
+    # already-plaintext vless://. Accept the FIRST decode whose output actually
+    # contains URL-looking lines ("://") — the grep guard prevents accepting a
+    # garbage decode (e.g. running the URL-safe -_->/+ transform over STANDARD
+    # base64, which silently corrupts it). Fall back to $raw as plaintext.
+    if printf '%s' "$raw" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
+        :
+    elif _b64_pad "$raw" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
+        :
+    elif printf '%s' "$raw" | tr -d '[:space:]' | tr '_-' '/+' | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
         :
     else
         printf '%s' "$raw" > "$out"
