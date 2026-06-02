@@ -102,28 +102,31 @@ setup_network() {
     _ipv6_killswitch_on "$iface"
 }
 
-# DNS-redirect drop-in for OpenWrt's dnsmasq. We write to /tmp/dnsmasq.d/
-# (which the default OpenWrt dnsmasq.conf includes via conf-dir) instead of
-# committing to /etc/config/dhcp because:
+# DNS redirect: point dnsmasq at sing-box's DNS (:5354) for ALL LAN queries.
 #
-#  1. Power-yank survival. uci commit is persistent — after a hard reboot,
-#     dnsmasq came up with `server=127.0.0.1#5354` pointing at a sing-box
-#     that hasn't started yet. DNS resolution failed for everything
-#     including the subscription URL, so cmd_start couldn't fetch servers
-#     and the VPN never came up. /tmp wipes on reboot → bad state can't
-#     persist past a power loss.
-#  2. /etc/config/dhcp churn. uci writes can race with LuCI/Tailscale and
-#     leave the file partly-rewritten.
+# Set via uci (/etc/config/dhcp), NOT a /tmp/dnsmasq.d drop-in. The drop-in
+# approach silently failed on current OpenWrt (25.x): dnsmasq uses a
+# PER-INSTANCE conf-dir (/tmp/dnsmasq.cfgXXXX.d), so a static
+# /tmp/dnsmasq.d/eclipvpn.conf is never read. dnsmasq then falls back to the
+# ISP resolver — which NXDOMAINs censored domains (youtube.com etc.) and
+# bypasses sing-box's split-DNS entirely, i.e. a silent DNS leak. Observed
+# live: only the box using the router's DNS (a PC) failed; phones with their
+# own DoH/Private DNS worked, masking the bug.
+#
+# The original reason for avoiding uci was boot-safety — a persisted
+# server=127.0.0.1#5354 pointing at a not-yet-started sing-box wedged the
+# subscription fetch on reboot. That is handled by ensure_dns_sane(), called
+# at the top of cmd_start, which strips this redirect before any fetch so the
+# router resolves normally until sing-box is up and the redirect is re-added.
 DNSMASQ_REDIRECT_CONF="/tmp/dnsmasq.d/eclipvpn.conf"
 
 _setup_dnsmasq_redirect() {
     _clean_legacy_dnsmasq_uci
-    mkdir -p /tmp/dnsmasq.d
-    cat > "$DNSMASQ_REDIRECT_CONF" <<EOF
-no-resolv
-server=127.0.0.1#5354
-cache-size=0
-EOF
+    rm -f "$DNSMASQ_REDIRECT_CONF"               # drop any stale drop-in from older code
+    uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5354'
+    uci set dhcp.@dnsmasq[0].noresolv='1'
+    uci set dhcp.@dnsmasq[0].cachesize='0'
+    uci commit dhcp
     /etc/init.d/dnsmasq restart
 }
 
