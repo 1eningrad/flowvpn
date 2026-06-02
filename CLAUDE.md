@@ -31,14 +31,15 @@ For UI changes, hard-reload in the browser (`Cmd+Shift+R`) — the CGI sends no-
 Top-level user commands already implemented in `usr/bin/flowvpn` — check here before adding a new one:
 
 ```
-start | stop | restart | status         lifecycle
+start | stop | restart [force] | status  lifecycle (restart 1 = force past unchanged-config no-op)
 set-server N                             pick server by index
+probe-server N                           probe a server (throwaway xray, VLESS-Reality) without touching live tunnel
 set-mode all_vpn|blocklist               routing mode
 update                                   refresh subscription + RU/blocklist domain rules
 ping | real-ping                         TCP probe (with ICMP fallback) / VLESS-Reality probe
 diagnose | healthcheck                   quick metrics / full check (DNS, leaks, processes)
 add-domain DOM vpn|direct                user override list
-get-log N FILTER                         tail logs (filter: all|vpn|direct|errors|incidents|dns|flowvpn)
+get-log N FILTER                         tail logs (filter: all|vpn|direct|error|dns|flow)
 get-incidents | clear-incidents          failover history
 reset-traffic                            zero per-chain byte counters
 backup                                   export config as JSON
@@ -98,7 +99,7 @@ These are documented in inline comments at the relevant call sites — read them
 - **Watchdog is single-instance** via `mkdir $FLOWVPN_TMP/watchdog.lockdir` (atomic on busybox; flock-based locking previously raced with init.d). Killing peers from inside `cmd_watchdog` is forbidden — traps may not be installed yet.
 - **Watchdog drives log rotation, auto-recovery, and failover.** If you stop spawning it, logs grow unbounded and externally-killed VPN never revives.
 - **Log writes use append-mode (`>>`)** for both daemons. Rotation does `cat tmp > file` (truncate-overwrite, preserves inode) — never `mv tmp file` (swaps inode; daemons keep writing to the unlinked old fd, lines never appear in UI).
-- **`cmd_restart` is "soft"** — it preserves nftables + dnsmasq redirect across the process swap, so the LAN fails *closed* (no internet) instead of leaking direct traffic. Only `cmd_stop` does full teardown.
+- **`cmd_restart` is "soft"** — it preserves nftables + dnsmasq redirect across the process swap, so the LAN fails *closed* (no internet) instead of leaking direct traffic. Only `cmd_stop` does full teardown. It also has an **unchanged-config fast path**: if the freshly-generated xray/sing-box configs are byte-identical to what's running *and* the tunnel is live, it skips the swap and returns `{"status":"unchanged",...}` (UI shows "VPN уже работает") — but falls through to a real restart if the tunnel is dead. `restart 1` (force, sent by the UI's manual Restart button) bypasses this fast path; internal callers (set-mode / set-server / watchdog failover) leave it on.
 - **`op.in_progress` sentinel** is set during user-initiated lifecycle ops. Watchdog defers revival while it's held; otherwise watchdog races `cmd_restart`'s `stop_xray` window and spawns a parallel xray fighting for port 1080.
 - **`running_intent` (in config) ≠ `auto_start`.** `auto_start` is only consulted at boot; `running_intent` tells watchdog whether to revive after an external kill.
 - **`pgrep -f 'flowvpn watchdog'` matches itself.** `_ensure_watchdog` uses the `[/]usr/...` character-class trick to self-exclude — don't "simplify" it.

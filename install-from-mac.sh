@@ -37,17 +37,26 @@ echo "→ install dependencies + xray + Tailscale on router"
 ssh "$ROUTER" "WITH_REMOTE=$WITH_REMOTE sh -s" <<'REMOTE_EOF'
 set -eu
 
-echo "[1/5] opkg deps"
-opkg update >/dev/null 2>&1 || true
-opkg install jq coreutils-base64 kmod-nft-tproxy sing-box unzip 2>&1 | grep -E "Installing|installed" || true
+echo "[1/5] package deps (apk or opkg)"
+# OpenWrt 25.x uses apk, older uses opkg. curl + ca-bundle are hard runtime
+# deps that were previously missing from this list.
+if command -v apk >/dev/null 2>&1; then PKG_INSTALL="apk add"; apk update >/dev/null 2>&1 || true
+elif command -v opkg >/dev/null 2>&1; then PKG_INSTALL="opkg install"; opkg update >/dev/null 2>&1 || true
+else echo "ERROR: no package manager (apk/opkg)"; exit 1; fi
+$PKG_INSTALL jq curl ca-bundle coreutils-base64 kmod-nft-tproxy sing-box unzip 2>&1 | grep -E "Installing|installed|Installed" || true
+for b in jq curl sing-box; do command -v "$b" >/dev/null 2>&1 || { echo "ERROR: dependency '$b' missing after install"; exit 1; }; done
 
 echo "[2/5] xray 26.4.17"
 ARCH=$(uname -m)
 case "$ARCH" in
-    aarch64) XRAY_ARCH="arm64-v8a" ;;
-    armv7l)  XRAY_ARCH="arm32-v7a" ;;
-    x86_64)  XRAY_ARCH="64" ;;
-    *)       echo "ERROR: unsupported arch $ARCH"; exit 1 ;;
+    aarch64)   XRAY_ARCH="arm64-v8a" ;;
+    armv7l)    XRAY_ARCH="arm32-v7a" ;;
+    x86_64)    XRAY_ARCH="64" ;;
+    i386|i686) XRAY_ARCH="32" ;;
+    mips)      XRAY_ARCH="mips32" ;;
+    mipsel)    XRAY_ARCH="mips32le" ;;
+    riscv64)   XRAY_ARCH="riscv64" ;;
+    *)         echo "ERROR: unsupported arch $ARCH"; exit 1 ;;
 esac
 cd /tmp
 wget -q "https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-${XRAY_ARCH}.zip" -O xray.zip
@@ -92,8 +101,8 @@ echo
 echo "===== INSTALL DONE ====="
 echo "next steps (Mac side):"
 echo "  1) on first router: ssh root@192.168.1.1 'flowvpn backup' > ~/eclip-config.json"
-echo "  2) on this router:  scp ~/eclip-config.json root@$(uci -q get network.lan.ipaddr || echo 192.168.2.1):/tmp/"
-echo "                       ssh root@... 'flowvpn restore < /tmp/eclip-config.json'"
+echo "  2) restore here:    cat ~/eclip-config.json | ssh root@$(uci -q get network.lan.ipaddr || echo 192.168.2.1) 'flowvpn restore'"
+echo "     (cat|ssh, not scp — OpenWrt dropbear has no sftp-server)"
 REMOTE_EOF
 
 echo

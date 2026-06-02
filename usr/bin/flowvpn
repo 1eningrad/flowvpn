@@ -267,7 +267,8 @@ cmd_start() {
 
     local server_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
     flog "FlowVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
-    echo "{\"status\":\"started\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
+    jq -n --arg s "started" --arg srv "$server_name" --arg ip "$vpn_ip" --arg m "$mode" \
+        '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }
 
 cmd_stop() {
@@ -291,6 +292,12 @@ cmd_stop() {
 }
 
 cmd_restart() {
+    # $1 = "1" to bypass the unchanged-config fast path. UI's manual "Restart"
+    # button passes force=1 so a click always physically swaps the daemons —
+    # otherwise the user sees a success toast but nothing was actually kicked.
+    # Internal callers (set-mode, set-server, watchdog failover, etc.) leave
+    # this unset to keep the no-op optimization.
+    local force="$1"
     if ! _op_begin; then
         echo '{"error":"another lifecycle op in progress"}'
         return 1
@@ -322,11 +329,14 @@ cmd_restart() {
     # No-op fast path: if the freshly-generated configs are identical to what's
     # already running, don't tear processes down. Saves the 5s gap when the UI
     # fires restart for a setting that doesn't actually affect xray/sing-box.
+    # Skipped when force=1 (manual UI Restart button) — the user explicitly
+    # wants the daemons kicked even if configs match.
     local new_xray="$FLOWVPN_TMP/xray.new.json"
     local new_singbox="$FLOWVPN_TMP/singbox.new.json"
     generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$new_xray" 2>/dev/null
     generate_singbox_config "$new_singbox" 1080 "$mode" 2>/dev/null
-    if [ -s "$new_xray" ] && [ -s "$new_singbox" ] && \
+    if [ "$force" != "1" ] && \
+       [ -s "$new_xray" ] && [ -s "$new_singbox" ] && \
        cmp -s "$new_xray" "$FLOWVPN_TMP/xray.json" && \
        cmp -s "$new_singbox" "$FLOWVPN_TMP/singbox.json"; then
         rm -f "$new_xray" "$new_singbox"
@@ -348,7 +358,8 @@ cmd_restart() {
             # raced this. Cheap to be explicit.
             _op_end
             trap - EXIT INT TERM
-            echo "{\"status\":\"unchanged\",\"server\":\"$sn\",\"vpn_ip\":\"$vi\",\"mode\":\"$mode\"}"
+            jq -n --arg s "unchanged" --arg srv "$sn" --arg ip "$vi" --arg m "$mode" \
+                '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
             return 0
         fi
     fi
@@ -393,7 +404,8 @@ cmd_restart() {
 
     local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
     flog "FlowVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
-    echo "{\"status\":\"restarted\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
+    jq -n --arg s "restarted" --arg srv "$server_name" --arg ip "$vpn_ip" --arg m "$mode" \
+        '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }
 
 cmd_status() {
@@ -491,11 +503,13 @@ cmd_set_server() {
     local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
     local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-    save_config "$tmp"
-    is_xray_running && cmd_restart || {
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    if is_xray_running; then
+        cmd_restart
+    else
         local name=$(jq -r ".[$idx].name" "$FLOWVPN_TMP/servers.json")
-        echo "{\"status\":\"server set\",\"server\":\"$name\"}"
-    }
+        jq -n --arg srv "$name" '{status:"server set",server:$srv}'
+    fi
 }
 
 # Pre-flight: spin up a temp xray bound to an unused port and verify the
@@ -537,7 +551,7 @@ cmd_probe_server() {
             '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
             "$test_cfg" > "$probe_cfg"
 
-        # Up to 3 spawn-and-test attempts. A freshly-spawned xray's very
+        # Up to 4 spawn-and-test attempts. A freshly-spawned xray's very
         # first request through VLESS+XHTTP+Reality occasionally hangs to
         # full timeout (measured ~50% on DE/NL endpoints when probing while
         # prod xray is connected to a different server — likely cold xmux
@@ -546,12 +560,16 @@ cmd_probe_server() {
         # symptom was "не получается переключиться с первого раза" — the
         # picker click triggered a flaky probe, toast said "Не удалось
         # переключить", and the immediate second click succeeded.
-        # 3 attempts at ~7s worst-case each = ≤21s budget; an outright dead
+        # 4 attempts × ~16s worst-case (6s listen wait + 10s curl) ≤ 64s,
+        # but typical success on attempt 1-2 keeps real wall-clock <20s.
+        # The 10s curl budget (was 6s) covers the cold Reality+XHTTP
+        # handshake on DE/NL endpoints — 6s was tripping on live servers
+        # that ping fine but need >6s on first request. An outright dead
         # server is detected on attempt 1 because curl returns immediately
         # (port unreachable) — this loop only burns time on flakes.
         local t0 t1 elapsed test_ip="" attempt
         t0=$(date +%s%3N 2>/dev/null)
-        for attempt in 1 2 3; do
+        for attempt in 1 2 3 4; do
             # Spawn a fresh xray for each attempt — reusing a hung instance
             # doesn't help (its outbound state is broken).
             [ -n "$probe_pid" ] && {
@@ -577,7 +595,7 @@ cmd_probe_server() {
             done
             [ "$ready" -eq 0 ] && continue
 
-            test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 6 https://api.ipify.org 2>/dev/null)
+            test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 10 https://api.ipify.org 2>/dev/null)
             [ -n "$test_ip" ] && break
         done
         t1=$(date +%s%3N 2>/dev/null)
@@ -779,7 +797,7 @@ EOF
     local sf="$FLOWVPN_TMP/auto_state.json"
     local oplock="$FLOWVPN_TMP/auto.lock"
     (
-        flock -w 5 -x 200 || exit 1
+        if command -v flock >/dev/null 2>&1; then flock -w 5 -x 200 || exit 1; fi
         local tmp
         tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
         save_config "$tmp"
@@ -833,7 +851,7 @@ cmd_auto_eval() {
     # user-triggered cmd_auto_select is running, we silently skip this tick
     # rather than queue up a redundant eval behind it.
     (
-        flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }
+        if command -v flock >/dev/null 2>&1; then flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }; fi
 
         [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
 
@@ -954,14 +972,18 @@ cmd_set_mode() {
     esac
     flog "Switching mode to $new_mode"
     local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$FLOWVPN_CONFIG")
-    save_config "$tmp"
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
     rm -rf "$FLOWVPN_TMP/rules" "$FLOWVPN_TMP/singbox.json"
     # Rebuild rule lists for the new mode. cmd_restart only regenerates the
     # sing-box config from existing rule files — without this fetch_rules,
     # both modes start with empty lists (RU heredoc / blocklist / force-VPN
     # all missing) and routing collapses to the remote rule_sets only.
     fetch_rules "$new_mode"
-    is_xray_running && cmd_restart || echo "{\"status\":\"mode set\",\"mode\":\"$new_mode\"}"
+    if is_xray_running; then
+        cmd_restart
+    else
+        jq -n --arg m "$new_mode" '{status:"mode set",mode:$m}'
+    fi
 }
 
 cmd_add_domain() {
@@ -1343,12 +1365,16 @@ cmd_set_config() {
             esac
             tmp=$(jq --arg k "$key" --argjson v "$bv" '.[$k] = $v' "$FLOWVPN_CONFIG")
             ;;
+        selected_server)
+            case "$value" in ''|*[!0-9]*) echo '{"error":"selected_server must be numeric"}'; return 1 ;; esac
+            tmp=$(jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$FLOWVPN_CONFIG")
+            ;;
         *)
             tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$FLOWVPN_CONFIG")
             ;;
     esac
-    save_config "$tmp"
-    echo "{\"status\":\"saved\",\"key\":\"$key\"}"
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    jq -n --arg k "$key" '{status:"saved",key:$k}'
 }
 
 cmd_diagnose() {
@@ -1778,7 +1804,12 @@ cmd_watchdog() {
                 else
                     flog "Watchdog: VPN was killed externally, reviving"
                     echo $now > "$revive_marker"
-                    cmd_start >/dev/null 2>&1
+                    # Subshell: cmd_start's `trap _op_end EXIT` only fires on
+                    # process exit, and the watchdog never exits. A bare call
+                    # would leak op.lockdir forever (owner=watchdog), wedging
+                    # every later user lifecycle op. The subshell makes EXIT
+                    # fire on its own exit, releasing the lock.
+                    ( cmd_start ) >/dev/null 2>&1
                 fi
             fi
             continue
@@ -1887,8 +1918,10 @@ cmd_watchdog() {
                 _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
                 _record_switch "$current" "$selected" "failover"
                 local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-                save_config "$tmp"
-                cmd_restart >/dev/null 2>&1
+                save_config "$tmp" || flog "WARN: failover save_config failed (will retry next tick)"
+                # Subshell so cmd_restart's EXIT trap releases the op-lock —
+                # see the revival call above; a bare call leaks it forever.
+                ( cmd_restart ) >/dev/null 2>&1
                 fail_count=0
                 silent_fails=0
                 # Give the new server time to stabilize before next probe.
@@ -1932,7 +1965,7 @@ cmd_get_traffic() {
     mkdir -p "$FLOWVPN_TMP"
     local state_file="$FLOWVPN_TMP/traffic_state.json"
     (
-        flock -x 200
+        command -v flock >/dev/null 2>&1 && flock -x 200
         [ -f "$state_file" ] || \
             printf '%s\n' '{"vpn_dl":0,"vpn_ul":0,"dir_dl":0,"dir_ul":0,"started":0,"seen":{}}' > "$state_file"
 
@@ -2033,7 +2066,7 @@ cmd_real_ping() {
     else
         local msg
         msg=$(echo "$resp" | jq -r '.message // "timeout"' 2>/dev/null)
-        echo "{\"ok\":false, \"error\":\"$msg\"}"
+        jq -n --arg e "$msg" '{ok:false, error:$e}'
     fi
 }
 
@@ -2045,7 +2078,7 @@ cmd_reset_traffic() {
     local state_file="$FLOWVPN_TMP/traffic_state.json"
     mkdir -p "$FLOWVPN_TMP"
     (
-        flock -x 200
+        command -v flock >/dev/null 2>&1 && flock -x 200
         local now=$(date +%s)
         local seen='{}'
         if [ -f "$state_file" ]; then
@@ -2067,15 +2100,24 @@ cmd_schedule() {
     case "$action" in
         set)
             [ -z "$on_time" ] || [ -z "$off_time" ] && { echo '{"error":"need on_time and off_time"}'; return 1; }
+            # Reject HH:MM with hour 24-29 (the CGI's [0-2][0-9] pattern lets
+            # those through); cron would silently never fire on them.
+            local _t
+            for _t in "$on_time" "$off_time"; do
+                case "$_t" in
+                    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+                    *) echo '{"error":"time must be HH:MM in 00:00-23:59"}'; return 1 ;;
+                esac
+            done
             local tmp=$(jq --arg on "$on_time" --arg off "$off_time" \
                 '.schedule = {enabled:true, on:$on, off:$off}' "$FLOWVPN_CONFIG")
-            save_config "$tmp"
+            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
             _setup_cron
-            echo "{\"status\":\"schedule set\",\"on\":\"$on_time\",\"off\":\"$off_time\"}"
+            jq -n --arg on "$on_time" --arg off "$off_time" '{status:"schedule set",on:$on,off:$off}'
             ;;
         disable)
             local tmp=$(jq '.schedule.enabled = false' "$FLOWVPN_CONFIG")
-            save_config "$tmp"
+            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
             _remove_cron
             echo '{"status":"schedule disabled"}'
             ;;
@@ -2404,7 +2446,12 @@ cmd_healthcheck() {
     #   - "dns: exchange failed" — Apple push-DNS hiccups (iPhone retries).
     # What still counts as a real error: xray crashes, sing-box panics,
     # outbound/socks failures (= our VPN tunnel broke), config errors.
-    local cutoff_str=$(date -u -d "@$(($(date +%s) - 3600))" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    local _cut=$(($(date +%s) - 3600))
+    # `date -d @epoch` is GNU-only; busybox needs `-D %s -d <epoch>`. Try GNU
+    # first, fall back to the busybox form so the freshness cutoff is never
+    # empty (empty silently disabled the whole error count on busybox).
+    local cutoff_str=$(date -u -d "@$_cut" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    [ -z "$cutoff_str" ] && cutoff_str=$(date -u -D %s -d "$_cut" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
     local sb_err=0 xr_err=0 sb_noise=0
     if [ -n "$cutoff_str" ] && [ -f /tmp/flowvpn/singbox.log ]; then
         local sb_counts
@@ -2485,7 +2532,7 @@ fi
 case "$1" in
     start)          cmd_start ;;
     stop)           cmd_stop ;;
-    restart)        cmd_restart ;;
+    restart)        cmd_restart "$2" ;;
     status)         cmd_status ;;
     set-server)     cmd_set_server "$2" ;;
     probe-server)   cmd_probe_server "$2" ;;

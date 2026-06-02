@@ -86,7 +86,10 @@ setup_network() {
     # the rule silently fails to install (LAN never gets tproxied).
     local lan_subnet
     lan_subnet=$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9./]+' | awk 'NR==1{print $2; exit}')
-    [ -z "$lan_subnet" ] && lan_subnet="192.168.1.0/24"
+    if [ -z "$lan_subnet" ]; then
+        lan_subnet="192.168.1.0/24"
+        logger -t flowvpn "WARN: could not detect LAN subnet on $iface — using fallback $lan_subnet; if the real LAN differs, clients are NOT tproxied (direct leak)"
+    fi
 
     # TPROXY: LAN clients → sing-box
     nft add rule ip flowvpn prerouting ip saddr "$lan_subnet" meta l4proto tcp tproxy to :$port meta mark set 0x1 counter accept
@@ -94,6 +97,9 @@ setup_network() {
 
     # DNS redirect: dnsmasq → sing-box
     _setup_dnsmasq_redirect
+
+    # IPv6 kill-switch — everything above is IPv4-only; close the v6 leak.
+    _ipv6_killswitch_on "$iface"
 }
 
 # DNS-redirect drop-in for OpenWrt's dnsmasq. We write to /tmp/dnsmasq.d/
@@ -166,5 +172,36 @@ teardown_network() {
     nft delete table ip flowvpn_dns 2>/dev/null
     ip rule del fwmark 0x1 table 100 2>/dev/null
     ip route del local 0.0.0.0/0 dev lo table 100 2>/dev/null
+    _ipv6_killswitch_off
     _restore_dnsmasq
+}
+
+# IPv6 kill-switch. The tproxy/route/DNS stack above is IPv4-only; on a
+# dual-stack WAN, LAN clients would route IPv6 straight out the WAN — past
+# the tunnel (real-IP + DNS leak) and past the QUIC/DoT rejects. We do not
+# tunnel IPv6, so fail CLOSED: disable IPv6 on the LAN bridge while the VPN
+# is up, saving the prior value and restoring it on teardown. State lives in
+# /tmp so a power-yank can't strand IPv6 disabled. cmd_restart is soft and
+# keeps the switch in place across the process swap; only cmd_stop restores.
+_ipv6_killswitch_on() {
+    local ifc="$1"
+    local p="/proc/sys/net/ipv6/conf/$ifc/disable_ipv6"
+    [ -w "$p" ] || { logger -t flowvpn "WARN: $p not writable — IPv6 may leak around the tunnel"; return 0; }
+    if [ ! -f /tmp/flowvpn/ipv6_disable.iface ]; then
+        cat "$p" > /tmp/flowvpn/ipv6_disable.saved 2>/dev/null
+        echo "$ifc" > /tmp/flowvpn/ipv6_disable.iface 2>/dev/null
+    fi
+    echo 1 > "$p" 2>/dev/null
+    logger -t flowvpn "IPv6 kill-switch: disabled IPv6 on $ifc (fail closed; no v6 tunneling)"
+}
+_ipv6_killswitch_off() {
+    local f=/tmp/flowvpn/ipv6_disable.iface ifc p saved
+    [ -f "$f" ] || return 0
+    ifc=$(cat "$f" 2>/dev/null)
+    p="/proc/sys/net/ipv6/conf/$ifc/disable_ipv6"
+    saved=$(cat /tmp/flowvpn/ipv6_disable.saved 2>/dev/null)
+    [ -z "$saved" ] && saved=0
+    [ -w "$p" ] && echo "$saved" > "$p" 2>/dev/null
+    rm -f "$f" /tmp/flowvpn/ipv6_disable.saved
+    logger -t flowvpn "IPv6 kill-switch: restored IPv6 on ${ifc:-LAN}"
 }

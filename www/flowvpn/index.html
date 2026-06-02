@@ -2033,7 +2033,7 @@ async function fetchStatus(){
     document.getElementById('mode-all').classList.toggle('active',state.mode==='all_vpn');
     document.getElementById('mode-block').classList.toggle('active',state.mode==='blocklist');
     renderServers(state.servers,state.selected);
-    if(!state._onboardChecked){state._onboardChecked=true;maybeShowOnboard()}
+    if(!window._onboardChecked){window._onboardChecked=true;maybeShowOnboard()}
   }catch(e){}
 }
 
@@ -2055,9 +2055,19 @@ async function apiFetch(url,opts){
   // in their previous visual position after a successful action.
   const merged=Object.assign({cache:'no-store',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}},opts||{});
   if(opts&&opts.headers) merged.headers=Object.assign({},merged.headers,opts.headers);
-  const r=await fetch(url,merged);
-  if(!r.ok)throw new Error('HTTP '+r.status);
-  return r;
+  // Abort hung requests (20s) so a wedged router doesn't leave loading toasts
+  // and pending UI locks (e.g. _vpnPending) stuck forever — fetch otherwise
+  // waits indefinitely and the catch/finally never runs.
+  const _ac=new AbortController();
+  const _to=setTimeout(()=>_ac.abort(),20000);
+  if(!merged.signal)merged.signal=_ac.signal;
+  try{
+    const r=await fetch(url,merged);
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    return r;
+  }finally{
+    clearTimeout(_to);
+  }
 }
 
 let _vpnPending=false;
@@ -2267,8 +2277,11 @@ async function setMode(m){
   const card=document.getElementById(m==='all_vpn'?'mode-all':'mode-block');
   if(card){card.classList.add('applying');setTimeout(()=>card.classList.remove('applying'),900)}
   const tid=toast.loading('Применяем режим…');
-  try{await apiFetch(API+'?action=set-mode&mode='+m);updateToast(tid,'Режим: '+name,{type:'success'})}
-  catch(e){updateToast(tid,'Ошибка',{type:'error'})}
+  try{
+    const r=await apiFetch(API+'?action=set-mode&mode='+m);const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
+    else updateToast(tid,'Режим: '+name,{type:'success'});
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
   scheduleStatus(3000);
 }
 async function saveSubUrl(){
@@ -2310,8 +2323,15 @@ function _syncUpdateBtn(){
 }
 async function doRestart(){
   const tid=toast.loading('Перезапускаем EclipVPN…');
-  try{await apiFetch(API+'?action=restart');updateToast(tid,'EclipVPN перезапущен',{type:'success'})}
-  catch(e){updateToast(tid,'Ошибка',{type:'error'})}
+  try{
+    // force=1 bypasses the unchanged-config fast path in cmd_restart, so
+    // a manual click always physically restarts xray + sing-box.
+    const r=await apiFetch(API+'?action=restart&force=1');
+    const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
+    else if(d.status==='unchanged')updateToast(tid,'VPN уже работает',{type:'info'});
+    else updateToast(tid,'EclipVPN перезапущен',{type:'success'});
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
   scheduleStatus(3000);
 }
 async function doStop(){
