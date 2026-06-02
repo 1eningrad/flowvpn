@@ -1,5 +1,5 @@
 #!/bin/ash
-# FlowVPN — subscription & vless:// URL parser
+# EclipVPN — subscription & vless:// URL parser
 
 url_decode() {
     local data="$1"
@@ -24,24 +24,24 @@ fetch_subscription() {
 
     case "$url" in
         https://*|http://*) ;;
-        *) logger -t flowvpn "Subscription: rejecting URL with scheme other than http(s)"; return 1 ;;
+        *) logger -t eclipvpn "Subscription: rejecting URL with scheme other than http(s)"; return 1 ;;
     esac
 
     # --dump-header writes response headers to a sidecar file. We use those to
     # extract subscription metadata (title, quota, expiry, provider announce)
-    # and save it for the UI in /tmp/flowvpn/subscription_meta.json.
-    local hdr_file="/tmp/flowvpn/sub_headers.txt"
-    mkdir -p /tmp/flowvpn
+    # and save it for the UI in /tmp/eclipvpn/subscription_meta.json.
+    local hdr_file="/tmp/eclipvpn/sub_headers.txt"
+    mkdir -p /tmp/eclipvpn
     # umask 077 — both response body (vless:// URLs with UUIDs) and headers
     # (Subscription-Userinfo) are sensitive while we're writing them.
     umask 077
     local raw
     raw=$(curl -fsS --max-time 15 --proto '=http,https' \
         --dump-header "$hdr_file" "$url") || {
-        logger -t flowvpn "Subscription: fetch failed (HTTP >=400, network, or TLS error)"
+        logger -t eclipvpn "Subscription: fetch failed (HTTP >=400, network, or TLS error)"
         return 1
     }
-    [ -z "$raw" ] && { logger -t flowvpn "Subscription: empty response from server"; return 1; }
+    [ -z "$raw" ] && { logger -t eclipvpn "Subscription: empty response from server"; return 1; }
 
     # EclipVPN's bot hands users the user-facing landing URL
     # (eclip-sub.vercel.app/<token>) instead of the API endpoint
@@ -55,13 +55,13 @@ fetch_subscription() {
             if [ -n "$sub_path" ]; then
                 prefix=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+).*#\1#')
                 follow_url="${prefix}${sub_path}"
-                logger -t flowvpn "Subscription: landing page detected, following /api/sub/<redacted>"
+                logger -t eclipvpn "Subscription: landing page detected, following /api/sub/<redacted>"
                 raw=$(curl -fsS --max-time 15 --proto '=http,https' \
                     --dump-header "$hdr_file" "$follow_url") || {
-                    logger -t flowvpn "Subscription: follow-up fetch to api endpoint failed"
+                    logger -t eclipvpn "Subscription: follow-up fetch to api endpoint failed"
                     return 1
                 }
-                [ -z "$raw" ] && { logger -t flowvpn "Subscription: api endpoint returned empty body"; return 1; }
+                [ -z "$raw" ] && { logger -t eclipvpn "Subscription: api endpoint returned empty body"; return 1; }
             fi
             ;;
     esac
@@ -78,13 +78,13 @@ fetch_subscription() {
         printf '%s' "$raw" > "$out"
     fi
     chmod 600 "$out" 2>/dev/null
-    [ -s "$out" ] || { logger -t flowvpn "Subscription: decoded body is empty"; return 1; }
+    [ -s "$out" ] || { logger -t eclipvpn "Subscription: decoded body is empty"; return 1; }
 
     _parse_subscription_headers "$hdr_file"
 }
 
 # Parse Profile-Title / Subscription-Userinfo / Announce / Profile-Update-Interval
-# and write a single JSON to /tmp/flowvpn/subscription_meta.json that cmd_status
+# and write a single JSON to /tmp/eclipvpn/subscription_meta.json that cmd_status
 # surfaces and the UI shows on the Settings tab.
 _parse_subscription_headers() {
     local hdr_file="$1"
@@ -141,7 +141,7 @@ _parse_subscription_headers() {
             upload: $upload, download: $download, total: $total, expire: $expire,
             update_interval_hours: $update_interval,
             fetched_at: $fetched_at
-        }' > /tmp/flowvpn/subscription_meta.json )
+        }' > /tmp/eclipvpn/subscription_meta.json )
     rm -f "$hdr_file"
 }
 
@@ -256,7 +256,7 @@ parse_subscription_file() {
             *://*)
                 # Other proxy schemes (vmess://, ss://, trojan://) — count
                 # so we can warn the user that their subscription contains
-                # types FlowVPN doesn't speak.
+                # types EclipVPN doesn't speak.
                 unknown=$((unknown + 1))
                 ;;
         esac
@@ -271,15 +271,15 @@ parse_subscription_file() {
 
     if [ "$count" -eq 0 ]; then
         if [ "$total" -eq 0 ] && [ "$unknown" -eq 0 ]; then
-            logger -t flowvpn "Subscription: 0 servers parsed — expected base64-encoded list of vless:// URLs (one per line)"
+            logger -t eclipvpn "Subscription: 0 servers parsed — expected base64-encoded list of vless:// URLs (one per line)"
         elif [ "$unknown" -gt 0 ] && [ "$total" -eq 0 ]; then
-            logger -t flowvpn "Subscription: 0 vless:// servers, found $unknown other-protocol entries — FlowVPN supports only VLESS"
+            logger -t eclipvpn "Subscription: 0 vless:// servers, found $unknown other-protocol entries — EclipVPN supports only VLESS"
         else
-            logger -t flowvpn "Subscription: 0 valid servers ($rejected rejected as malformed)"
+            logger -t eclipvpn "Subscription: 0 valid servers ($rejected rejected as malformed)"
         fi
     else
-        [ "$rejected" -gt 0 ] && logger -t flowvpn "Subscription: $rejected of $total VLESS entries rejected (empty host / bogus port)"
-        [ "$unknown" -gt 0 ] && logger -t flowvpn "Subscription: skipped $unknown non-VLESS entries"
+        [ "$rejected" -gt 0 ] && logger -t eclipvpn "Subscription: $rejected of $total VLESS entries rejected (empty host / bogus port)"
+        [ "$unknown" -gt 0 ] && logger -t eclipvpn "Subscription: skipped $unknown non-VLESS entries"
     fi
 
     echo "$count"
@@ -287,14 +287,14 @@ parse_subscription_file() {
 
 update_subscription() {
     local config="$1"
-    local sub_url tmp_file="/tmp/flowvpn/sub_raw.txt"
+    local sub_url tmp_file="/tmp/eclipvpn/sub_raw.txt"
     sub_url=$(jq -r '.subscription_url' "$config")
     [ -z "$sub_url" ] || [ "$sub_url" = "null" ] && return 1
 
     # Defense in depth — trim here too in case set-config skipped trimming.
     sub_url=$(printf '%s' "$sub_url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 
-    mkdir -p /tmp/flowvpn
+    mkdir -p /tmp/eclipvpn
     fetch_subscription "$sub_url" "$tmp_file" || return 1
-    parse_subscription_file "$tmp_file" /tmp/flowvpn/servers.json
+    parse_subscription_file "$tmp_file" /tmp/eclipvpn/servers.json
 }

@@ -1638,7 +1638,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
 <script>
-const API='/cgi-bin/flowvpn';
+const API='/cgi-bin/eclipvpn';
 let state={},pings={},currentLogFilter='all',incidentStats={};
 
 const TOAST_ICONS={
@@ -1847,7 +1847,7 @@ function serverNameDisplay(name){
 }
 
 function isMeteredServer(name){
-  // Must match _is_metered_server() in /usr/bin/flowvpn
+  // Must match _is_metered_server() in /usr/bin/eclipvpn
   return /МТС|мтс|MTS|mts|Т2|т2|Tele2|tele2|\bБи\b|Билайн|билайн|Beeline|beeline|Мегафон|мегафон|Megafon|megafon/.test(name||'');
 }
 
@@ -1936,8 +1936,8 @@ async function loadIncidents(){
 // Persist across page reloads — otherwise an overnight watchdog switch is
 // missed: page opens, _lastSwitchSeen=null, code records `t` and skips the
 // toast, so the user sees a different server with no explanation.
-let _lastSwitchSeen=parseInt(localStorage.getItem('flowvpn.lastSwitchSeen'))||0;
-let _lastUpdateSeen=parseInt(localStorage.getItem('flowvpn.lastUpdateSeen'))||0;
+let _lastSwitchSeen=parseInt(localStorage.getItem('eclipvpn.lastSwitchSeen'))||0;
+let _lastUpdateSeen=parseInt(localStorage.getItem('eclipvpn.lastUpdateSeen'))||0;
 async function fetchStatus(){
   try{
     const r=await apiFetch(API+'?action=status');
@@ -1957,7 +1957,7 @@ async function fetchStatus(){
       const t=state.last_switch.time;
       if(t>_lastSwitchSeen){
         _lastSwitchSeen=t;
-        localStorage.setItem('flowvpn.lastSwitchSeen',t);
+        localStorage.setItem('eclipvpn.lastSwitchSeen',t);
         const from=state.last_switch.from||'—',to=state.last_switch.to||'—';
         // Sticky toast (duration:0) — easy to miss otherwise; user dismisses.
         toast({title:'Сервер был переключён '+fmtAgo(t),desc:from+' → '+to+' (watchdog, защита от обрыва)'},{type:'info',duration:0});
@@ -1970,7 +1970,7 @@ async function fetchStatus(){
       const t=state.last_update.time;
       if(t>_lastUpdateSeen){
         _lastUpdateSeen=t;
-        localStorage.setItem('flowvpn.lastUpdateSeen',t);
+        localStorage.setItem('eclipvpn.lastUpdateSeen',t);
         const cur=state.last_update.count||0,prev=state.last_update.prev_count||0;
         if(cur!==prev){
           const arrow=prev>0?(prev+' → '+cur):(cur+' серверов');
@@ -2200,8 +2200,8 @@ function _formatAttempts(attempts){
 // in-flight value (poll runs every 5s, this op can take 15s+).
 let _autoModePending=false;
 async function toggleAutoStart(enabled){
-  // Persists `auto_start` in /etc/flowvpn/config.json. Read by /etc/init.d/
-  // flowvpn at boot — if false, the service does not auto-start. Doesn't
+  // Persists `auto_start` in /etc/eclipvpn/config.json. Read by /etc/init.d/
+  // eclipvpn at boot — if false, the service does not auto-start. Doesn't
   // affect the currently-running VPN, only the next reboot.
   const t=document.getElementById('autoStartToggle');
   const s=document.getElementById('autoStartStatus');
@@ -2351,13 +2351,13 @@ function toggleCollapsible(id){
   el.classList.toggle('expanded',open);
   const head=el.querySelector('.card-head');
   if(head)head.setAttribute('aria-expanded',open?'true':'false');
-  try{localStorage.setItem('flowvpn.collapse.'+id,open?'1':'0')}catch(_){}
+  try{localStorage.setItem('eclipvpn.collapse.'+id,open?'1':'0')}catch(_){}
 }
 function restoreCollapsibles(){
   ['directCard','vpnCard'].forEach(id=>{
     const el=document.getElementById(id);
     if(!el)return;
-    const saved=localStorage.getItem('flowvpn.collapse.'+id);
+    const saved=localStorage.getItem('eclipvpn.collapse.'+id);
     if(saved==='1')el.classList.add('expanded');
     const head=el.querySelector('.card-head');
     if(head)head.setAttribute('aria-expanded',saved==='1'?'true':'false');
@@ -2925,7 +2925,7 @@ async function exportLog(){
     // Safari needs the link in the DOM and a deferred revoke; otherwise the
     // download may race with revoke and produce an empty file.
     const a=document.createElement('a'),u=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));
-    a.href=u;a.download='flowvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';
+    a.href=u;a.download='eclipvpn-log-'+new Date().toISOString().slice(0,10)+'.txt';
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(u),1000);
     toast.success('Журнал скачан');
@@ -3084,7 +3084,7 @@ async function loadSystemInfo(){
     const memCls=memPct>90?'err':memPct>70?'warn':'';
     const flashCls=flashPct>90?'err':flashPct>80?'warn':'';
     const rows=[
-      ['EclipVPN','v'+(d.flowvpn||'—')],
+      ['EclipVPN','v'+(d.eclipvpn||'—')],
       ['xray',d.xray||'—'],
       ['sing-box',d.singbox||'—'],
       ['Прошивка',d.openwrt||'—'],
@@ -3153,7 +3153,7 @@ async function downloadBackup(){
   try{
     const r=await apiFetch(API+'?action=backup');const d=await r.json();
     const a=document.createElement('a'),u=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}));
-    a.href=u;a.download='flowvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';
+    a.href=u;a.download='eclipvpn-backup-'+new Date().toISOString().slice(0,10)+'.json';
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(u),1000);
     toast.success('Бэкап скачан');
@@ -3197,20 +3197,20 @@ function applyTheme(pref){
   if(btn){btn.innerHTML='<svg class="icon"><use href="'+THEME_ICONS[pref]+'"/></svg>';btn.title='Тема: '+THEME_LABELS[pref]+' (клик: переключить)'}
 }
 function toggleTheme(){
-  const cur=localStorage.getItem('flowvpn-theme')||'auto';
+  const cur=localStorage.getItem('eclipvpn-theme')||'auto';
   const next=THEME_ORDER[(THEME_ORDER.indexOf(cur)+1)%THEME_ORDER.length];
-  localStorage.setItem('flowvpn-theme',next);
+  localStorage.setItem('eclipvpn-theme',next);
   applyTheme(next);
   toast.info('Тема: '+THEME_LABELS[next]);
 }
 (function(){
-  const saved=localStorage.getItem('flowvpn-theme');
+  const saved=localStorage.getItem('eclipvpn-theme');
   // Migrate legacy 'light'/'dark'/null → auto
-  if(saved!=='auto'&&saved!=='light'&&saved!=='dark')localStorage.setItem('flowvpn-theme','auto');
-  applyTheme(localStorage.getItem('flowvpn-theme')||'auto');
+  if(saved!=='auto'&&saved!=='light'&&saved!=='dark')localStorage.setItem('eclipvpn-theme','auto');
+  applyTheme(localStorage.getItem('eclipvpn-theme')||'auto');
   // React to system changes in auto mode
   try{window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{
-    if((localStorage.getItem('flowvpn-theme')||'auto')==='auto')applyTheme('auto');
+    if((localStorage.getItem('eclipvpn-theme')||'auto')==='auto')applyTheme('auto');
   });}catch(e){}
 })();
 
@@ -3307,7 +3307,7 @@ function _closeOnboard(){
 }
 function skipOnboard(){
   _closeOnboard();
-  localStorage.setItem('flowvpn-onboarded','1');
+  localStorage.setItem('eclipvpn-onboarded','1');
 }
 function setOnboardStep(n){
   document.querySelectorAll('.onboard-pane').forEach(p=>p.classList.remove('active'));
@@ -3341,14 +3341,14 @@ async function onboardNext1(){
   }
 }
 function finishOnboard(){
-  localStorage.setItem('flowvpn-onboarded','1');
+  localStorage.setItem('eclipvpn-onboarded','1');
   _closeOnboard();
   toast.success('EclipVPN готов к работе','Нажмите переключатель, чтобы подключиться');
 }
 function maybeShowOnboard(){
-  if(localStorage.getItem('flowvpn-onboarded')==='1')return;
+  if(localStorage.getItem('eclipvpn-onboarded')==='1')return;
   if(!state||!state.subscription_url)showOnboard();
-  else localStorage.setItem('flowvpn-onboarded','1');
+  else localStorage.setItem('eclipvpn-onboarded','1');
 }
 
 // Keyboard shortcuts: 1..5 tabs, / search focus, Esc clear filter/close.

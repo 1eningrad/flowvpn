@@ -1,12 +1,12 @@
 #!/bin/ash
-# FlowVPN v3 — sing-box config generator
+# EclipVPN v3 — sing-box config generator
 # Mode "all_vpn": everything through VPN, RU domains direct
 # Mode "blocklist": only blocked domains through VPN (Shadowrocket lists)
 
-SR_RULES_DIR="/tmp/flowvpn/rules"
-RULESET_DIR="/etc/flowvpn/rules"
-CUSTOM_DIRECT="/etc/flowvpn/direct_domains.txt"
-CUSTOM_VPN="/etc/flowvpn/vpn_domains.txt"
+SR_RULES_DIR="/tmp/eclipvpn/rules"
+RULESET_DIR="/etc/eclipvpn/rules"
+CUSTOM_DIRECT="/etc/eclipvpn/direct_domains.txt"
+CUSTOM_VPN="/etc/eclipvpn/vpn_domains.txt"
 
 GEOSITE_RU_URL="https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs"
 GEOIP_RU_URL="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs"
@@ -37,7 +37,7 @@ fetch_rules() {
     _fetch_rule_sets
 }
 
-# Persist sing-box .srs rule sets to /etc/flowvpn/rules/ so sing-box loads
+# Persist sing-box .srs rule sets to /etc/eclipvpn/rules/ so sing-box loads
 # them as type=local and never blocks startup on raw.githubusercontent.com.
 # That host is reachable from RU only sporadically (~50% per attempt against
 # round-robin IPs), and sing-box's startup fetch hits a hard timeout long
@@ -402,7 +402,7 @@ VPNEOF
     # config (e.g. an old preset removed in code) silently skip — the
     # _preset_domains helper returns 1 with no output.
     local enabled
-    enabled=$(jq -r '.enabled_presets // [] | .[]' "$FLOWVPN_CONFIG" 2>/dev/null)
+    enabled=$(jq -r '.enabled_presets // [] | .[]' "$ECLIPVPN_CONFIG" 2>/dev/null)
     for p in $enabled; do
         if _preset_domains "$p" > /tmp/.preset.$$ 2>/dev/null; then
             echo "# preset: $p" >> "$SR_RULES_DIR/vpn_domains.list"
@@ -617,7 +617,7 @@ generate_singbox_config() {
     '{
         log: {level: "info", timestamp: true},
         experimental: {
-            cache_file: {enabled: true, path: "/tmp/flowvpn/cache.db"},
+            cache_file: {enabled: true, path: "/tmp/eclipvpn/cache.db"},
             clash_api: {external_controller: "127.0.0.1:9090", secret: $clash_secret}
         },
         dns: {
@@ -649,9 +649,9 @@ generate_singbox_config() {
             rules: $rules,
             rule_set: [
                 {type: "local", tag: "geosite-ru", format: "binary",
-                 path: "/etc/flowvpn/rules/geosite-category-ru.srs"},
+                 path: "/etc/eclipvpn/rules/geosite-category-ru.srs"},
                 {type: "local", tag: "geoip-ru", format: "binary",
-                 path: "/etc/flowvpn/rules/ru.srs"}
+                 path: "/etc/eclipvpn/rules/ru.srs"}
             ],
             final: $final_outbound,
             auto_detect_interface: true
@@ -793,7 +793,7 @@ _build_blocklist_rules() {
 start_singbox() {
     local config_file="$1"
     if [ ! -x /usr/bin/sing-box ]; then
-        logger -t flowvpn "ERROR: /usr/bin/sing-box not found or not executable"
+        logger -t eclipvpn "ERROR: /usr/bin/sing-box not found or not executable"
         return 1
     fi
     # Clear only the per-connection-ID map: sing-box assigns fresh IDs on each
@@ -801,7 +801,7 @@ start_singbox() {
     # and dir_dl/ul totals — otherwise every restart (auto-update, set-server,
     # watchdog failover) wipes the user's running counter. Totals survive
     # tmpfs rebuilds only across restarts of sing-box, not router reboots.
-    local _ts=/tmp/flowvpn/traffic_state.json
+    local _ts=/tmp/eclipvpn/traffic_state.json
     if [ -f "$_ts" ]; then
         jq '.seen = {}' "$_ts" > "$_ts.tmp" 2>/dev/null && mv "$_ts.tmp" "$_ts" || rm -f "$_ts" "$_ts.tmp"
     fi
@@ -809,39 +809,39 @@ start_singbox() {
     # write position keeps moving forward. Without O_APPEND, post-rotate writes
     # land at the old offset and the kernel fills the gap with NUL bytes —
     # the log balloons to tens of MB while only a few KB are real data.
-    TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/flowvpn >>/tmp/flowvpn/singbox.log 2>>/tmp/flowvpn/singbox.log &
-    echo $! > /tmp/flowvpn/singbox.pid
+    TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/eclipvpn >>/tmp/eclipvpn/singbox.log 2>>/tmp/eclipvpn/singbox.log &
+    echo $! > /tmp/eclipvpn/singbox.pid
     local tries=0
     while [ "$tries" -lt 10 ]; do
         sleep 1; tries=$((tries + 1))
-        kill -0 "$(cat /tmp/flowvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/flowvpn/singbox.pid; return 1; }
+        kill -0 "$(cat /tmp/eclipvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/eclipvpn/singbox.pid; return 1; }
         netstat -tlnp 2>/dev/null | grep -q ":2154" && return 0
     done
     # Process alive but tproxy port never bound. Caller (cmd_start) would
     # otherwise apply nftables rules redirecting LAN traffic to an unbound
     # port — total internet outage on the LAN until manual intervention.
-    logger -t flowvpn "ERROR: sing-box started but tproxy port :2154 never opened"
+    logger -t eclipvpn "ERROR: sing-box started but tproxy port :2154 never opened"
     return 1
 }
 
 stop_singbox() {
     local pid=""
-    [ -f /tmp/flowvpn/singbox.pid ] && pid=$(cat /tmp/flowvpn/singbox.pid)
+    [ -f /tmp/eclipvpn/singbox.pid ] && pid=$(cat /tmp/eclipvpn/singbox.pid)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null
     sleep 1
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
     # Same orphan-sweep as stop_xray — see comment there.
-    for orphan in $(pgrep -f 'sing-box run -c /tmp/flowvpn/singbox.json' 2>/dev/null); do
+    for orphan in $(pgrep -f 'sing-box run -c /tmp/eclipvpn/singbox.json' 2>/dev/null); do
         [ "$orphan" = "$pid" ] && continue
         kill -9 "$orphan" 2>/dev/null
     done
-    rm -f /tmp/flowvpn/singbox.pid
+    rm -f /tmp/eclipvpn/singbox.pid
 }
 
 is_singbox_running() {
-    if [ -f /tmp/flowvpn/singbox.pid ]; then
-        local pid=$(cat /tmp/flowvpn/singbox.pid 2>/dev/null)
+    if [ -f /tmp/eclipvpn/singbox.pid ]; then
+        local pid=$(cat /tmp/eclipvpn/singbox.pid 2>/dev/null)
         [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
     fi
-    pgrep -f 'sing-box run -c /tmp/flowvpn/singbox.json' >/dev/null 2>&1
+    pgrep -f 'sing-box run -c /tmp/eclipvpn/singbox.json' >/dev/null 2>&1
 }
