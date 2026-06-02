@@ -60,7 +60,7 @@ body{
 }
 html,body{max-width:100vw}
 /* Numbers: tabular-nums stabilizes width when values change (speed, ping, uptime) */
-.speed-value,.stat-num,.mini-stat-val,.metric-value,.server-ping,
+.num,.speed-value,.stat-num,.mini-stat-val,.metric-value,.server-ping,
 .device-meta,.log-time,.header-info b,.status-text .meta b,
 .log-count-badge,.log-dup-count,.dev-group-count{
   font-variant-numeric:tabular-nums;
@@ -1471,12 +1471,11 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
       <div class="section" id="sec-settings">
         <div class="card">
           <div class="card-title">Подписка</div>
-          <p class="card-desc">Ссылка на список VPN-серверов от вашего провайдера</p>
+          <p class="card-desc">Вставьте ссылку на список VPN-серверов от провайдера и нажмите «Добавить»</p>
           <div class="flex">
-            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://…" aria-label="URL подписки на серверы" oninput="_syncUpdateBtn()">
-            <button class="btn btn-primary btn-sm" onclick="saveSubUrl()">Сохранить</button>
+            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://…" aria-label="URL подписки на серверы" onkeydown="if(event.key==='Enter')addSubscription()">
+            <button class="btn btn-primary btn-sm" onclick="addSubscription()">Добавить</button>
           </div>
-          <button class="btn btn-secondary mt" style="width:100%" onclick="doUpdate()" id="updateBtn">Обновить список серверов</button>
           <div id="subMetaCard" style="display:none;margin-top:12px"></div>
         </div>
         <div class="card">
@@ -1687,7 +1686,23 @@ toast.success=(m,d)=>toast(d?{title:m,desc:d}:m,'success');
 toast.error=(m,d)=>toast(d?{title:m,desc:d}:m,'error');
 toast.info=(m,d)=>toast(d?{title:m,desc:d}:m,'info');
 toast.loading=(m)=>toast(m,{type:'loading',duration:0});
-function fmtUp(s){if(!s||s<=0)return'—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+' ч '+m+' мин';if(m>0)return m+' мин';return s+' сек'}
+function fmtUp(s){if(!s||s<=0)return'—';s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60);if(d>0)return d+' дн '+h+' ч';if(h>0)return h+' ч '+m+' мин';if(m>0)return m+' мин';return s+' сек'}
+function _pad(n){return(n<10?'0':'')+n}
+// Stopwatch format for the live session timer — always shows seconds so it
+// visibly ticks every second: "5:07" → "1:23:45" → "2д 3:04:09".
+function fmtUpLive(s){if(!s||s<=0)return'—';s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60),sec=s%60;if(d>0)return d+'д '+h+':'+_pad(m)+':'+_pad(sec);if(h>0)return h+':'+_pad(m)+':'+_pad(sec);return m+':'+_pad(sec)}
+// Live uptime ticker: between status polls, count up locally from the last
+// fetched value so the session timer advances every second instead of
+// jumping on each poll. _uptimeBase is refreshed in fetchStatus.
+let _uptimeBase=null;
+function _tickUptime(){
+  if(!_uptimeBase)return;
+  const cur=_uptimeBase.sec+Math.floor((Date.now()-_uptimeBase.at)/1000);
+  const t=fmtUpLive(cur);
+  const a=document.getElementById('uptimeLive');if(a&&a.textContent!==t)a.textContent=t;
+  const b=document.getElementById('uptimeLive2');if(b&&b.textContent!==t)b.textContent=t;
+}
+setInterval(_tickUptime,1000);
 // Human-readable "X ago" for unix timestamps. Used in watchdog toast so
 // the user knows whether the announcement is from 5 min ago or last night.
 function fmtAgo(ts){
@@ -1711,19 +1726,26 @@ function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)ret
 function renderSubscriptionMeta(meta){
   const card=document.getElementById('subMetaCard');
   if(!card)return;
-  if(!meta||!meta.fetched_at){card.style.display='none';return}
+  // Show the card whenever a subscription exists — even before the first
+  // metadata fetch — so the manual «Обновить» button is always reachable.
+  if(!state||!state.subscription_url){card.style.display='none';return}
   card.style.display='block';
+  const m=meta||{};
   const NOW=Math.floor(Date.now()/1000);
   // Heuristic for "fake-infinite" total/expire that providers use for
   // unlimited tariffs (1PB total, year-2055 expire, etc.).
-  const total=+meta.total||0, used=(+meta.upload||0)+(+meta.download||0);
+  const total=+m.total||0, used=(+m.upload||0)+(+m.download||0);
   const totalUnlimited = total > 1099511627776 * 100;  // > 100 TB → unlimited
-  const expire=+meta.expire||0;
+  const expire=+m.expire||0;
   const expireUnlimited = expire > NOW + 86400*3650; // > 10 years away → unlimited
   const expireLeft = expire - NOW;
-  let html='';
-  if(meta.title){
-    html+='<div style="font-size:14px;font-weight:600;margin-bottom:6px">'+esc(meta.title)+'</div>';
+  // Header: subscription title (left) + manual refresh button (right)
+  let html='<div class="flex" style="align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">'
+    +'<div style="font-size:14px;font-weight:600">'+esc(m.title||'Подписка добавлена')+'</div>'
+    +'<button class="btn btn-ghost btn-sm" id="updateBtn" onclick="doUpdate()">Обновить</button></div>';
+  if(!m.fetched_at){
+    html+='<div style="font-size:12px;color:var(--text-muted)">'+((state.servers&&state.servers.length)?('Серверов в списке: '+state.servers.length):'Список серверов ещё не загружен — нажмите «Обновить»')+'</div>';
+    card.innerHTML=html;return;
   }
   // Quota line
   if(totalUnlimited){
@@ -1950,6 +1972,7 @@ async function fetchStatus(){
       fresh.selected=state.selected;
     }
     state=fresh;
+    _uptimeBase = state.running ? {sec:(+state.uptime||0), at:Date.now()} : null;
     // Detect watchdog failover: if last_switch.time is newer than what we've
     // seen, show a toast. Persisted via localStorage so an overnight switch
     // is announced when the user opens the UI in the morning.
@@ -2012,7 +2035,7 @@ async function fetchStatus(){
       document.getElementById('statusMeta').innerHTML=
         `<span><b>${serverNameDisplay(state.server||'—')}</b></span>`+
         `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
-        `<span title="С момента последнего запуска или переключения сервера">${fmtUp(state.uptime)}</span>`+
+        `<span id="uptimeLive" class="num" title="С момента последнего запуска или переключения сервера">${fmtUpLive(state.uptime)}</span>`+
         `<span>${modeText}</span>`;
       const hi=document.getElementById('headerInfo');
       hi.className='header-info on';
@@ -2028,8 +2051,8 @@ async function fetchStatus(){
       document.getElementById('vpnMiniToggle').checked=false;
     }
 
-    document.getElementById('subUrl').value=state.subscription_url||'';
-    _syncUpdateBtn();
+    // #subUrl stays empty — it's an "add subscription" field. The active
+    // subscription is shown in the meta card below (with its own «Обновить»).
     document.getElementById('mode-all').classList.toggle('active',state.mode==='all_vpn');
     document.getElementById('mode-block').classList.toggle('active',state.mode==='blocklist');
     renderServers(state.servers,state.selected);
@@ -2284,30 +2307,37 @@ async function setMode(m){
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
   scheduleStatus(3000);
 }
-async function saveSubUrl(){
-  const u=document.getElementById('subUrl').value.trim();
-  if(!u){toast.error('Введите ссылку');return}
-  const tid=toast.loading('Сохраняем подписку…');
-  try{await apiFetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(u));updateToast(tid,'Подписка сохранена',{type:'success'})}
-  catch(e){updateToast(tid,'Ошибка сохранения',{type:'error'})}
+async function addSubscription(){
+  const inp=document.getElementById('subUrl');
+  const u=inp.value.trim();
+  if(!u){_showInputError(inp,'Вставьте ссылку на подписку');inp.focus();return}
+  if(!/^https?:\/\//i.test(u)){_showInputError(inp,'Ссылка должна начинаться с http:// или https://');inp.focus();return}
+  const tid=toast.loading('Добавляем подписку, загружаем серверы…');
+  try{
+    await apiFetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(u));
+    const r=await apiFetch(API+'?action=update');const d=await r.json();
+    if(d.error){updateToast(tid,'Не удалось загрузить серверы',{type:'error',desc:d.error});}
+    else{
+      updateToast(tid,'Подписка добавлена',{type:'success',desc:'Серверов: '+d.servers});
+      inp.value='';  // clear the field — active subscription is shown below
+      // Servers should refresh themselves — enable auto-update by default.
+      apiFetch(API+'?action=auto-update&mode=enable').catch(()=>{});
+    }
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
+  scheduleStatus(800);
 }
 async function doUpdate(){
-  // Sanity check before the round-trip — empty subscription means the
-  // backend will return an error anyway, but the user gets immediate
-  // inline feedback (highlighted field) instead of a generic toast.
-  const subInp=document.getElementById('subUrl');
-  if(!subInp.value.trim()){
-    _showInputError(subInp,'Сначала вставьте ссылку на подписку и нажмите «Сохранить»');
-    subInp.focus();return;
-  }
-  const b=document.getElementById('updateBtn');b.disabled=true;b.textContent='Обновляем…';
+  // Manual refresh of the server list. Uses the stored subscription, not the
+  // (now empty) add-field, so it works any time a subscription exists.
+  if(!state||!state.subscription_url){toast.error('Сначала добавьте подписку');return}
+  const b=document.getElementById('updateBtn');if(b){b.disabled=true;b.textContent='Обновляем…';}
   const tid=toast.loading('Обновляем список серверов…');
   try{
     const r=await apiFetch(API+'?action=update');const d=await r.json();
     if(d.error)updateToast(tid,'Ошибка обновления',{type:'error',desc:d.error});
     else updateToast(tid,'Список обновлён',{type:'success',desc:'Найдено серверов: '+d.servers});
   }catch(e){updateToast(tid,'Ошибка',{type:'error'})}
-  b.disabled=false;b.textContent='Обновить список серверов';
+  if(b){b.disabled=false;b.textContent='Обновить';}
   scheduleStatus(2000);
 }
 // Disable Update button when subscription URL is empty so user sees
@@ -2947,7 +2977,7 @@ function loadQuickDiag(){
   const serverMetric={cls:on?pingCls||'info':'',icon:'#i-globe',label:'Сервер',valueHtml:serverNameDisplay(serverName),sub:'RTT: '+pingTxt};
   const ipMetric={cls:on?'info':'',icon:'#i-link',label:'Видимый IP',value:state.vpn_ip||'—',sub:on?'Так вас видят сайты':'Нет подключения',mono:true};
   const uptime=state.uptime||0;
-  const uptimeMetric={cls:on?'ok':'',icon:'#i-gear',label:'VPN-сессия',value:on?fmtUp(uptime):'—',sub:on?'С последнего рестарта':'Не запущено'};
+  const uptimeMetric={cls:on?'ok':'',icon:'#i-gear',label:'VPN-сессия',valueHtml:on?('<span id="uptimeLive2">'+esc(fmtUpLive(uptime))+'</span>'):'—',sub:on?'С последнего рестарта':'Не запущено'};
   const build=(m)=>`<div class="metric ${m.cls}"><div class="metric-icon"><svg><use href="${m.icon}"/></svg></div><div class="metric-body"><div class="metric-label">${m.label}</div><div class="metric-value${m.mono?' mono':''}">${m.valueHtml||esc(m.value)}</div><div class="metric-sub">${esc(m.sub)}</div></div></div>`;
   grid.innerHTML=[statusMetric,serverMetric,ipMetric,uptimeMetric].map(build).join('');
 }
