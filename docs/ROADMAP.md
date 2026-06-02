@@ -1,8 +1,8 @@
-# FlowVPN — план развития
+# EclipVPN — план развития
 
 Идеи на будущее, выписанные после анализа конкурентов (ZeroBlock, Passwall, OpenClash, v2raya, homeproxy, xkeen). Не план в строгом смысле — список того, что есть смысл взять, отсортированный по соотношению "польза / сложность".
 
-Принцип отбора: брать только то, что вписывается в позиционирование FlowVPN — минимализм + современный stack (xray + sing-box, только VLESS+Reality). Не превращать в очередной Passwall.
+Принцип отбора: брать только то, что вписывается в позиционирование EclipVPN — минимализм + современный stack (xray + sing-box, только VLESS+Reality). Не превращать в очередной Passwall.
 
 ---
 
@@ -26,7 +26,7 @@
 **Откуда:** Passwall, v2raya
 **Что:** скачать тестовый файл (например `https://speed.cloudflare.com/__down?bytes=10000000`) через каждый сервер, показать MB/s.
 **Польза:** ping 30мс ≠ хорошая скорость. Сербия может пинговаться лучше Финляндии но качать в 3 раза медленнее.
-**Где трогать:** новая команда `flowvpn speedtest` (запускает probe xray на уникальном порту, как watchdog), curl с замером времени и размера. Прогресс-бар в UI.
+**Где трогать:** новая команда `eclipvpn speedtest` (запускает probe xray на уникальном порту, как watchdog), curl с замером времени и размера. Прогресс-бар в UI.
 **Оценка:** ~100 строк, 2 часа.
 
 ### 4. DNS leak test
@@ -40,7 +40,7 @@
 **Откуда:** ZeroBlock
 **Что:** уведомление "Подписка обновлена: 7→8 серверов" при cron-обновлении.
 **Польза:** видно когда добавились/пропали серверы, не неожиданно.
-**Где трогать:** `update_subscription` пишет diff в `/tmp/flowvpn/last_update.json`, фронт читает и показывает toast если изменилось с прошлой проверки.
+**Где трогать:** `update_subscription` пишет diff в `/tmp/eclipvpn/last_update.json`, фронт читает и показывает toast если изменилось с прошлой проверки.
 **Оценка:** ~30 строк, 30 минут.
 
 ### 6. Punycode/IDN для доменов
@@ -57,7 +57,7 @@
 ### 7. Auto-restart при смене WAN
 **Откуда:** ZeroBlock "Interface Monitoring"
 **Что:** при отключении/смене WAN — soft restart VPN автоматически. Решает сценарий "ноутбук переключился с Ethernet на Wi-Fi".
-**Где:** hotplug script в `/etc/hotplug.d/iface/99-flowvpn`.
+**Где:** hotplug script в `/etc/hotplug.d/iface/99-eclipvpn`.
 **Оценка:** ~30 строк.
 
 ### 8. Toggle QUIC blocking
@@ -160,7 +160,7 @@ sing-box config:
 - **LuCI integration** (Passwall, homeproxy подход) — наш standalone UI лучше, проще, симпатичнее
 - **Multi-protocol зоопарк** (SSR, vmess, ss, hysteria1) — старые, не нужны, ломают минимализм
 - **Mihomo / Clash как альтернативное ядро** — у нас xray+sing-box stack
-- **GUI-редактор конфигов внутри UI** — power-users правят `/etc/flowvpn/config.json` напрямую через ssh
+- **GUI-редактор конфигов внутри UI** — power-users правят `/etc/eclipvpn/config.json` напрямую через ssh
 - **Telegram-бот для уведомлений** — оверкилл для одного роутера
 
 ### iplist.opencck.org как источник direct-списков
@@ -173,7 +173,7 @@ sing-box config:
 1. **Cloudflare cross-pollination — критично.** Их `cidr4` содержит вещи типа `1.0.0.1/32` (это Cloudflare DNS, мы его юзаем для `dns-direct`) и `104.18.30.74/32` (CDN-пул). Маркируя такой IP как direct «потому что какой-то РФ-сайт оттуда обслуживается», мы автоматически отправляем direct'ом и YouTube, и ChatGPT, и любой другой сервис на том же шарде Cloudflare → блокируется.
 2. **Мусор:** в списке встречается `100.99.0.0/16` — это CGNAT, не маршрутизируемая сеть, в роутинге смысла нет.
 3. **Дублирование:** их 1293 CIDR — почти все уже внутри `geoip-ru` (RIPE NCC RU allocation). 19k доменов — большинство в `geosite-category-ru`. Marginal benefit, real risks.
-4. **Слабые места `geosite/geoip-ru`** легко обходятся через Custom Direct в UI — точечно, безопасно, на 30 секунд: `flowvpn add-domain X direct` для конкретного непокрытого сервиса.
+4. **Слабые места `geosite/geoip-ru`** легко обходятся через Custom Direct в UI — точечно, безопасно, на 30 секунд: `eclipvpn add-domain X direct` для конкретного непокрытого сервиса.
 
 **Когда могло бы быть уместно:** если SagerNet/MetaCubeX заморозят свои rule_set'ы; для соседних стран (BY/KZ); для пресетов «только банки direct» как фичи UI (но мы такого не делаем).
 

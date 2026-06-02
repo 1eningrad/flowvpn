@@ -6,7 +6,7 @@
 
 ![EclipVPN UI](screenshots/dark.png)
 
-> **Имя**: продукт для пользователя называется **EclipVPN** (бренд, UI, URL `/eclipvpn/`). Внутренние пути и команды CLI остались `flowvpn` исторически — миграция backend ничего полезного не даёт, только риск что-то сломать.
+> **Имя**: продукт для пользователя называется **EclipVPN** (бренд, UI, URL `/eclipvpn/`). Внутренние пути и команды CLI остались `eclipvpn` исторически — миграция backend ничего полезного не даёт, только риск что-то сломать.
 
 ## Возможности
 
@@ -49,7 +49,7 @@ REPO_TOKEN=ghp_xxxxx sh -c "$(curl -sSL \
   https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh)"
 ```
 
-Установщик ставит зависимости, скачивает xray под архитектуру, кладёт скрипты и UI в правильные пути, создаёт redirect со старого `/flowvpn/` на `/eclipvpn/`.
+Установщик ставит зависимости, скачивает xray под архитектуру, кладёт скрипты и UI в правильные пути, создаёт redirect со старого `/eclipvpn/` на `/eclipvpn/`.
 
 ## Ручная установка
 
@@ -62,27 +62,27 @@ opkg install jq coreutils-base64 kmod-nft-tproxy sing-box unzip
 # Скачать с https://github.com/XTLS/Xray-core/releases, положить в /usr/bin/xray, chmod +x
 
 # 3. Скопировать файлы
-# usr/bin/flowvpn           → /usr/bin/flowvpn
-# usr/lib/flowvpn/*.sh      → /usr/lib/flowvpn/
-# www/cgi-bin/flowvpn       → /www/cgi-bin/flowvpn
-# www/flowvpn/index.html    → /www/eclipvpn/index.html  (новый путь)
-# etc/init.d/flowvpn        → /etc/init.d/flowvpn
+# usr/bin/eclipvpn           → /usr/bin/eclipvpn
+# usr/lib/eclipvpn/*.sh      → /usr/lib/eclipvpn/
+# www/cgi-bin/eclipvpn       → /www/cgi-bin/eclipvpn
+# www/eclipvpn/index.html    → /www/eclipvpn/index.html  (новый путь)
+# etc/init.d/eclipvpn        → /etc/init.d/eclipvpn
 
 # 4. Права
-chmod +x /usr/bin/flowvpn /www/cgi-bin/flowvpn /etc/init.d/flowvpn /usr/lib/flowvpn/*.sh
+chmod +x /usr/bin/eclipvpn /www/cgi-bin/eclipvpn /etc/init.d/eclipvpn /usr/lib/eclipvpn/*.sh
 
 # 5. Настройка
-flowvpn set-config subscription_url "https://your-subscription-url"
-flowvpn update
-flowvpn start
+eclipvpn set-config subscription_url "https://your-subscription-url"
+eclipvpn update
+eclipvpn start
 
 # 6. Автозапуск
-/etc/init.d/flowvpn enable
+/etc/init.d/eclipvpn enable
 ```
 
 ## Веб-интерфейс
 
-Откройте `http://router-ip/eclipvpn/`. Старая ссылка `/flowvpn/` отдаёт meta-refresh redirect.
+Откройте `http://router-ip/eclipvpn/`. Старая ссылка `/eclipvpn/` отдаёт meta-refresh redirect.
 
 ### Вкладки
 
@@ -97,21 +97,21 @@ flowvpn start
 ## Команды CLI
 
 ```bash
-flowvpn start | stop | restart | status
-flowvpn set-server N                # Выбрать сервер по индексу
-flowvpn set-mode all_vpn|blocklist  # Режим маршрутизации
-flowvpn update                      # Обновить подписку и правила
-flowvpn ping                        # Пинг всех серверов (TCP, retry, ICMP fallback)
-flowvpn real-ping                   # Реальная задержка через VLESS+Reality (для отладки)
-flowvpn diagnose                    # Быстрая диагностика
-flowvpn healthcheck                 # Полная проверка (статус, DNS, утечки)
-flowvpn add-domain DOMAIN vpn       # Принудительно через VPN
-flowvpn add-domain DOMAIN direct    # Принудительно напрямую
-flowvpn get-log 50 all              # Просмотр логов
-flowvpn get-incidents               # История сбоев со статистикой по серверам
-flowvpn clear-incidents             # Очистить историю сбоев
-flowvpn reset-traffic               # Обнулить счётчики «Через VPN» / «Напрямую»
-flowvpn backup                      # Экспорт настроек
+eclipvpn start | stop | restart | status
+eclipvpn set-server N                # Выбрать сервер по индексу
+eclipvpn set-mode all_vpn|blocklist  # Режим маршрутизации
+eclipvpn update                      # Обновить подписку и правила
+eclipvpn ping                        # Пинг всех серверов (TCP, retry, ICMP fallback)
+eclipvpn real-ping                   # Реальная задержка через VLESS+Reality (для отладки)
+eclipvpn diagnose                    # Быстрая диагностика
+eclipvpn healthcheck                 # Полная проверка (статус, DNS, утечки)
+eclipvpn add-domain DOMAIN vpn       # Принудительно через VPN
+eclipvpn add-domain DOMAIN direct    # Принудительно напрямую
+eclipvpn get-log 50 all              # Просмотр логов
+eclipvpn get-incidents               # История сбоев со статистикой по серверам
+eclipvpn clear-incidents             # Очистить историю сбоев
+eclipvpn reset-traffic               # Обнулить счётчики «Через VPN» / «Напрямую»
+eclipvpn backup                      # Экспорт настроек
 ```
 
 ## Архитектура
@@ -179,7 +179,7 @@ sleep 4 && tailscale status   # покажет URL вида https://rc.routerich
 
 ```bash
 # С исходников (одна команда):
-cd ~/flowvpn && ./deploy.sh                  # default root@192.168.1.1
+cd ~/eclipvpn && ./deploy.sh                  # default root@192.168.1.1
 ROUTER=root@10.0.0.1 ./deploy.sh             # другой роутер
 # deploy.sh делает: git pull → tar-pipe всех скриптов/CGI/UI →
 # ash -n syntax-check → init.d stop → wipe stale rules + watchdog
@@ -188,7 +188,7 @@ ROUTER=root@10.0.0.1 ./deploy.sh             # другой роутер
 # Hard reload UI в браузере: Cmd+Shift+R / Ctrl+Shift+R
 ```
 
-При первом запуске создаётся `/etc/flowvpn/clash_secret` (32 hex, chmod 600) — токен Clash API. UI получает его через `/status`, ничего вручную не настраивается.
+При первом запуске создаётся `/etc/eclipvpn/clash_secret` (32 hex, chmod 600) — токен Clash API. UI получает его через `/status`, ничего вручную не настраивается.
 
 ## Перенос на второй роутер
 
@@ -197,7 +197,7 @@ ROUTER=root@10.0.0.1 ./deploy.sh             # другой роутер
 ### 1. На текущем роутере — бэкап
 
 ```bash
-ssh root@192.168.1.1 'flowvpn backup' > ~/eclip-config.json
+ssh root@192.168.1.1 'eclipvpn backup' > ~/eclip-config.json
 ```
 
 (или в UI: Настройки → «Экспорт настроек» → скачается тот же JSON.)
@@ -208,10 +208,10 @@ ssh root@192.168.1.1 'flowvpn backup' > ~/eclip-config.json
 
 ```bash
 # фабричный роутер (после reset, IP 192.168.1.1):
-ROUTER=root@192.168.1.1 sh ~/flowvpn/install-from-mac.sh
+ROUTER=root@192.168.1.1 sh ~/eclipvpn/install-from-mac.sh
 
 # уже переехавший на свой LAN-IP:
-sh ~/flowvpn/install-from-mac.sh   # default: root@192.168.2.1
+sh ~/eclipvpn/install-from-mac.sh   # default: root@192.168.2.1
 ```
 
 Скрипт делает ровно то же что `install.sh` — opkg deps + xray 26.4.17 + Tailscale (RemoteRouteRich) + автозапуск — но файлы EclipVPN заливает из локальной копии репозитория. Подходит когда нет токена либо новый роутер не имеет внешнего интернета (например, через переходник USB-C → Ethernet напрямую к Mac, без выхода в WAN на этом этапе).
@@ -243,7 +243,7 @@ WITH_REMOTE=1 sh -c "$(curl -sSL https://raw.githubusercontent.com/1eningrad/flo
 
 ```bash
 scp ~/eclip-config.json root@<new-router-ip>:/tmp/
-ssh root@<new-router-ip> 'flowvpn restore < /tmp/eclip-config.json'
+ssh root@<new-router-ip> 'eclipvpn restore < /tmp/eclip-config.json'
 ```
 
 Или через UI: Настройки → «Восстановить из файла» → выбрать `eclip-config.json`.
@@ -251,7 +251,7 @@ ssh root@<new-router-ip> 'flowvpn restore < /tmp/eclip-config.json'
 ### 5. Автозапуск
 
 ```bash
-ssh root@<new-router-ip> '/etc/init.d/flowvpn enable'
+ssh root@<new-router-ip> '/etc/init.d/eclipvpn enable'
 ```
 
 ### Проверка
@@ -261,23 +261,23 @@ ssh root@<new-router-ip> '/etc/init.d/flowvpn enable'
 ### Что НЕ переносится бэкапом
 
 - `clash_secret` — пересоздаётся автоматически при первом запуске.
-- `/tmp/flowvpn/*` (servers.json, traffic_state.json, incidents.json) — нормально, это runtime-state, восстанавливается из подписки и обнуляется по факту.
+- `/tmp/eclipvpn/*` (servers.json, traffic_state.json, incidents.json) — нормально, это runtime-state, восстанавливается из подписки и обнуляется по факту.
 - Tailscale-сертификат tailnet — он на устройство, не на конфиг EclipVPN.
 
 ## Решение проблем
 
 1. **Сайт не открывается** → Журнал → фильтр «DNS» (резолвится ли) и «Direct/VPN» (куда идёт)
-2. **Приложение пишет «нет сети»** → авиарежим вкл/выкл, либо `flowvpn restart`
+2. **Приложение пишет «нет сети»** → авиарежим вкл/выкл, либо `eclipvpn restart`
 3. **«Не поддерживается в вашей стране»** → добавьте домен в «Принудительно через VPN»
 4. **Сервер мерцает** → бейдж «⚠ N» в списке серверов + история в Журнале → фильтр «Сбои»
-5. **Сломался WAN** → `ssh root@router` → `flowvpn stop` → проверить интернет на роутере отдельно
+5. **Сломался WAN** → `ssh root@router` → `eclipvpn stop` → проверить интернет на роутере отдельно
 
 ## Документация
 
-- [docs/flowvpn_manual.pdf](docs/flowvpn_manual.pdf) — подробный мануал (PDF, RU)
+- [docs/eclipvpn_manual.pdf](docs/eclipvpn_manual.pdf) — подробный мануал (PDF, RU)
 - [docs/ROADMAP.md](docs/ROADMAP.md) — план развития
 
-Сборка PDF: `cd docs && tectonic flowvpn_manual.tex` ([tectonic](https://tectonic-typesetting.github.io/))
+Сборка PDF: `cd docs && tectonic eclipvpn_manual.tex` ([tectonic](https://tectonic-typesetting.github.io/))
 
 ## Ресурсы
 
