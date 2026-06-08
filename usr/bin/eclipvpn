@@ -1,25 +1,26 @@
 #!/bin/ash
-# FlowVPN v3 — xray (SOCKS/XHTTP) + sing-box (tproxy/routing)
+# EclipVPN 2026.06 — xray (SOCKS/XHTTP) + sing-box (tproxy/routing)
 # Modes: all_vpn (everything VPN, RU direct) | blocklist (only blocked through VPN)
 
-FLOWVPN_LIB="/usr/lib/flowvpn"
-FLOWVPN_CONFIG="/etc/flowvpn/config.json"
-FLOWVPN_TMP="/tmp/flowvpn"
+ECLIPVPN_VERSION="2026.06"
+ECLIPVPN_LIB="/usr/lib/eclipvpn"
+ECLIPVPN_CONFIG="/etc/eclipvpn/config.json"
+ECLIPVPN_TMP="/tmp/eclipvpn"
 
-. "$FLOWVPN_LIB/parse.sh"
-. "$FLOWVPN_LIB/xray.sh"
-. "$FLOWVPN_LIB/singbox.sh"
-. "$FLOWVPN_LIB/network.sh"
+. "$ECLIPVPN_LIB/parse.sh"
+. "$ECLIPVPN_LIB/xray.sh"
+. "$ECLIPVPN_LIB/singbox.sh"
+. "$ECLIPVPN_LIB/network.sh"
 
-get_config_val() { jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$FLOWVPN_CONFIG"; }
-flog() { logger -t flowvpn "$*"; }
+get_config_val() { jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$ECLIPVPN_CONFIG"; }
+flog() { logger -t eclipvpn "$*"; }
 
 # Returns the per-install Clash API secret. Generates one on first call.
-# Stored in /etc/flowvpn/clash_secret (chmod 600).
+# Stored in /etc/eclipvpn/clash_secret (chmod 600).
 _get_clash_secret() {
-    local f=/etc/flowvpn/clash_secret
+    local f=/etc/eclipvpn/clash_secret
     if [ ! -s "$f" ]; then
-        mkdir -p /etc/flowvpn
+        mkdir -p /etc/eclipvpn
         local s=""
         s=$(head -c 16 /dev/urandom 2>/dev/null | hexdump -v -e '/1 "%02x"' 2>/dev/null)
         [ -z "$s" ] && s=$(awk 'BEGIN{srand();for(i=0;i<32;i++)printf "%x",int(rand()*16)}')
@@ -32,12 +33,12 @@ _get_clash_secret() {
 # chmod 600 because config.json holds the subscription URL (panel credential).
 save_config() {
     local data="$1"
-    printf '%s\n' "$data" > "${FLOWVPN_CONFIG}.tmp"
-    if jq '.' "${FLOWVPN_CONFIG}.tmp" >/dev/null 2>&1; then
-        chmod 600 "${FLOWVPN_CONFIG}.tmp" 2>/dev/null
-        mv "${FLOWVPN_CONFIG}.tmp" "$FLOWVPN_CONFIG"
+    printf '%s\n' "$data" > "${ECLIPVPN_CONFIG}.tmp"
+    if jq '.' "${ECLIPVPN_CONFIG}.tmp" >/dev/null 2>&1; then
+        chmod 600 "${ECLIPVPN_CONFIG}.tmp" 2>/dev/null
+        mv "${ECLIPVPN_CONFIG}.tmp" "$ECLIPVPN_CONFIG"
     else
-        rm -f "${FLOWVPN_CONFIG}.tmp"
+        rm -f "${ECLIPVPN_CONFIG}.tmp"
         flog "ERROR: invalid JSON, config not saved"
         return 1
     fi
@@ -51,7 +52,7 @@ save_config() {
 # stop, restart, set-server, set-mode) is in flight.
 #
 # Real mutex via mkdir, not just a pidfile marker: lifecycle commands can
-# arrive simultaneously (init.d's S99flowvpn races with the UI's "включить"
+# arrive simultaneously (init.d's S99eclipvpn races with the UI's "включить"
 # button on a slow boot, or the watchdog reviver fires on a borderline
 # tick). Two concurrent cmd_start invocations both passed the old marker
 # write and ran end-to-end, leaving two xray processes fighting for
@@ -61,25 +62,25 @@ save_config() {
 # Returns 0 on acquire, 1 if another live owner holds the lock. Stale lock
 # (owner PID dead) is reclaimed transparently.
 _op_begin() {
-    mkdir -p "$FLOWVPN_TMP"
-    if mkdir "$FLOWVPN_TMP/op.lockdir" 2>/dev/null; then
-        echo $$ > "$FLOWVPN_TMP/op.in_progress"
+    mkdir -p "$ECLIPVPN_TMP"
+    if mkdir "$ECLIPVPN_TMP/op.lockdir" 2>/dev/null; then
+        echo $$ > "$ECLIPVPN_TMP/op.in_progress"
         return 0
     fi
     local owner
-    owner=$(cat "$FLOWVPN_TMP/op.in_progress" 2>/dev/null)
+    owner=$(cat "$ECLIPVPN_TMP/op.in_progress" 2>/dev/null)
     if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
-        rm -rf "$FLOWVPN_TMP/op.lockdir"
-        if mkdir "$FLOWVPN_TMP/op.lockdir" 2>/dev/null; then
-            echo $$ > "$FLOWVPN_TMP/op.in_progress"
+        rm -rf "$ECLIPVPN_TMP/op.lockdir"
+        if mkdir "$ECLIPVPN_TMP/op.lockdir" 2>/dev/null; then
+            echo $$ > "$ECLIPVPN_TMP/op.in_progress"
             return 0
         fi
     fi
     return 1
 }
 _op_end() {
-    rm -f "$FLOWVPN_TMP/op.in_progress"
-    rmdir "$FLOWVPN_TMP/op.lockdir" 2>/dev/null
+    rm -f "$ECLIPVPN_TMP/op.in_progress"
+    rmdir "$ECLIPVPN_TMP/op.lockdir" 2>/dev/null
 }
 
 _ensure_watchdog() {
@@ -92,19 +93,19 @@ _ensure_watchdog() {
     # in parallel with cmd_start's, racing on the lock and leaving a state
     # where the lock was empty/missing while a watchdog was alive — every
     # subsequent _ensure_watchdog call then spawned a duplicate.
-    # `pgrep -f 'flowvpn watchdog'` would match itself — the pgrep process'
+    # `pgrep -f 'eclipvpn watchdog'` would match itself — the pgrep process'
     # own cmdline contains the substring it's searching for, so it always
     # returned 0 and we never spawned. Using ps+grep with the classic
     # `[/]` character-class self-exclusion trick: the grep cmdline contains
-    # `[/]usr/bin/flowvpn watchdog`, which includes the substring
-    # `]usr/bin/...` (no leading `/`), so the regex `/usr/bin/flowvpn watchdog`
+    # `[/]usr/bin/eclipvpn watchdog`, which includes the substring
+    # `]usr/bin/...` (no leading `/`), so the regex `/usr/bin/eclipvpn watchdog`
     # does not match grep itself. Real watchdog cmdline
-    # `/bin/ash /usr/bin/flowvpn watchdog` does match.
-    if ps w 2>/dev/null | grep -q '[/]usr/bin/flowvpn watchdog$'; then
+    # `/bin/ash /usr/bin/eclipvpn watchdog` does match.
+    if ps w 2>/dev/null | grep -q '[/]usr/bin/eclipvpn watchdog$'; then
         return 0
     fi
-    /usr/bin/flowvpn watchdog >/dev/null 2>&1 &
-    echo $! > "$FLOWVPN_TMP/watchdog.pid"
+    /usr/bin/eclipvpn watchdog >/dev/null 2>&1 &
+    echo $! > "$ECLIPVPN_TMP/watchdog.pid"
 }
 
 # Mirror VPN server IPs into zapret's user-exclude list. Without this,
@@ -112,14 +113,14 @@ _ensure_watchdog() {
 # ClientHello to the VPN endpoint and the handshake fails (Reality
 # rejects malformed ClientHello). No-op if zapret isn't installed; the
 # write+restart is skipped when the list is unchanged so cron-driven
-# `flowvpn update` (returns the same servers most of the time) doesn't
+# `eclipvpn update` (returns the same servers most of the time) doesn't
 # churn zapret.
 _sync_zapret_exclude() {
     local exclude_file="/opt/zapret/ipset/zapret-ip-user-exclude.txt"
-    [ -d /opt/zapret ] && [ -f "$FLOWVPN_TMP/servers.json" ] || return 0
+    [ -d /opt/zapret ] && [ -f "$ECLIPVPN_TMP/servers.json" ] || return 0
 
     local new_list current=""
-    new_list=$(jq -r '.[].host // empty' "$FLOWVPN_TMP/servers.json" 2>/dev/null | sort -u)
+    new_list=$(jq -r '.[].host // empty' "$ECLIPVPN_TMP/servers.json" 2>/dev/null | sort -u)
     [ -z "$new_list" ] && return 0
     [ -f "$exclude_file" ] && current=$(cat "$exclude_file")
     [ "$new_list" = "$current" ] && return 0
@@ -142,7 +143,7 @@ _rotate_log() {
     # file descriptor that the daemons hold — truncate-then-overwrite
     # preserves the inode.
     local max_lines=2000 keep_lines=500
-    for logfile in "$FLOWVPN_TMP/singbox.log" "$FLOWVPN_TMP/xray.log"; do
+    for logfile in "$ECLIPVPN_TMP/singbox.log" "$ECLIPVPN_TMP/xray.log"; do
         [ -f "$logfile" ] || continue
         local lines=$(wc -l < "$logfile" 2>/dev/null)
         [ -z "$lines" ] && continue
@@ -152,7 +153,7 @@ _rotate_log() {
                 cat "$tmp" > "$logfile"  # truncate+write — keeps inode, daemons keep writing
                 rm -f "$tmp"
                 # Rotation is housekeeping, not an event — silenced because it
-                # was 80% of syslog flowvpn output, drowning real switches/errors
+                # was 80% of syslog eclipvpn output, drowning real switches/errors
                 # in the EclipVPN tab of the log viewer.
             fi
         fi
@@ -164,7 +165,7 @@ cmd_start() {
         echo '{"error":"already running"}'
         return 1
     fi
-    mkdir -p "$FLOWVPN_TMP"
+    mkdir -p "$ECLIPVPN_TMP"
     if ! _op_begin; then
         echo '{"error":"another lifecycle op in progress"}'
         return 1
@@ -201,37 +202,37 @@ cmd_start() {
             return 1
             ;;
     esac
-    flog "Starting FlowVPN (mode=$mode)"
+    flog "Starting EclipVPN (mode=$mode)"
 
     # Step 1: Fetch servers
-    if [ ! -f "$FLOWVPN_TMP/servers.json" ]; then
+    if [ ! -f "$ECLIPVPN_TMP/servers.json" ]; then
         local count
-        count=$(update_subscription "$FLOWVPN_CONFIG")
+        count=$(update_subscription "$ECLIPVPN_CONFIG")
         [ "$count" -gt 0 ] 2>/dev/null || { echo '{"error":"subscription failed"}'; return 1; }
     fi
 
     # Step 2: Fetch routing rules
-    if [ ! -f "$FLOWVPN_TMP/rules/ru_domains.list" ] && [ ! -f "$FLOWVPN_TMP/rules/domains.list" ]; then
+    if [ ! -f "$ECLIPVPN_TMP/rules/ru_domains.list" ] && [ ! -f "$ECLIPVPN_TMP/rules/domains.list" ]; then
         fetch_rules "$mode"
     fi
 
     local selected
     selected=$(get_config_val selected_server 0)
-    local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$selected" -ge "$total" ] && selected=0
 
     # Step 3: Start xray
     flog "Starting xray (server index=$selected)"
-    generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray.json"
-    start_xray "$FLOWVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
+    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$ECLIPVPN_TMP/xray.json"
+    start_xray "$ECLIPVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
 
     # Step 4: Verify xray
     local vpn_ip
     vpn_ip=$(test_xray)
     if [ -z "$vpn_ip" ]; then
         flog "ERROR: VPN connection test failed"
-        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
         _log_incident "switch_failed" "$_fail_host" "$_fail_name" "test_xray не прошёл при запуске"
         stop_xray
         echo '{"error":"VPN connection failed"}'
@@ -241,8 +242,8 @@ cmd_start() {
 
     # Step 5: Start sing-box
     flog "Starting sing-box (mode=$mode)"
-    generate_singbox_config "$FLOWVPN_TMP/singbox.json" 1080 "$mode"
-    start_singbox "$FLOWVPN_TMP/singbox.json"
+    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" 1080 "$mode"
+    start_singbox "$ECLIPVPN_TMP/singbox.json"
     if [ $? -ne 0 ]; then
         flog "ERROR: sing-box failed to start"
         stop_xray
@@ -255,19 +256,20 @@ cmd_start() {
     flog "Setting up nftables and DNS redirect"
     setup_network 2154 32768 "$iface"
 
-    date +%s > "$FLOWVPN_TMP/start_time"
-    echo "$vpn_ip" > "$FLOWVPN_TMP/vpn_ip"
+    date +%s > "$ECLIPVPN_TMP/start_time"
+    echo "$vpn_ip" > "$ECLIPVPN_TMP/vpn_ip"
 
     # Mark intent: VPN should be running. Watchdog uses this to revive
     # the tunnel if processes get killed externally (OOM, manual pkill,
     # crash). Distinct from auto_start (which is only consulted at boot).
     local cfg_tmp
-    cfg_tmp=$(jq '.running_intent = true' "$FLOWVPN_CONFIG")
+    cfg_tmp=$(jq '.running_intent = true' "$ECLIPVPN_CONFIG")
     save_config "$cfg_tmp"
 
-    local server_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
-    flog "FlowVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
-    echo "{\"status\":\"started\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
+    local server_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
+    flog "EclipVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
+    jq -n --arg s "started" --arg srv "$server_name" --arg ip "$vpn_ip" --arg m "$mode" \
+        '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }
 
 cmd_stop() {
@@ -276,21 +278,27 @@ cmd_stop() {
         return 1
     fi
     trap '_op_end' EXIT INT TERM
-    flog "Stopping FlowVPN"
+    flog "Stopping EclipVPN"
     # Clear intent first — watchdog runs every 20s and would otherwise
     # see processes-down + intent=true and revive the VPN we just stopped.
     local cfg_tmp
-    cfg_tmp=$(jq '.running_intent = false' "$FLOWVPN_CONFIG")
+    cfg_tmp=$(jq '.running_intent = false' "$ECLIPVPN_CONFIG")
     save_config "$cfg_tmp"
     teardown_network
     stop_singbox
     stop_xray
-    rm -f "$FLOWVPN_TMP/start_time" "$FLOWVPN_TMP/vpn_ip"
-    flog "FlowVPN stopped"
+    rm -f "$ECLIPVPN_TMP/start_time" "$ECLIPVPN_TMP/vpn_ip"
+    flog "EclipVPN stopped"
     echo '{"status":"stopped"}'
 }
 
 cmd_restart() {
+    # $1 = "1" to bypass the unchanged-config fast path. UI's manual "Restart"
+    # button passes force=1 so a click always physically swaps the daemons —
+    # otherwise the user sees a success toast but nothing was actually kicked.
+    # Internal callers (set-mode, set-server, watchdog failover, etc.) leave
+    # this unset to keep the no-op optimization.
+    local force="$1"
     if ! _op_begin; then
         echo '{"error":"another lifecycle op in progress"}'
         return 1
@@ -316,19 +324,22 @@ cmd_restart() {
     selected=$(get_config_val selected_server 0)
     mode=$(get_config_val mode "all_vpn")
     local total
-    total=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
     [ -n "$total" ] && [ "$selected" -ge "$total" ] && selected=0
 
     # No-op fast path: if the freshly-generated configs are identical to what's
     # already running, don't tear processes down. Saves the 5s gap when the UI
     # fires restart for a setting that doesn't actually affect xray/sing-box.
-    local new_xray="$FLOWVPN_TMP/xray.new.json"
-    local new_singbox="$FLOWVPN_TMP/singbox.new.json"
-    generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$new_xray" 2>/dev/null
+    # Skipped when force=1 (manual UI Restart button) — the user explicitly
+    # wants the daemons kicked even if configs match.
+    local new_xray="$ECLIPVPN_TMP/xray.new.json"
+    local new_singbox="$ECLIPVPN_TMP/singbox.new.json"
+    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$new_xray" 2>/dev/null
     generate_singbox_config "$new_singbox" 1080 "$mode" 2>/dev/null
-    if [ -s "$new_xray" ] && [ -s "$new_singbox" ] && \
-       cmp -s "$new_xray" "$FLOWVPN_TMP/xray.json" && \
-       cmp -s "$new_singbox" "$FLOWVPN_TMP/singbox.json"; then
+    if [ "$force" != "1" ] && \
+       [ -s "$new_xray" ] && [ -s "$new_singbox" ] && \
+       cmp -s "$new_xray" "$ECLIPVPN_TMP/xray.json" && \
+       cmp -s "$new_singbox" "$ECLIPVPN_TMP/singbox.json"; then
         rm -f "$new_xray" "$new_singbox"
         # Configs are identical, but is the tunnel actually carrying traffic?
         # If xray hung (process alive, socket dead), watchdog would fix it
@@ -339,8 +350,8 @@ cmd_restart() {
             # fallthrough to the real restart below
         else
             local sn vi
-            sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
-            vi=$(cat "$FLOWVPN_TMP/vpn_ip" 2>/dev/null)
+            sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
+            vi=$(cat "$ECLIPVPN_TMP/vpn_ip" 2>/dev/null)
             # Explicit cleanup before fast-path return. The EXIT trap will
             # eventually fire on script exit, but in ash the timing of
             # function-set traps relative to early returns is fuzzy enough
@@ -348,27 +359,28 @@ cmd_restart() {
             # raced this. Cheap to be explicit.
             _op_end
             trap - EXIT INT TERM
-            echo "{\"status\":\"unchanged\",\"server\":\"$sn\",\"vpn_ip\":\"$vi\",\"mode\":\"$mode\"}"
+            jq -n --arg s "unchanged" --arg srv "$sn" --arg ip "$vi" --arg m "$mode" \
+                '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
             return 0
         fi
     fi
     rm -f "$new_xray" "$new_singbox"
 
-    flog "Restarting FlowVPN (soft — network rules preserved)"
+    flog "Restarting EclipVPN (soft — network rules preserved)"
     stop_singbox
     stop_xray
     sleep 1
 
     flog "Starting xray (server index=$selected)"
-    generate_xray_config "$FLOWVPN_TMP/servers.json" "$selected" "$FLOWVPN_TMP/xray.json"
-    start_xray "$FLOWVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
+    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$ECLIPVPN_TMP/xray.json"
+    start_xray "$ECLIPVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
 
     local vpn_ip
     vpn_ip=$(test_xray)
     if [ -z "$vpn_ip" ]; then
         flog "ERROR: VPN connection test failed after restart"
-        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
         _log_incident "switch_failed" "$_fail_host" "$_fail_name" "test_xray не прошёл при переключении"
         stop_xray
         echo '{"error":"VPN connection failed"}'
@@ -376,24 +388,25 @@ cmd_restart() {
     fi
     flog "xray reconnected, VPN IP: $vpn_ip"
 
-    generate_singbox_config "$FLOWVPN_TMP/singbox.json" 1080 "$mode"
-    start_singbox "$FLOWVPN_TMP/singbox.json" || { flog "ERROR: sing-box failed"; stop_xray; echo '{"error":"sing-box failed"}'; return 1; }
+    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" 1080 "$mode"
+    start_singbox "$ECLIPVPN_TMP/singbox.json" || { flog "ERROR: sing-box failed"; stop_xray; echo '{"error":"sing-box failed"}'; return 1; }
     flog "sing-box restarted"
 
-    date +%s > "$FLOWVPN_TMP/start_time"
-    echo "$vpn_ip" > "$FLOWVPN_TMP/vpn_ip"
+    date +%s > "$ECLIPVPN_TMP/start_time"
+    echo "$vpn_ip" > "$ECLIPVPN_TMP/vpn_ip"
 
     # Restart implies user wants VPN running — keep intent flag in sync.
     # Without this a soft restart (UI button, set-server, set-mode, watchdog
     # failover) wouldn't carry the intent, and an external kill afterwards
     # wouldn't trigger auto-recovery.
     local cfg_tmp
-    cfg_tmp=$(jq '.running_intent = true' "$FLOWVPN_CONFIG")
+    cfg_tmp=$(jq '.running_intent = true' "$ECLIPVPN_CONFIG")
     save_config "$cfg_tmp"
 
-    local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
-    flog "FlowVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
-    echo "{\"status\":\"restarted\",\"server\":\"$server_name\",\"vpn_ip\":\"$vpn_ip\",\"mode\":\"$mode\"}"
+    local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
+    flog "EclipVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
+    jq -n --arg s "restarted" --arg srv "$server_name" --arg ip "$vpn_ip" --arg m "$mode" \
+        '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }
 
 cmd_status() {
@@ -403,15 +416,15 @@ cmd_status() {
     local running="false" uptime=0 vpn_ip=""
     if is_xray_running && is_singbox_running; then
         running="true"
-        [ -f "$FLOWVPN_TMP/start_time" ] && {
-            local st=$(cat "$FLOWVPN_TMP/start_time")
+        [ -f "$ECLIPVPN_TMP/start_time" ] && {
+            local st=$(cat "$ECLIPVPN_TMP/start_time")
             uptime=$(($(date +%s) - st))
         }
-        [ -f "$FLOWVPN_TMP/vpn_ip" ] && vpn_ip=$(cat "$FLOWVPN_TMP/vpn_ip")
+        [ -f "$ECLIPVPN_TMP/vpn_ip" ] && vpn_ip=$(cat "$ECLIPVPN_TMP/vpn_ip")
     fi
 
     local servers_raw='[]'
-    [ -f "$FLOWVPN_TMP/servers.json" ] && servers_raw=$(cat "$FLOWVPN_TMP/servers.json")
+    [ -f "$ECLIPVPN_TMP/servers.json" ] && servers_raw=$(cat "$ECLIPVPN_TMP/servers.json")
 
     local device_count=0
     [ -f /tmp/dhcp.leases ] && device_count=$(wc -l < /tmp/dhcp.leases)
@@ -420,17 +433,17 @@ cmd_status() {
     # power loss on /tmp) doesn't make --argjson choke and break the whole
     # status response.
     local last_switch='null'
-    [ -f "$FLOWVPN_TMP/last_switch.json" ] && \
-        last_switch=$(jq '.' "$FLOWVPN_TMP/last_switch.json" 2>/dev/null || echo null)
+    [ -f "$ECLIPVPN_TMP/last_switch.json" ] && \
+        last_switch=$(jq '.' "$ECLIPVPN_TMP/last_switch.json" 2>/dev/null || echo null)
     local last_update='null'
-    [ -f "$FLOWVPN_TMP/last_update.json" ] && \
-        last_update=$(jq '.' "$FLOWVPN_TMP/last_update.json" 2>/dev/null || echo null)
+    [ -f "$ECLIPVPN_TMP/last_update.json" ] && \
+        last_update=$(jq '.' "$ECLIPVPN_TMP/last_update.json" 2>/dev/null || echo null)
     local sub_meta='null'
-    [ -f "$FLOWVPN_TMP/subscription_meta.json" ] && \
-        sub_meta=$(jq '.' "$FLOWVPN_TMP/subscription_meta.json" 2>/dev/null || echo null)
+    [ -f "$ECLIPVPN_TMP/subscription_meta.json" ] && \
+        sub_meta=$(jq '.' "$ECLIPVPN_TMP/subscription_meta.json" 2>/dev/null || echo null)
 
     jq -n \
-        --slurpfile cfg "$FLOWVPN_CONFIG" \
+        --slurpfile cfg "$ECLIPVPN_CONFIG" \
         --argjson running "$running" \
         --argjson uptime "$uptime" \
         --argjson srv "$servers_raw" \
@@ -487,15 +500,17 @@ cmd_set_server() {
     local idx="$1"
     [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
     flog "Setting server to index $idx"
-    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
-    local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
-    local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-    save_config "$tmp"
-    is_xray_running && cmd_restart || {
-        local name=$(jq -r ".[$idx].name" "$FLOWVPN_TMP/servers.json")
-        echo "{\"status\":\"server set\",\"server\":\"$name\"}"
-    }
+    local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    if is_xray_running; then
+        cmd_restart
+    else
+        local name=$(jq -r ".[$idx].name" "$ECLIPVPN_TMP/servers.json")
+        jq -n --arg srv "$name" '{status:"server set",server:$srv}'
+    fi
 }
 
 # Pre-flight: spin up a temp xray bound to an unused port and verify the
@@ -505,12 +520,12 @@ cmd_set_server() {
 cmd_probe_server() {
     local idx="$1"
     [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
-    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
     local total
-    total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
     [ -x /usr/bin/xray ] || { echo '{"error":"xray binary missing"}'; return 1; }
-    mkdir -p "$FLOWVPN_TMP"
+    mkdir -p "$ECLIPVPN_TMP"
 
     # Run the actual probe in a subshell. In ash `trap EXIT` is process-wide,
     # not function-scoped — running this body as a function inside e.g. the
@@ -523,21 +538,21 @@ cmd_probe_server() {
         # busybox mktemp doesn't accept a suffix in the template, so:
         # mktemp → rename.
         local _t _p test_cfg probe_cfg
-        _t=$(mktemp "$FLOWVPN_TMP/xray_test.XXXXXX") || exit 1
-        _p=$(mktemp "$FLOWVPN_TMP/xray_probe.XXXXXX") || { rm -f "$_t"; exit 1; }
+        _t=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX") || exit 1
+        _p=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX") || { rm -f "$_t"; exit 1; }
         test_cfg="${_t}.json"; probe_cfg="${_p}.json"
         mv "$_t" "$test_cfg"; mv "$_p" "$probe_cfg"
         local probe_pid=""
         trap 'kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null; rm -f "$test_cfg" "$probe_cfg"' EXIT INT TERM
 
         local probe_port=$((1082 + $$ % 100))
-        generate_xray_config "$FLOWVPN_TMP/servers.json" "$idx" "$test_cfg"
+        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$idx" "$test_cfg"
         [ -s "$test_cfg" ] || { echo '{"error":"failed to generate xray config"}'; exit 1; }
         jq --argjson p "$probe_port" \
             '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
             "$test_cfg" > "$probe_cfg"
 
-        # Up to 3 spawn-and-test attempts. A freshly-spawned xray's very
+        # Up to 4 spawn-and-test attempts. A freshly-spawned xray's very
         # first request through VLESS+XHTTP+Reality occasionally hangs to
         # full timeout (measured ~50% on DE/NL endpoints when probing while
         # prod xray is connected to a different server — likely cold xmux
@@ -546,12 +561,16 @@ cmd_probe_server() {
         # symptom was "не получается переключиться с первого раза" — the
         # picker click triggered a flaky probe, toast said "Не удалось
         # переключить", and the immediate second click succeeded.
-        # 3 attempts at ~7s worst-case each = ≤21s budget; an outright dead
+        # 4 attempts × ~16s worst-case (6s listen wait + 10s curl) ≤ 64s,
+        # but typical success on attempt 1-2 keeps real wall-clock <20s.
+        # The 10s curl budget (was 6s) covers the cold Reality+XHTTP
+        # handshake on DE/NL endpoints — 6s was tripping on live servers
+        # that ping fine but need >6s on first request. An outright dead
         # server is detected on attempt 1 because curl returns immediately
         # (port unreachable) — this loop only burns time on flakes.
         local t0 t1 elapsed test_ip="" attempt
         t0=$(date +%s%3N 2>/dev/null)
-        for attempt in 1 2 3; do
+        for attempt in 1 2 3 4; do
             # Spawn a fresh xray for each attempt — reusing a hung instance
             # doesn't help (its outbound state is broken).
             [ -n "$probe_pid" ] && {
@@ -577,7 +596,7 @@ cmd_probe_server() {
             done
             [ "$ready" -eq 0 ] && continue
 
-            test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 6 https://api.ipify.org 2>/dev/null)
+            test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 10 https://api.ipify.org 2>/dev/null)
             [ -n "$test_ip" ] && break
         done
         t1=$(date +%s%3N 2>/dev/null)
@@ -587,7 +606,7 @@ cmd_probe_server() {
 
         if [ -n "$test_ip" ]; then
             local name
-            name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$FLOWVPN_TMP/servers.json")
+            name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
             jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" \
                 '{status:"ok", ip:$ip, server:$name, latency_ms:$ms}'
             exit 0
@@ -603,13 +622,13 @@ cmd_update() {
     # actually changed anything (cron auto-update fires every N hours and
     # most of the time returns the same list — we don't want to spam toasts).
     local prev=0
-    [ -f "$FLOWVPN_TMP/servers.json" ] && prev=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    [ -f "$ECLIPVPN_TMP/servers.json" ] && prev=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
     [ -z "$prev" ] && prev=0
 
     local count
-    count=$(update_subscription "$FLOWVPN_CONFIG")
+    count=$(update_subscription "$ECLIPVPN_CONFIG")
     local mode=$(get_config_val mode "all_vpn")
-    rm -rf "$FLOWVPN_TMP/rules"
+    rm -rf "$ECLIPVPN_TMP/rules"
     fetch_rules "$mode"
     # Periodic refresh of sing-box .srs rule sets — cmd_update is the
     # natural moment to redownload upstream geosite/geoip without paying
@@ -621,7 +640,7 @@ cmd_update() {
         # frontend show a toast only when prev != count (avoids "updated:
         # same 7 servers" noise on cron-driven refresh).
         jq -n --argjson t "$(date +%s)" --argjson c "$count" --argjson p "$prev" \
-            '{time:$t, count:$c, prev_count:$p}' > "$FLOWVPN_TMP/last_update.json"
+            '{time:$t, count:$c, prev_count:$p}' > "$ECLIPVPN_TMP/last_update.json"
         echo "{\"status\":\"updated\",\"servers\":$count,\"prev\":$prev}"
         _sync_zapret_exclude
         is_xray_running && cmd_restart >/dev/null
@@ -632,9 +651,9 @@ cmd_update() {
 }
 
 cmd_ping() {
-    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
-    local total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
-    local tmpdir=$(mktemp -d "$FLOWVPN_TMP/ping.XXXXXX")
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
+    local tmpdir=$(mktemp -d "$ECLIPVPN_TMP/ping.XXXXXX")
 
     # Per-server probe runs in parallel. Strategy lifted from v2rayN/v2rayNG
     # tcping: 3 attempts × 3s TCP-connect, take the minimum. Empirically
@@ -646,7 +665,7 @@ cmd_ping() {
     # instead of "нет" for a server that's actually reachable.
     local i=0
     while [ "$i" -lt "$total" ]; do
-        local host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+        local host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
         local out="$tmpdir/$i"
         (
             best=-1
@@ -671,7 +690,7 @@ cmd_ping() {
     local results="[]"
     i=0
     while [ "$i" -lt "$total" ]; do
-        local name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
+        local name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
         local ms=$(cat "$tmpdir/$i" 2>/dev/null)
         [ -z "$ms" ] && ms=-1
         results=$(echo "$results" | jq --arg n "$name" --argjson ms "$ms" --argjson i "$i" '. + [{name:$n, ping:$ms, index:$i}]')
@@ -700,9 +719,9 @@ _attempt_add() {
 }
 
 cmd_auto_select() {
-    [ -f "$FLOWVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
     local total i=0 name host ms
-    total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+    total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
 
     # attempts collects an ordered audit trail of every server we considered:
     # what status (skipped_metered / unreachable / probe_failed / selected /
@@ -711,8 +730,8 @@ cmd_auto_select() {
     local attempts="[]"
     local candidates=""
     while [ "$i" -lt "$total" ]; do
-        name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
-        host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+        name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+        host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
         if _is_metered_server "$name"; then
             attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "skipped_metered")
         else
@@ -739,7 +758,7 @@ cmd_auto_select() {
 
     while IFS=' ' read -r ms idx; do
         [ -z "$idx" ] && continue
-        name=$(jq -r --argjson i "$idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
+        name=$(jq -r --argjson i "$idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
         if [ "$idx" = "$cur" ] && is_xray_running && [ -n "$(test_xray)" ]; then
             attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "already_active")
             jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" \
@@ -775,17 +794,17 @@ EOF
     # Whole switch + state stamp under one op-lock — prevents watchdog
     # auto_eval racing on config and auto_state. Subshell exit code:
     # 0 = ok, 1 = lock contention, 2 = cmd_restart failure (rolled back).
-    mkdir -p "$FLOWVPN_TMP"
-    local sf="$FLOWVPN_TMP/auto_state.json"
-    local oplock="$FLOWVPN_TMP/auto.lock"
+    mkdir -p "$ECLIPVPN_TMP"
+    local sf="$ECLIPVPN_TMP/auto_state.json"
+    local oplock="$ECLIPVPN_TMP/auto.lock"
     (
-        flock -w 5 -x 200 || exit 1
+        if command -v flock >/dev/null 2>&1; then flock -w 5 -x 200 || exit 1; fi
         local tmp
-        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
         save_config "$tmp"
         if is_xray_running; then
             if ! cmd_restart >/dev/null 2>&1; then
-                tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+                tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
                 save_config "$tmp"
                 cmd_restart >/dev/null 2>&1
                 exit 2
@@ -822,18 +841,18 @@ EOF
 # improvements appear we don't switch more than once per hour (unless the
 # current tunnel is actually broken — then any working candidate is fine).
 cmd_auto_eval() {
-    [ -f "$FLOWVPN_TMP/servers.json" ] || return 1
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || return 1
     is_xray_running || return 0   # not running → not our job, watchdog handles
 
-    mkdir -p "$FLOWVPN_TMP"
-    local sf="$FLOWVPN_TMP/auto_state.json"
-    local oplock="$FLOWVPN_TMP/auto.lock"
+    mkdir -p "$ECLIPVPN_TMP"
+    local sf="$ECLIPVPN_TMP/auto_state.json"
+    local oplock="$ECLIPVPN_TMP/auto.lock"
 
     # Whole eval runs under an op-level flock. -n (non-blocking) — if a
     # user-triggered cmd_auto_select is running, we silently skip this tick
     # rather than queue up a redundant eval behind it.
     (
-        flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }
+        if command -v flock >/dev/null 2>&1; then flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }; fi
 
         [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
 
@@ -861,7 +880,7 @@ cmd_auto_eval() {
 
         # Measure RTT for all non-metered servers; remember current's RTT for hysteresis.
         local total i=0 name host ms current_idx current_rtt=-1 candidates=""
-        total=$(jq 'length' "$FLOWVPN_TMP/servers.json")
+        total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
         current_idx=$(get_config_val selected_server 0)
         # Bounds-check: subscription may have shrunk while we were on a higher
         # index. Treat that as broken so we move to a real server.
@@ -871,8 +890,8 @@ cmd_auto_eval() {
             current_idx=0
         fi
         while [ "$i" -lt "$total" ]; do
-            name=$(jq -r ".[$i].name" "$FLOWVPN_TMP/servers.json")
-            host=$(jq -r ".[$i].host" "$FLOWVPN_TMP/servers.json")
+            name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+            host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
             if ! _is_metered_server "$name"; then
                 ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
                 [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
@@ -925,16 +944,16 @@ cmd_auto_eval() {
 
         # Commit + restart, with rollback on failure
         local tmp
-        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
         save_config "$tmp"
         if cmd_restart >/dev/null 2>&1; then
             _record_switch "$current_idx" "$best_idx" "auto"
             jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
             local bn
-            bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$FLOWVPN_TMP/servers.json")
+            bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
             flog "Auto-mode: switched to $bn"
         else
-            tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$FLOWVPN_CONFIG")
+            tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
             save_config "$tmp"
             cmd_restart >/dev/null 2>&1
             flog "Auto-mode: restart failed, rolled back"
@@ -953,15 +972,19 @@ cmd_set_mode() {
         *) echo '{"error":"invalid mode, use all_vpn or blocklist"}'; return 1 ;;
     esac
     flog "Switching mode to $new_mode"
-    local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$FLOWVPN_CONFIG")
-    save_config "$tmp"
-    rm -rf "$FLOWVPN_TMP/rules" "$FLOWVPN_TMP/singbox.json"
+    local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$ECLIPVPN_CONFIG")
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    rm -rf "$ECLIPVPN_TMP/rules" "$ECLIPVPN_TMP/singbox.json"
     # Rebuild rule lists for the new mode. cmd_restart only regenerates the
     # sing-box config from existing rule files — without this fetch_rules,
     # both modes start with empty lists (RU heredoc / blocklist / force-VPN
     # all missing) and routing collapses to the remote rule_sets only.
     fetch_rules "$new_mode"
-    is_xray_running && cmd_restart || echo "{\"status\":\"mode set\",\"mode\":\"$new_mode\"}"
+    if is_xray_running; then
+        cmd_restart
+    else
+        jq -n --arg m "$new_mode" '{status:"mode set",mode:$m}'
+    fi
 }
 
 cmd_add_domain() {
@@ -973,7 +996,7 @@ cmd_add_domain() {
         vpn)    file="$CUSTOM_VPN" ;;
         *)      echo '{"error":"invalid list, use direct or vpn"}'; return 1 ;;
     esac
-    mkdir -p /etc/flowvpn
+    mkdir -p /etc/eclipvpn
     grep -qxF "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
     # _fetch_*_domains rebuilds the merged source list ({ru,vpn}_domains.list)
     # from heredoc + the user's custom file. cmd_restart then bakes it into
@@ -1066,7 +1089,7 @@ cmd_preset() {
             # comes from running _preset_domains and counting non-comment
             # non-empty lines, so it auto-tracks edits to the inline lists.
             local enabled_json
-            enabled_json=$(jq -c '.enabled_presets // []' "$FLOWVPN_CONFIG" 2>/dev/null)
+            enabled_json=$(jq -c '.enabled_presets // []' "$ECLIPVPN_CONFIG" 2>/dev/null)
             [ -z "$enabled_json" ] && enabled_json='[]'
             local arr='[]'
             for n in $(_preset_names); do
@@ -1087,11 +1110,11 @@ cmd_preset() {
             if [ "$op" = "enable" ]; then
                 tmp=$(jq --arg n "$name" \
                     '.enabled_presets = (((.enabled_presets // []) + [$n]) | unique)' \
-                    "$FLOWVPN_CONFIG")
+                    "$ECLIPVPN_CONFIG")
             else
                 tmp=$(jq --arg n "$name" \
                     '.enabled_presets = ((.enabled_presets // []) - [$n])' \
-                    "$FLOWVPN_CONFIG")
+                    "$ECLIPVPN_CONFIG")
             fi
             save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
 
@@ -1126,7 +1149,7 @@ cmd_get_devices() {
 
 cmd_get_log() {
     local lines="${1:-100}" filter="${2:-all}"
-    if [ ! -f "$FLOWVPN_TMP/singbox.log" ]; then
+    if [ ! -f "$ECLIPVPN_TMP/singbox.log" ]; then
         echo "[]"
         return
     fi
@@ -1153,15 +1176,15 @@ cmd_get_log() {
 
     # Collect from multiple sources. mktemp + EXIT trap (in subshell so the
     # trap doesn't leak to the calling shell, e.g. watchdog).
-    mkdir -p "$FLOWVPN_TMP"
+    mkdir -p "$ECLIPVPN_TMP"
     (
     local tmplog
-    tmplog=$(mktemp "$FLOWVPN_TMP/combined.XXXXXX") || { echo "[]"; exit 1; }
+    tmplog=$(mktemp "$ECLIPVPN_TMP/combined.XXXXXX") || { echo "[]"; exit 1; }
     trap 'rm -f "$tmplog"' EXIT INT TERM
 
     # Source 1: sing-box log (skip for flow-only filter)
     if [ "$filter" != "flow" ]; then
-        grep "$grep_filter" "$FLOWVPN_TMP/singbox.log" 2>/dev/null | \
+        grep "$grep_filter" "$ECLIPVPN_TMP/singbox.log" 2>/dev/null | \
             grep -v "packet connection$\|WARN\|cached\|inbound/\|1\.1\.1\.1:853\|1\.0\.0\.1:853\|8\.8\.8\.8:853\|8\.8\.4\.4:853\|127\.0\.0\.1:53\|127\.0\.0\.1:5354${noise_excludes}" | \
             sed 's/\x1b\[[0-9;]*m//g; s/\x1b\[0m//g' | \
             awk '{print "SING|"$0}' >> "$tmplog"
@@ -1169,25 +1192,25 @@ cmd_get_log() {
 
     # Source 2: xray log — only errors
     if [ "$filter" = "all" ] || [ "$filter" = "error" ]; then
-        grep -iE "error|fail|warning" "$FLOWVPN_TMP/xray.log" 2>/dev/null | \
+        grep -iE "error|fail|warning" "$ECLIPVPN_TMP/xray.log" 2>/dev/null | \
             grep -v "accepted\|started\|Reading config" | \
             tail -50 | awk '{print "XRAY|"$0}' >> "$tmplog"
     fi
 
-    # Source 3: syslog flowvpn entries. The syslog ringbuffer is shared
+    # Source 3: syslog eclipvpn entries. The syslog ringbuffer is shared
     # router-wide and can't be truncated, so filter by the "log cleared"
     # marker that cmd_clear_log writes — events older than that timestamp
     # were dismissed by the user and shouldn't reappear in the UI.
     if [ "$filter" = "all" ] || [ "$filter" = "flow" ]; then
         local cleared_since=0
-        [ -f "$FLOWVPN_TMP/log_cleared_ts" ] && cleared_since=$(cat "$FLOWVPN_TMP/log_cleared_ts" 2>/dev/null)
+        [ -f "$ECLIPVPN_TMP/log_cleared_ts" ] && cleared_since=$(cat "$ECLIPVPN_TMP/log_cleared_ts" 2>/dev/null)
         # logread on this busybox formats lines like
-        #   "Thu Apr 30 00:18:32 2026 user.notice flowvpn: ..."
+        #   "Thu Apr 30 00:18:32 2026 user.notice eclipvpn: ..."
         # No epoch prefix and the time is in *local* timezone, but
         # log_cleared_ts is `date +%s` (UTC epoch). Parse the textual
         # date in awk and subtract TZ_OFFSET to compare apples to apples.
         # mktime is gawk-only, so we build the epoch by hand.
-        logread 2>/dev/null | grep 'flowvpn:' | tail -100 | \
+        logread 2>/dev/null | grep 'eclipvpn:' | tail -100 | \
             awk -v ts="${cleared_since:-0}" -v tz="${TZ_OFFSET:-3}" '
                 BEGIN {
                     split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " ")
@@ -1230,11 +1253,11 @@ cmd_get_log() {
                 }
             }
 
-            # FLOW entries (syslog: "Fri Apr 24 14:35:52 2026 user.notice flowvpn: message")
+            # FLOW entries (syslog: "Fri Apr 24 14:35:52 2026 user.notice eclipvpn: message")
             if(src=="flow"){
                 msg=""
                 for(i=1;i<=NF;i++){
-                    if($i ~ /^flowvpn/){
+                    if($i ~ /^eclipvpn/){
                         for(j=i+1;j<=NF;j++) msg=msg" "$j
                         break
                     }
@@ -1341,20 +1364,24 @@ cmd_set_config() {
                 true|1|on|yes) bv=true ;;
                 *) bv=false ;;
             esac
-            tmp=$(jq --arg k "$key" --argjson v "$bv" '.[$k] = $v' "$FLOWVPN_CONFIG")
+            tmp=$(jq --arg k "$key" --argjson v "$bv" '.[$k] = $v' "$ECLIPVPN_CONFIG")
+            ;;
+        selected_server)
+            case "$value" in ''|*[!0-9]*) echo '{"error":"selected_server must be numeric"}'; return 1 ;; esac
+            tmp=$(jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$ECLIPVPN_CONFIG")
             ;;
         *)
-            tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$FLOWVPN_CONFIG")
+            tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$ECLIPVPN_CONFIG")
             ;;
     esac
-    save_config "$tmp"
-    echo "{\"status\":\"saved\",\"key\":\"$key\"}"
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    jq -n --arg k "$key" '{status:"saved",key:$k}'
 }
 
 cmd_diagnose() {
     # Tab-separated rows (name<TAB>status<TAB>detail) → single jq at end.
     # Three network probes run in parallel (saves ~10-15s on aarch64).
-    local diag_dir="$FLOWVPN_TMP/diag.$$"
+    local diag_dir="$ECLIPVPN_TMP/diag.$$"
     mkdir -p "$diag_dir"
     local rows="$diag_dir/rows"
     : > "$rows"
@@ -1373,24 +1400,24 @@ cmd_diagnose() {
 
     # 1. xray
     if is_xray_running; then
-        _add "xray-core" "ok" "PID $(cat /tmp/flowvpn/xray.pid 2>/dev/null), порт 1080"
+        _add "xray-core" "ok" "PID $(cat /tmp/eclipvpn/xray.pid 2>/dev/null), порт 1080"
     else
         _add "xray-core" "error" "Не запущен"
     fi
 
     # 2. sing-box
     if is_singbox_running; then
-        _add "sing-box" "ok" "PID $(cat /tmp/flowvpn/singbox.pid 2>/dev/null), порт 2154"
+        _add "sing-box" "ok" "PID $(cat /tmp/eclipvpn/singbox.pid 2>/dev/null), порт 2154"
     else
         _add "sing-box" "error" "Не запущен"
     fi
 
     # 3. nftables
-    if nft list table ip flowvpn >/dev/null 2>&1; then
-        local rule_count=$(nft list table ip flowvpn 2>/dev/null | grep -c "tproxy\|return\|reject")
-        _add "nftables" "ok" "Таблица flowvpn: $rule_count правил"
+    if nft list table ip eclipvpn >/dev/null 2>&1; then
+        local rule_count=$(nft list table ip eclipvpn 2>/dev/null | grep -c "tproxy\|return\|reject")
+        _add "nftables" "ok" "Таблица eclipvpn: $rule_count правил"
     else
-        _add "nftables" "error" "Таблица flowvpn не найдена"
+        _add "nftables" "error" "Таблица eclipvpn не найдена"
     fi
 
     # 4. ip rule for tproxy
@@ -1453,8 +1480,8 @@ cmd_diagnose() {
     # blocks for ~100s and overruns uhttpd's 30s network_timeout.
     # `tail -c N` seeks from the end and is O(1).
     local err_count=0 last_err=""
-    if [ -f "$FLOWVPN_TMP/singbox.log" ]; then
-        local err_lines=$(tail -c 262144 "$FLOWVPN_TMP/singbox.log" 2>/dev/null | tr -d '\0' | grep "ERROR")
+    if [ -f "$ECLIPVPN_TMP/singbox.log" ]; then
+        local err_lines=$(tail -c 262144 "$ECLIPVPN_TMP/singbox.log" 2>/dev/null | tr -d '\0' | grep "ERROR")
         if [ -n "$err_lines" ]; then
             err_count=$(printf '%s\n' "$err_lines" | wc -l)
             last_err=$(printf '%s\n' "$err_lines" | tail -1 | sed 's/.*\] //')
@@ -1468,8 +1495,8 @@ cmd_diagnose() {
 
     # 11. Log size — bytes, not line count.
     local log_bytes=0 log_mb=0
-    if [ -f "$FLOWVPN_TMP/singbox.log" ]; then
-        log_bytes=$(wc -c < "$FLOWVPN_TMP/singbox.log" 2>/dev/null)
+    if [ -f "$ECLIPVPN_TMP/singbox.log" ]; then
+        log_bytes=$(wc -c < "$ECLIPVPN_TMP/singbox.log" 2>/dev/null)
         log_mb=$((log_bytes / 1048576))
     fi
     if [ "$log_mb" -ge 10 ]; then
@@ -1513,12 +1540,12 @@ _is_metered_server() {
 
 _record_switch() {
     local from_idx="$1" to_idx="$2" reason="$3"
-    local from_name=$(jq -r ".[$from_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-    local to_name=$(jq -r ".[$to_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+    local from_name=$(jq -r ".[$from_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+    local to_name=$(jq -r ".[$to_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
     jq -n --arg from "$from_name" --arg to "$to_name" --arg reason "$reason" \
         --argjson ts "$(date +%s)" \
         '{time:$ts, from:$from, to:$to, reason:$reason}' \
-        > "$FLOWVPN_TMP/last_switch.json" 2>/dev/null
+        > "$ECLIPVPN_TMP/last_switch.json" 2>/dev/null
 }
 
 # Record a server-stability incident. Stored as a JSON array (last 200) keyed
@@ -1528,14 +1555,14 @@ _log_incident() {
     local type="$1" host="$2" name="$3" detail="$4"
 
     # Suppress incidents while a user-initiated lifecycle op is in flight
-    # (deploy.sh, manual flowvpn restart, UI restart button, set-server).
+    # (deploy.sh, manual eclipvpn restart, UI restart button, set-server).
     # The owner process — whose PID is in op.in_progress — is allowed to
     # log its own diagnostics: cmd_restart's test_xray miss IS something
     # the operator wants to see. But watchdog probing concurrently with a
     # restart shouldn't pollute the journal with "switch_failed" entries
     # whose root cause is just "we were mid-restart". Self-vs-other check
     # by PID lets cmd_restart still record its own failures.
-    local op_marker="$FLOWVPN_TMP/op.in_progress"
+    local op_marker="$ECLIPVPN_TMP/op.in_progress"
     if [ -f "$op_marker" ]; then
         local op_pid
         op_pid=$(cat "$op_marker" 2>/dev/null)
@@ -1544,8 +1571,8 @@ _log_incident() {
         fi
     fi
 
-    local f="$FLOWVPN_TMP/incidents.json"
-    mkdir -p "$FLOWVPN_TMP"
+    local f="$ECLIPVPN_TMP/incidents.json"
+    mkdir -p "$ECLIPVPN_TMP"
     [ -f "$f" ] || echo '[]' > "$f"
     local tmp="$f.tmp.$$"
     jq --arg type "$type" --arg host "$host" --arg name "$name" --arg detail "$detail" \
@@ -1555,7 +1582,7 @@ _log_incident() {
 }
 
 cmd_get_incidents() {
-    local f="$FLOWVPN_TMP/incidents.json"
+    local f="$ECLIPVPN_TMP/incidents.json"
     if [ ! -f "$f" ]; then echo '{"incidents":[],"stats":[]}'; return; fi
     local now=$(date +%s)
     local h24=$((now - 86400))
@@ -1582,7 +1609,7 @@ cmd_get_incidents() {
 }
 
 cmd_clear_incidents() {
-    echo '[]' > "$FLOWVPN_TMP/incidents.json"
+    echo '[]' > "$ECLIPVPN_TMP/incidents.json"
     echo '{"status":"cleared"}'
 }
 
@@ -1644,7 +1671,7 @@ _watchdog_check_wan() {
 # same probe port; using N unique ports complicates teardown on busybox.
 _watchdog_pick_best() {
     local current="$1" total="$2" probe_port="$3"
-    local servers_json="$FLOWVPN_TMP/servers.json"
+    local servers_json="$ECLIPVPN_TMP/servers.json"
     local best_idx="" best_ms=99999
     local i=0
     while [ "$i" -lt "$total" ]; do
@@ -1656,8 +1683,8 @@ _watchdog_pick_best() {
 
         # xray requires .json suffix; mktemp+rename to get it.
         local _wt _wp wd_test wd_probe
-        _wt=$(mktemp "$FLOWVPN_TMP/xray_test.XXXXXX")
-        _wp=$(mktemp "$FLOWVPN_TMP/xray_probe.XXXXXX")
+        _wt=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX")
+        _wp=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX")
         wd_test="${_wt}.json"; wd_probe="${_wp}.json"
         mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
         generate_xray_config "$servers_json" "$i" "$wd_test"
@@ -1678,12 +1705,12 @@ _watchdog_pick_best() {
         local code="${out%% *}" t="${out##* }"
         if [ "$code" = "204" ] || [ "$code" = "200" ]; then
             local ms=$(awk -v t="$t" 'BEGIN { printf "%d", t*1000 }')
-            logger -t flowvpn "Watchdog: $cand_name probe ${ms}ms"
+            logger -t eclipvpn "Watchdog: $cand_name probe ${ms}ms"
             if [ "$ms" -lt "$best_ms" ]; then
                 best_ms=$ms; best_idx=$i
             fi
         else
-            logger -t flowvpn "Watchdog: $cand_name probe failed (code=$code)"
+            logger -t eclipvpn "Watchdog: $cand_name probe failed (code=$code)"
         fi
         i=$((i+1))
     done
@@ -1701,8 +1728,8 @@ cmd_watchdog() {
     # mkdir is the only POSIX-portable atomic-create primitive available
     # on busybox without flock — it gives "first wins, others exit cleanly".
     local me=$$
-    local lockdir="$FLOWVPN_TMP/watchdog.lockdir"
-    mkdir -p "$FLOWVPN_TMP"
+    local lockdir="$ECLIPVPN_TMP/watchdog.lockdir"
+    mkdir -p "$ECLIPVPN_TMP"
     while ! mkdir "$lockdir" 2>/dev/null; do
         local owner
         owner=$(cat "$lockdir/owner" 2>/dev/null)
@@ -1716,7 +1743,7 @@ cmd_watchdog() {
     trap 'rm -rf "$lockdir"; flog "Watchdog stopped"; exit 0' TERM INT EXIT
     # Mirror the owner PID into the legacy lock path for stop()/status code
     # that still reads watchdog.lock.
-    echo "$me" > "$FLOWVPN_TMP/watchdog.lock"
+    echo "$me" > "$ECLIPVPN_TMP/watchdog.lock"
 
     # Unique probe port per-process — survives concurrent set-server probes
     # and other ad-hoc xray runs that might collide on a fixed port.
@@ -1752,7 +1779,7 @@ cmd_watchdog() {
             # flight. cmd_restart's brief stop_xray window otherwise tricks
             # us into revival, which then races the rest of cmd_restart and
             # spawns a parallel xray.
-            local op_marker="$FLOWVPN_TMP/op.in_progress"
+            local op_marker="$ECLIPVPN_TMP/op.in_progress"
             if [ -f "$op_marker" ]; then
                 local op_pid=$(cat "$op_marker" 2>/dev/null)
                 if [ -n "$op_pid" ] && kill -0 "$op_pid" 2>/dev/null; then
@@ -1766,7 +1793,7 @@ cmd_watchdog() {
             local _intent
             _intent=$(get_config_val running_intent false)
             if [ "$_intent" = "true" ]; then
-                local revive_marker="$FLOWVPN_TMP/last_revive"
+                local revive_marker="$ECLIPVPN_TMP/last_revive"
                 local now=$(date +%s)
                 local last=0
                 [ -f "$revive_marker" ] && last=$(cat "$revive_marker" 2>/dev/null)
@@ -1778,7 +1805,12 @@ cmd_watchdog() {
                 else
                     flog "Watchdog: VPN was killed externally, reviving"
                     echo $now > "$revive_marker"
-                    cmd_start >/dev/null 2>&1
+                    # Subshell: cmd_start's `trap _op_end EXIT` only fires on
+                    # process exit, and the watchdog never exits. A bare call
+                    # would leak op.lockdir forever (owner=watchdog), wedging
+                    # every later user lifecycle op. The subshell makes EXIT
+                    # fire on its own exit, releasing the lock.
+                    ( cmd_start ) >/dev/null 2>&1
                 fi
             fi
             continue
@@ -1799,16 +1831,16 @@ cmd_watchdog() {
             # this, an outage that started at 08:24 and ended at 08:28
             # would just leave the journal stuck on its last wan_down line
             # with no indication things came back.
-            local wan_marker="$FLOWVPN_TMP/wan_down_since"
+            local wan_marker="$ECLIPVPN_TMP/wan_down_since"
             if [ -f "$wan_marker" ]; then
                 local since=$(cat "$wan_marker" 2>/dev/null)
-                local ticks=$(cat "$FLOWVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
+                local ticks=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
                 local duration_s=$(( $(date +%s) - ${since:-$(date +%s)} ))
-                logger -t flowvpn "Watchdog: WAN recovered after ${duration_s}s ($ticks ticks)"
+                logger -t eclipvpn "Watchdog: WAN recovered after ${duration_s}s ($ticks ticks)"
                 _log_incident "wan_recovered" "" "" "восстановлен через ${duration_s}с (было ${ticks} проверок без связи)"
-                rm -f "$wan_marker" "$FLOWVPN_TMP/wan_down_ticks"
+                rm -f "$wan_marker" "$ECLIPVPN_TMP/wan_down_ticks"
             fi
-            [ "$silent_fails" -gt 0 ] && logger -t flowvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
+            [ "$silent_fails" -gt 0 ] && logger -t eclipvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
             fail_count=0
             silent_fails=0
             continue
@@ -1828,18 +1860,18 @@ cmd_watchdog() {
         # ISP glitch — the recovery path above will emit a single
         # wan_recovered line summarising the streak.
         if ! _watchdog_check_wan; then
-            local wan_marker="$FLOWVPN_TMP/wan_down_since"
+            local wan_marker="$ECLIPVPN_TMP/wan_down_since"
             if [ ! -f "$wan_marker" ]; then
                 date +%s > "$wan_marker"
-                echo 1 > "$FLOWVPN_TMP/wan_down_ticks"
-                logger -t flowvpn "Watchdog: WAN down — provider issue, not switching ($why)"
+                echo 1 > "$ECLIPVPN_TMP/wan_down_ticks"
+                logger -t eclipvpn "Watchdog: WAN down — provider issue, not switching ($why)"
                 local _cur_idx=$(get_config_val selected_server 0)
-                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                 _log_incident "wan_down" "$_cur_host" "$_cur_name" "WAN недоступен ($why)"
             else
-                local n=$(cat "$FLOWVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
-                echo $((n + 1)) > "$FLOWVPN_TMP/wan_down_ticks"
+                local n=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
+                echo $((n + 1)) > "$ECLIPVPN_TMP/wan_down_ticks"
             fi
             continue
         fi
@@ -1852,24 +1884,24 @@ cmd_watchdog() {
         # next tick and used to clutter the journal with false positives.
         # The 5/5 final fail still drives the switch path unchanged.
         if [ "$fail_count" -le "$max_fails" ]; then
-            logger -t flowvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
+            logger -t eclipvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
             if [ "$fail_count" -ge 3 ]; then
                 local _cur_idx=$(get_config_val selected_server 0)
-                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                 _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
             fi
         else
             silent_fails=$((silent_fails + 1))
             # One reminder every ~5 min while still down
-            [ $((silent_fails % 15)) -eq 0 ] && logger -t flowvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
+            [ $((silent_fails % 15)) -eq 0 ] && logger -t eclipvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
         fi
 
         if [ "$fail_count" -eq "$max_fails" ]; then
-            logger -t flowvpn "Watchdog: switching server (cause: $why)"
+            logger -t eclipvpn "Watchdog: switching server (cause: $why)"
 
             local current=$(get_config_val selected_server 0)
-            local total=$(jq 'length' "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+            local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
             [ -z "$total" ] && continue
 
             # Probe ALL non-metered, non-current candidates and pick the one
@@ -1880,15 +1912,17 @@ cmd_watchdog() {
             local pick=$(_watchdog_pick_best "$current" "$total" "$probe_port")
             if [ -n "$pick" ]; then
                 local selected="${pick% *}" best_ms="${pick##* }"
-                local cand_name=$(jq -r ".[$selected].name" "$FLOWVPN_TMP/servers.json")
-                local _cand_host=$(jq -r ".[$selected].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                local _from_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                logger -t flowvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
+                local cand_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
+                local _cand_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local _from_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                logger -t eclipvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
                 _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
                 _record_switch "$current" "$selected" "failover"
-                local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$FLOWVPN_CONFIG")
-                save_config "$tmp"
-                cmd_restart >/dev/null 2>&1
+                local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+                save_config "$tmp" || flog "WARN: failover save_config failed (will retry next tick)"
+                # Subshell so cmd_restart's EXIT trap releases the op-lock —
+                # see the revival call above; a bare call leaks it forever.
+                ( cmd_restart ) >/dev/null 2>&1
                 fail_count=0
                 silent_fails=0
                 # Give the new server time to stabilize before next probe.
@@ -1897,9 +1931,9 @@ cmd_watchdog() {
             else
                 # No candidate answered — could be everything blocked, key
                 # rotation, or a flaky upstream. Stay put, back off.
-                logger -t flowvpn "Watchdog: no working candidates — staying on current server ($why)"
-                local _cur_name=$(jq -r ".[$current].name // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
-                local _cur_host=$(jq -r ".[$current].host // \"\"" "$FLOWVPN_TMP/servers.json" 2>/dev/null)
+                logger -t eclipvpn "Watchdog: no working candidates — staying on current server ($why)"
+                local _cur_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local _cur_host=$(jq -r ".[$current].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                 _log_incident "switch_failed" "$_cur_host" "$_cur_name" "все кандидаты недоступны"
             fi
         fi
@@ -1929,10 +1963,10 @@ cmd_get_traffic() {
     # The whole RMW is wrapped in flock — UI polls every 5s and two open
     # tabs would otherwise both read the same `seen` snapshot, compute
     # the same deltas, and double-count traffic.
-    mkdir -p "$FLOWVPN_TMP"
-    local state_file="$FLOWVPN_TMP/traffic_state.json"
+    mkdir -p "$ECLIPVPN_TMP"
+    local state_file="$ECLIPVPN_TMP/traffic_state.json"
     (
-        flock -x 200
+        command -v flock >/dev/null 2>&1 && flock -x 200
         [ -f "$state_file" ] || \
             printf '%s\n' '{"vpn_dl":0,"vpn_ul":0,"dir_dl":0,"dir_ul":0,"started":0,"seen":{}}' > "$state_file"
 
@@ -2033,7 +2067,7 @@ cmd_real_ping() {
     else
         local msg
         msg=$(echo "$resp" | jq -r '.message // "timeout"' 2>/dev/null)
-        echo "{\"ok\":false, \"error\":\"$msg\"}"
+        jq -n --arg e "$msg" '{ok:false, error:$e}'
     fi
 }
 
@@ -2042,10 +2076,10 @@ cmd_reset_traffic() {
     # fresh accounting window. Keeps `seen{}` populated with current
     # connection IDs so the next poll computes deltas from now, not from
     # whatever bytes those open connections had accumulated before.
-    local state_file="$FLOWVPN_TMP/traffic_state.json"
-    mkdir -p "$FLOWVPN_TMP"
+    local state_file="$ECLIPVPN_TMP/traffic_state.json"
+    mkdir -p "$ECLIPVPN_TMP"
     (
-        flock -x 200
+        command -v flock >/dev/null 2>&1 && flock -x 200
         local now=$(date +%s)
         local seen='{}'
         if [ -f "$state_file" ]; then
@@ -2067,20 +2101,29 @@ cmd_schedule() {
     case "$action" in
         set)
             [ -z "$on_time" ] || [ -z "$off_time" ] && { echo '{"error":"need on_time and off_time"}'; return 1; }
+            # Reject HH:MM with hour 24-29 (the CGI's [0-2][0-9] pattern lets
+            # those through); cron would silently never fire on them.
+            local _t
+            for _t in "$on_time" "$off_time"; do
+                case "$_t" in
+                    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+                    *) echo '{"error":"time must be HH:MM in 00:00-23:59"}'; return 1 ;;
+                esac
+            done
             local tmp=$(jq --arg on "$on_time" --arg off "$off_time" \
-                '.schedule = {enabled:true, on:$on, off:$off}' "$FLOWVPN_CONFIG")
-            save_config "$tmp"
+                '.schedule = {enabled:true, on:$on, off:$off}' "$ECLIPVPN_CONFIG")
+            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
             _setup_cron
-            echo "{\"status\":\"schedule set\",\"on\":\"$on_time\",\"off\":\"$off_time\"}"
+            jq -n --arg on "$on_time" --arg off "$off_time" '{status:"schedule set",on:$on,off:$off}'
             ;;
         disable)
-            local tmp=$(jq '.schedule.enabled = false' "$FLOWVPN_CONFIG")
-            save_config "$tmp"
+            local tmp=$(jq '.schedule.enabled = false' "$ECLIPVPN_CONFIG")
+            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
             _remove_cron
             echo '{"status":"schedule disabled"}'
             ;;
         *)
-            local sched=$(jq '.schedule // {enabled:false}' "$FLOWVPN_CONFIG")
+            local sched=$(jq '.schedule // {enabled:false}' "$ECLIPVPN_CONFIG")
             echo "$sched"
             ;;
     esac
@@ -2089,8 +2132,8 @@ cmd_schedule() {
 _setup_cron() {
     _remove_cron
     local on_time off_time
-    on_time=$(jq -r '.schedule.on // "07:00"' "$FLOWVPN_CONFIG")
-    off_time=$(jq -r '.schedule.off // "23:00"' "$FLOWVPN_CONFIG")
+    on_time=$(jq -r '.schedule.on // "07:00"' "$ECLIPVPN_CONFIG")
+    off_time=$(jq -r '.schedule.off // "23:00"' "$ECLIPVPN_CONFIG")
     # Re-validate HH:MM. The CGI checks at the boundary, but cmd_restore
     # writes .schedule from a backup blob — a crafted backup could put
     # "07:00; rm -rf /" in here and that string would otherwise land
@@ -2099,12 +2142,12 @@ _setup_cron() {
     case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.off '$off_time' — cron not installed"; return 1 ;; esac
     local on_h=${on_time%%:*} on_m=${on_time##*:}
     local off_h=${off_time%%:*} off_m=${off_time##*:}
-    (crontab -l 2>/dev/null; echo "$on_m $on_h * * * /usr/bin/flowvpn start >/dev/null 2>&1 #flowvpn") | crontab -
-    (crontab -l 2>/dev/null; echo "$off_m $off_h * * * /usr/bin/flowvpn stop >/dev/null 2>&1 #flowvpn") | crontab -
+    (crontab -l 2>/dev/null; echo "$on_m $on_h * * * /usr/bin/eclipvpn start >/dev/null 2>&1 #eclipvpn") | crontab -
+    (crontab -l 2>/dev/null; echo "$off_m $off_h * * * /usr/bin/eclipvpn stop >/dev/null 2>&1 #eclipvpn") | crontab -
 }
 
 _remove_cron() {
-    crontab -l 2>/dev/null | grep -v "#flowvpn" | crontab -
+    crontab -l 2>/dev/null | grep -v "#eclipvpn" | crontab -
 }
 
 # ============================================================
@@ -2115,30 +2158,30 @@ cmd_auto_update() {
     local action="$1"
     case "$action" in
         enable)
-            local tmp=$(jq '.auto_update = true' "$FLOWVPN_CONFIG")
+            local tmp=$(jq '.auto_update = true' "$ECLIPVPN_CONFIG")
             save_config "$tmp"
             _setup_auto_update_cron
             echo '{"status":"auto-update enabled"}'
             ;;
         disable)
-            local tmp=$(jq '.auto_update = false' "$FLOWVPN_CONFIG")
+            local tmp=$(jq '.auto_update = false' "$ECLIPVPN_CONFIG")
             save_config "$tmp"
             _remove_auto_update_cron
             echo '{"status":"auto-update disabled"}'
             ;;
         *)
-            jq '{auto_update: (.auto_update // false)}' "$FLOWVPN_CONFIG"
+            jq '{auto_update: (.auto_update // false)}' "$ECLIPVPN_CONFIG"
             ;;
     esac
 }
 
 _setup_auto_update_cron() {
     _remove_auto_update_cron
-    (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/flowvpn update >/dev/null 2>&1 #flowvpn-update") | crontab -
+    (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/eclipvpn update >/dev/null 2>&1 #eclipvpn-update") | crontab -
 }
 
 _remove_auto_update_cron() {
-    crontab -l 2>/dev/null | grep -v "#flowvpn-update" | crontab -
+    crontab -l 2>/dev/null | grep -v "#eclipvpn-update" | crontab -
 }
 
 # ============================================================
@@ -2147,9 +2190,9 @@ _remove_auto_update_cron() {
 
 cmd_backup() {
     local direct_domains="" vpn_domains=""
-    [ -f /etc/flowvpn/direct_domains.txt ] && direct_domains=$(cat /etc/flowvpn/direct_domains.txt)
-    [ -f /etc/flowvpn/vpn_domains.txt ] && vpn_domains=$(cat /etc/flowvpn/vpn_domains.txt)
-    jq -n --argjson config "$(cat $FLOWVPN_CONFIG)" \
+    [ -f /etc/eclipvpn/direct_domains.txt ] && direct_domains=$(cat /etc/eclipvpn/direct_domains.txt)
+    [ -f /etc/eclipvpn/vpn_domains.txt ] && vpn_domains=$(cat /etc/eclipvpn/vpn_domains.txt)
+    jq -n --argjson config "$(cat $ECLIPVPN_CONFIG)" \
         --arg direct "$direct_domains" --arg vpn "$vpn_domains" \
         '{config:$config, direct_domains:$direct, vpn_domains:$vpn, version:"v4"}'
 }
@@ -2181,10 +2224,10 @@ cmd_restore() {
     local re='^[a-zA-Z0-9*][a-zA-Z0-9.*_-]*$'
     printf '%s' "$data" | jq -r '.direct_domains // ""' \
         | tr -d '\r' | grep -v '\.\.' | grep -E "$re" \
-        > /etc/flowvpn/direct_domains.txt 2>/dev/null
+        > /etc/eclipvpn/direct_domains.txt 2>/dev/null
     printf '%s' "$data" | jq -r '.vpn_domains // ""' \
         | tr -d '\r' | grep -v '\.\.' | grep -E "$re" \
-        > /etc/flowvpn/vpn_domains.txt 2>/dev/null
+        > /etc/eclipvpn/vpn_domains.txt 2>/dev/null
     echo '{"status":"restored"}'
 }
 
@@ -2230,7 +2273,7 @@ cmd_set_device_route() {
         echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
     fi
     local tmp=$(jq --arg id "$id" --arg r "$route" \
-        '.device_rules[$id] = $r' "$FLOWVPN_CONFIG")
+        '.device_rules[$id] = $r' "$ECLIPVPN_CONFIG")
     save_config "$tmp"
     # Rebuild nftables if running
     if is_singbox_running; then
@@ -2249,7 +2292,7 @@ cmd_remove_device_route() {
     elif ! _validate_ipv4 "$id"; then
         echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
     fi
-    local tmp=$(jq --arg id "$id" 'del(.device_rules[$id])' "$FLOWVPN_CONFIG")
+    local tmp=$(jq --arg id "$id" 'del(.device_rules[$id])' "$ECLIPVPN_CONFIG")
     save_config "$tmp"
     if is_singbox_running; then
         local iface=$(get_config_val interface "br-lan")
@@ -2274,7 +2317,7 @@ cmd_system_info() {
     local cpu_model=$(awk -F: '/model name|Hardware/{print $2;exit}' /proc/cpuinfo 2>/dev/null | sed 's/^ //')
     local arch=$(uname -m)
     jq -n \
-        --arg flowvpn "4.0.0" \
+        --arg eclipvpn "$ECLIPVPN_VERSION" \
         --arg xray "$xray_ver" \
         --arg singbox "$sb_ver" \
         --arg openwrt "$fw_ver" \
@@ -2287,7 +2330,7 @@ cmd_system_info() {
         --argjson flash_total_kb "${flash_total:-0}" \
         --argjson flash_used_kb "${flash_used:-0}" \
         --argjson flash_avail_kb "${flash_avail:-0}" \
-        '{flowvpn:$flowvpn, xray:$xray, singbox:$singbox, openwrt:$openwrt,
+        '{eclipvpn:$eclipvpn, xray:$xray, singbox:$singbox, openwrt:$openwrt,
           arch:$arch, cpu:$cpu, load:$load, sys_uptime:$sys_uptime,
           mem_total_kb:$mem_total_kb, mem_avail_kb:$mem_avail_kb,
           flash_total_kb:$flash_total_kb, flash_used_kb:$flash_used_kb,
@@ -2303,9 +2346,9 @@ cmd_healthcheck() {
     }
 
     # 1. Processes
-    is_xray_running && _hc "xray" "ok" "PID $(cat /tmp/flowvpn/xray.pid)" \
+    is_xray_running && _hc "xray" "ok" "PID $(cat /tmp/eclipvpn/xray.pid)" \
         || _hc "xray" "error" "Не запущен"
-    is_singbox_running && _hc "sing-box" "ok" "PID $(cat /tmp/flowvpn/singbox.pid)" \
+    is_singbox_running && _hc "sing-box" "ok" "PID $(cat /tmp/eclipvpn/singbox.pid)" \
         || _hc "sing-box" "error" "Не запущен"
 
     # 2. Ports
@@ -2317,11 +2360,11 @@ cmd_healthcheck() {
         || _hc "DNS :5354" "error" "Порт не открыт"
 
     # 3. nftables
-    if nft list table ip flowvpn >/dev/null 2>&1; then
-        local rc=$(nft list table ip flowvpn 2>/dev/null | grep -c "return\|tproxy\|reject")
-        _hc "nftables" "ok" "$rc правил в таблице flowvpn"
+    if nft list table ip eclipvpn >/dev/null 2>&1; then
+        local rc=$(nft list table ip eclipvpn 2>/dev/null | grep -c "return\|tproxy\|reject")
+        _hc "nftables" "ok" "$rc правил в таблице eclipvpn"
     else
-        _hc "nftables" "error" "Таблица flowvpn не найдена"
+        _hc "nftables" "error" "Таблица eclipvpn не найдена"
     fi
 
     # 4. IP rule
@@ -2380,7 +2423,7 @@ cmd_healthcheck() {
     # (router itself isn't tproxied — that would cause a routing loop).
     if is_xray_running; then
         local cur_vpn_ip trace seen_ip
-        cur_vpn_ip=$(cat "$FLOWVPN_TMP/vpn_ip" 2>/dev/null)
+        cur_vpn_ip=$(cat "$ECLIPVPN_TMP/vpn_ip" 2>/dev/null)
         trace=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://1.1.1.1/cdn-cgi/trace 2>/dev/null)
         seen_ip=$(echo "$trace" | awk -F= '/^ip=/{print $2;exit}')
         if [ -z "$seen_ip" ]; then
@@ -2404,11 +2447,16 @@ cmd_healthcheck() {
     #   - "dns: exchange failed" — Apple push-DNS hiccups (iPhone retries).
     # What still counts as a real error: xray crashes, sing-box panics,
     # outbound/socks failures (= our VPN tunnel broke), config errors.
-    local cutoff_str=$(date -u -d "@$(($(date +%s) - 3600))" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    local _cut=$(($(date +%s) - 3600))
+    # `date -d @epoch` is GNU-only; busybox needs `-D %s -d <epoch>`. Try GNU
+    # first, fall back to the busybox form so the freshness cutoff is never
+    # empty (empty silently disabled the whole error count on busybox).
+    local cutoff_str=$(date -u -d "@$_cut" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    [ -z "$cutoff_str" ] && cutoff_str=$(date -u -D %s -d "$_cut" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
     local sb_err=0 xr_err=0 sb_noise=0
-    if [ -n "$cutoff_str" ] && [ -f /tmp/flowvpn/singbox.log ]; then
+    if [ -n "$cutoff_str" ] && [ -f /tmp/eclipvpn/singbox.log ]; then
         local sb_counts
-        sb_counts=$(grep "ERROR" /tmp/flowvpn/singbox.log 2>/dev/null | awk -v c="$cutoff_str" '
+        sb_counts=$(grep "ERROR" /tmp/eclipvpn/singbox.log 2>/dev/null | awk -v c="$cutoff_str" '
             {
                 if ($2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) next
                 ts=$2" "$3
@@ -2421,8 +2469,8 @@ cmd_healthcheck() {
         sb_err="${sb_counts%% *}"
         sb_noise="${sb_counts##* }"
     fi
-    if [ -n "$cutoff_str" ] && [ -f /tmp/flowvpn/xray.log ]; then
-        xr_err=$(grep -iE "error|fail" /tmp/flowvpn/xray.log 2>/dev/null | awk -v c="$cutoff_str" '
+    if [ -n "$cutoff_str" ] && [ -f /tmp/eclipvpn/xray.log ]; then
+        xr_err=$(grep -iE "error|fail" /tmp/eclipvpn/xray.log 2>/dev/null | awk -v c="$cutoff_str" '
             { if ($1 ~ /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}$/) { gsub("/","-",$1); ts=$1" "$2; if (ts >= c) cnt++ } }
             END { print cnt+0 }')
     fi
@@ -2447,7 +2495,7 @@ cmd_healthcheck() {
     _hc "CPU" "ok" "Load: $cpu"
 
     # 12. Log rotation
-    local log_lines=$(wc -l < /tmp/flowvpn/singbox.log 2>/dev/null || echo 0)
+    local log_lines=$(wc -l < /tmp/eclipvpn/singbox.log 2>/dev/null || echo 0)
     [ "$log_lines" -lt 5000 ] && _hc "Лог" "ok" "$log_lines строк" \
         || _hc "Лог" "warn" "$log_lines строк — рекомендуется очистить"
 
@@ -2474,18 +2522,18 @@ cmd_set_wifi() {
 # Init
 # ============================================================
 
-if [ ! -f "$FLOWVPN_CONFIG" ]; then
-    mkdir -p /etc/flowvpn
-    echo '{"subscription_url":"","selected_server":0,"interface":"br-lan","auto_start":true,"mode":"all_vpn"}' | jq '.' > "$FLOWVPN_CONFIG"
-    chmod 600 "$FLOWVPN_CONFIG" 2>/dev/null
+if [ ! -f "$ECLIPVPN_CONFIG" ]; then
+    mkdir -p /etc/eclipvpn
+    echo '{"subscription_url":"","selected_server":0,"interface":"br-lan","auto_start":true,"mode":"all_vpn"}' | jq '.' > "$ECLIPVPN_CONFIG"
+    chmod 600 "$ECLIPVPN_CONFIG" 2>/dev/null
 fi
 # Defense in depth: tighten if a previous version left it world-readable.
-[ -f "$FLOWVPN_CONFIG" ] && chmod 600 "$FLOWVPN_CONFIG" 2>/dev/null
+[ -f "$ECLIPVPN_CONFIG" ] && chmod 600 "$ECLIPVPN_CONFIG" 2>/dev/null
 
 case "$1" in
     start)          cmd_start ;;
     stop)           cmd_stop ;;
-    restart)        cmd_restart ;;
+    restart)        cmd_restart "$2" ;;
     status)         cmd_status ;;
     set-server)     cmd_set_server "$2" ;;
     probe-server)   cmd_probe_server "$2" ;;
@@ -2504,9 +2552,9 @@ case "$1" in
         # Truncate the two files we own and stamp a "cleared" marker so
         # cmd_get_log can hide everything older from syslog (the syslog
         # ringbuffer is router-wide and cannot be selectively cleared).
-        > "$FLOWVPN_TMP/singbox.log"
-        > "$FLOWVPN_TMP/xray.log"
-        date +%s > "$FLOWVPN_TMP/log_cleared_ts"
+        > "$ECLIPVPN_TMP/singbox.log"
+        > "$ECLIPVPN_TMP/xray.log"
+        date +%s > "$ECLIPVPN_TMP/log_cleared_ts"
         echo '{"status":"cleared"}'
         ;;
     diagnose)       cmd_diagnose ;;
@@ -2529,12 +2577,12 @@ case "$1" in
     set-config)     cmd_set_config "$2" "$3" ;;
     set-wifi)       cmd_set_wifi "$2" "$3" ;;
     *)
-        echo "FlowVPN v4 — VPN for OpenWrt"
-        echo "Usage: flowvpn {start|stop|restart|status|set-server N|update|ping}"
-        echo "       flowvpn {set-mode all_vpn|blocklist}"
-        echo "       flowvpn {add-domain DOMAIN direct|vpn}"
-        echo "       flowvpn {remove-domain DOMAIN direct|vpn}"
-        echo "       flowvpn {get-domains|get-devices|get-log|get-dns}"
-        echo "       flowvpn {set-config KEY VALUE|set-wifi SSID PASSWORD}"
+        echo "EclipVPN v4 — VPN for OpenWrt"
+        echo "Usage: eclipvpn {start|stop|restart|status|set-server N|update|ping}"
+        echo "       eclipvpn {set-mode all_vpn|blocklist}"
+        echo "       eclipvpn {add-domain DOMAIN direct|vpn}"
+        echo "       eclipvpn {remove-domain DOMAIN direct|vpn}"
+        echo "       eclipvpn {get-domains|get-devices|get-log|get-dns}"
+        echo "       eclipvpn {set-config KEY VALUE|set-wifi SSID PASSWORD}"
         ;;
 esac

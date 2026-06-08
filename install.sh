@@ -29,16 +29,61 @@ if [ ! -f /etc/openwrt_release ]; then
     exit 1
 fi
 
+# Migrate an old "flowvpn"-named install (pre-2026.06) to the new eclipvpn
+# paths: stop+disable the old service, kill its watchdog, clean its nft/dnsmasq
+# state, move config (preserving subscription/settings), remove old files.
+# Idempotent — safe if no old install exists.
+if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
+    echo "[0/6] Migrating old flowvpn install -> eclipvpn..."
+    /etc/init.d/flowvpn stop >/dev/null 2>&1 || true
+    /etc/init.d/flowvpn disable >/dev/null 2>&1 || true
+    for p in /proc/[0-9]*; do
+        [ -r "$p/cmdline" ] || continue
+        case $(tr "\0" " " < "$p/cmdline") in
+            "/bin/ash /usr/bin/flowvpn watchdog"*) kill -9 "${p##*/}" 2>/dev/null || true ;;
+        esac
+    done
+    nft delete table ip flowvpn 2>/dev/null || true
+    nft delete table ip flowvpn_dns 2>/dev/null || true
+    rm -f /tmp/dnsmasq.d/flowvpn.conf
+    if [ -d /etc/flowvpn ] && [ ! -e /etc/eclipvpn ]; then
+        mv /etc/flowvpn /etc/eclipvpn
+    elif [ -d /etc/flowvpn ]; then
+        rm -rf /etc/flowvpn
+    fi
+    rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
+fi
+
 echo "[1/6] Installing dependencies..."
-opkg update >/dev/null 2>&1
-opkg install jq coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed" || true
+# OpenWrt 24.10+/25.x replaced opkg with apk (apk-tools 3). Detect either so
+# the installer works on both. opkg-only broke silently on modern firmware.
+if command -v apk >/dev/null 2>&1; then
+    PKG_INSTALL="apk add"; apk update >/dev/null 2>&1 || true
+elif command -v opkg >/dev/null 2>&1; then
+    PKG_INSTALL="opkg install"; opkg update >/dev/null 2>&1 || true
+else
+    echo "ERROR: no package manager (apk/opkg) found"; exit 1
+fi
+# curl is a hard runtime dependency (subscription fetch, all probes, Clash
+# API, rule-set downloads) and is NOT in busybox base — it was missing here.
+$PKG_INSTALL jq curl ca-bundle coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed|Installed" || true
+# Hard-verify mandatory binaries — the grep above can swallow a failed install.
+for b in jq curl sing-box; do
+    command -v "$b" >/dev/null 2>&1 || { echo "ERROR: required dependency '$b' missing after install ($PKG_INSTALL)"; exit 1; }
+done
 
 echo "[2/6] Installing xray-core 26.4.17..."
 case "$ARCH" in
-    aarch64) XRAY_ARCH="arm64-v8a" ;;
-    armv7l)  XRAY_ARCH="arm32-v7a" ;;
-    x86_64)  XRAY_ARCH="64" ;;
-    *)       echo "ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
+    aarch64)   XRAY_ARCH="arm64-v8a" ;;
+    armv7l)    XRAY_ARCH="arm32-v7a" ;;
+    x86_64)    XRAY_ARCH="64" ;;
+    i386|i686) XRAY_ARCH="32" ;;
+    # mips endianness isn't reliably distinguishable via uname -m on all
+    # builds; this covers the common case (BE=mips32, LE=mipsel→mips32le).
+    mips)      XRAY_ARCH="mips32" ;;
+    mipsel)    XRAY_ARCH="mips32le" ;;
+    riscv64)   XRAY_ARCH="riscv64" ;;
+    *)         echo "ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
 XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-${XRAY_ARCH}.zip"
@@ -59,26 +104,26 @@ echo "  xray $(/usr/bin/xray version 2>&1 | head -1)"
 echo "[3/6] Downloading EclipVPN..."
 # /www/eclipvpn/ is the canonical UI path (rebrand April 2026).
 # /www/flowvpn/index.html stays as a meta-refresh redirect for old bookmarks.
-mkdir -p /usr/lib/flowvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/flowvpn /tmp/flowvpn
+mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/eclipvpn /tmp/eclipvpn
 
 # Files where source path == destination path
 for file in \
-    usr/bin/flowvpn \
-    usr/lib/flowvpn/parse.sh \
-    usr/lib/flowvpn/xray.sh \
-    usr/lib/flowvpn/singbox.sh \
-    usr/lib/flowvpn/network.sh \
-    www/cgi-bin/flowvpn \
-    etc/init.d/flowvpn; do
+    usr/bin/eclipvpn \
+    usr/lib/eclipvpn/parse.sh \
+    usr/lib/eclipvpn/xray.sh \
+    usr/lib/eclipvpn/singbox.sh \
+    usr/lib/eclipvpn/network.sh \
+    www/cgi-bin/eclipvpn \
+    etc/init.d/eclipvpn; do
     wget -q $WGET_AUTH "$REPO/$file" -O "/$file" || { echo "ERROR: Failed to download $file"; exit 1; }
     chmod +x "/$file"
 done
 
-# UI: source www/flowvpn/index.html → install to /www/eclipvpn/index.html
+# UI: source www/eclipvpn/index.html → install to /www/eclipvpn/index.html
 wget -q $WGET_AUTH "$REPO/www/flowvpn/index.html" -O /www/eclipvpn/index.html \
     || { echo "ERROR: Failed to download UI"; exit 1; }
 
-# Backward-compat redirect for /flowvpn/ bookmarks.
+# Backward-compat redirect for /eclipvpn/ bookmarks.
 cat > /www/flowvpn/index.html <<'EOF'
 <!DOCTYPE html>
 <meta charset="utf-8">
@@ -88,7 +133,7 @@ cat > /www/flowvpn/index.html <<'EOF'
 EOF
 
 echo "[4/6] Initial configuration..."
-/usr/bin/flowvpn >/dev/null 2>&1 || true  # Creates default config
+/usr/bin/eclipvpn >/dev/null 2>&1 || true  # Creates default config
 
 echo "[5/6] Optional: RemoteRouteRich (always-on remote access via vendor Tailscale)..."
 # Vendor-hosted Headscale at rc.routerich.ru — works under CGNAT, no white IP, free.
@@ -130,18 +175,18 @@ echo "=============================="
 echo ""
 echo "Next steps:"
 echo "  1. Set your subscription URL:"
-echo "     flowvpn set-config subscription_url 'https://your-url'"
+echo "     eclipvpn set-config subscription_url 'https://your-url'"
 echo ""
 echo "  2. Update servers:"
-echo "     flowvpn update"
+echo "     eclipvpn update"
 echo ""
 echo "  3. Start VPN:"
-echo "     flowvpn start"
+echo "     eclipvpn start"
 echo ""
 echo "  4. Open Web UI:"
 LAN_IP=$(ip -4 addr show br-lan 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
 echo "     http://${LAN_IP:-router-ip}/eclipvpn/"
 echo ""
 echo "  5. Enable autostart:"
-echo "     /etc/init.d/flowvpn enable"
+echo "     /etc/init.d/eclipvpn enable"
 echo ""

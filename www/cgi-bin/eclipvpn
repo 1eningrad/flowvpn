@@ -1,5 +1,5 @@
 #!/bin/ash
-# FlowVPN v4 — CGI API
+# EclipVPN v4 — CGI API
 
 echo "Content-Type: application/json"
 echo ""
@@ -8,13 +8,22 @@ echo ""
 
 _bad() { echo "{\"error\":\"invalid $1\"}"; exit 0; }
 
+# Full percent-decode (busybox-safe): + -> space, %XX -> the byte.
+# The old four-token sed only handled %2F/%3A/%20/+, so subscription URLs
+# carrying ?, &, =, # (encodeURIComponent output) reached set-config
+# corrupted and silently failed to fetch. Validators run AFTER this, so the
+# whitelists still gate the final decoded bytes.
+_urldec() {
+    printf '%b' "$(printf '%s' "$1" | sed -e 's/+/ /g' -e 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+}
+
 # Parse query string
 action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
-on_time="" off_time="" ip_addr="" route="" op="" preset_name=""
+on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force=""
 IFS='&'
 for pair in $QUERY_STRING; do
     k="${pair%%=*}"; v="${pair#*=}"
-    v=$(echo "$v" | sed 's/%2[Ff]/\//g; s/%3[Aa]/:/g; s/+/ /g; s/%20/ /g')
+    v=$(_urldec "$v")
     case "$k" in
         action) action="$v" ;; index) index="$v" ;; mode) mode="$v" ;;
         domain) domain="$v" ;; list) list="$v" ;; key) key="$v" ;; value) value="$v" ;;
@@ -22,6 +31,7 @@ for pair in $QUERY_STRING; do
         on) on_time="$v" ;; off) off_time="$v" ;;
         ip) ip_addr="$v" ;; route) route="$v" ;;
         op) op="$v" ;; name) preset_name="$v" ;;
+        force) force="$v" ;;
     esac
 done
 unset IFS
@@ -38,8 +48,9 @@ unset IFS
 [ -n "$domain" ]   && case "$domain"   in .*|*..*|*/*/*|*[!a-zA-Z0-9.*/_-]*) _bad domain;; esac
 [ -n "$op" ]       && case "$op"       in list|enable|disable) ;; *)   _bad op;;     esac
 [ -n "$preset_name" ] && case "$preset_name" in *[!a-z]*)              _bad name;;   esac
-[ -n "$on_time" ]  && case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) _bad on;;     esac
-[ -n "$off_time" ] && case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) _bad off;;    esac
+[ -n "$force" ]    && case "$force"    in 0|1) ;; *)                   _bad force;;  esac
+[ -n "$on_time" ]  && case "$on_time"  in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) _bad on;;  esac
+[ -n "$off_time" ] && case "$off_time" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) _bad off;; esac
 [ -n "$ip_addr" ]  && case "$ip_addr"  in
     # IPv4 dotted-quad (digits + dots only)
     [0-9]*.[0-9]*.[0-9]*.[0-9]*) case "$ip_addr" in *[!0-9.]*) _bad ip;; esac ;;
@@ -53,64 +64,64 @@ body=""
 [ "$REQUEST_METHOD" = "POST" ] && body=$(head -c 65536)
 
 case "$action" in
-    status)         /usr/bin/flowvpn status ;;
-    start)          /usr/bin/flowvpn start ;;
-    stop)           /usr/bin/flowvpn stop ;;
-    restart)        /usr/bin/flowvpn restart ;;
-    update)         /usr/bin/flowvpn update ;;
-    set-server)     /usr/bin/flowvpn set-server "$index" ;;
-    probe-server)   /usr/bin/flowvpn probe-server "$index" ;;
-    ping)           /usr/bin/flowvpn ping ;;
-    auto-select)    /usr/bin/flowvpn auto-select ;;
-    set-mode)       /usr/bin/flowvpn set-mode "$mode" ;;
-    add-domain)     /usr/bin/flowvpn add-domain "$domain" "$list" ;;
-    remove-domain)  /usr/bin/flowvpn remove-domain "$domain" "$list" ;;
-    get-domains)    /usr/bin/flowvpn get-domains ;;
-    preset)         /usr/bin/flowvpn preset "${op:-list}" "$preset_name" ;;
-    get-devices)    /usr/bin/flowvpn get-devices ;;
-    get-log)        /usr/bin/flowvpn get-log "${lines:-100}" "${filter:-all}" ;;
-    clear-log)      /usr/bin/flowvpn clear-log ;;
-    diagnose)       /usr/bin/flowvpn diagnose ;;
-    healthcheck)    /usr/bin/flowvpn healthcheck ;;
-    system-info)    /usr/bin/flowvpn system-info ;;
-    get-traffic)    /usr/bin/flowvpn get-traffic ;;
-    traffic-poll)   /usr/bin/flowvpn traffic-poll ;;
-    reset-traffic)  /usr/bin/flowvpn reset-traffic ;;
-    real-ping)      /usr/bin/flowvpn real-ping ;;
-    get-incidents)  /usr/bin/flowvpn get-incidents ;;
-    clear-incidents) /usr/bin/flowvpn clear-incidents ;;
+    status)         /usr/bin/eclipvpn status ;;
+    start)          /usr/bin/eclipvpn start ;;
+    stop)           /usr/bin/eclipvpn stop ;;
+    restart)        /usr/bin/eclipvpn restart "$force" ;;
+    update)         /usr/bin/eclipvpn update ;;
+    set-server)     /usr/bin/eclipvpn set-server "$index" ;;
+    probe-server)   /usr/bin/eclipvpn probe-server "$index" ;;
+    ping)           /usr/bin/eclipvpn ping ;;
+    auto-select)    /usr/bin/eclipvpn auto-select ;;
+    set-mode)       /usr/bin/eclipvpn set-mode "$mode" ;;
+    add-domain)     /usr/bin/eclipvpn add-domain "$domain" "$list" ;;
+    remove-domain)  /usr/bin/eclipvpn remove-domain "$domain" "$list" ;;
+    get-domains)    /usr/bin/eclipvpn get-domains ;;
+    preset)         /usr/bin/eclipvpn preset "${op:-list}" "$preset_name" ;;
+    get-devices)    /usr/bin/eclipvpn get-devices ;;
+    get-log)        /usr/bin/eclipvpn get-log "${lines:-100}" "${filter:-all}" ;;
+    clear-log)      /usr/bin/eclipvpn clear-log ;;
+    diagnose)       /usr/bin/eclipvpn diagnose ;;
+    healthcheck)    /usr/bin/eclipvpn healthcheck ;;
+    system-info)    /usr/bin/eclipvpn system-info ;;
+    get-traffic)    /usr/bin/eclipvpn get-traffic ;;
+    traffic-poll)   /usr/bin/eclipvpn traffic-poll ;;
+    reset-traffic)  /usr/bin/eclipvpn reset-traffic ;;
+    real-ping)      /usr/bin/eclipvpn real-ping ;;
+    get-incidents)  /usr/bin/eclipvpn get-incidents ;;
+    clear-incidents) /usr/bin/eclipvpn clear-incidents ;;
     set-config)
         if [ -n "$key" ]; then
-            /usr/bin/flowvpn set-config "$key" "$value"
+            /usr/bin/eclipvpn set-config "$key" "$value"
         elif [ -n "$body" ]; then
             local_key=$(printf '%s' "$body" | jq -r '.key // empty' 2>/dev/null)
             local_val=$(printf '%s' "$body" | jq -r '.value // empty' 2>/dev/null)
             case "$local_key" in *[!a-zA-Z0-9_]*) _bad key;; esac
-            /usr/bin/flowvpn set-config "$local_key" "$local_val"
+            /usr/bin/eclipvpn set-config "$local_key" "$local_val"
         else
             echo '{"error":"missing key/value"}'
         fi
         ;;
     schedule)
         if [ -n "$on_time" ]; then
-            /usr/bin/flowvpn schedule set "$on_time" "$off_time"
+            /usr/bin/eclipvpn schedule set "$on_time" "$off_time"
         elif [ "$mode" = "disable" ]; then
-            /usr/bin/flowvpn schedule disable
+            /usr/bin/eclipvpn schedule disable
         else
-            /usr/bin/flowvpn schedule get
+            /usr/bin/eclipvpn schedule get
         fi
         ;;
-    auto-update)    /usr/bin/flowvpn auto-update "$mode" ;;
-    backup)         /usr/bin/flowvpn backup ;;
+    auto-update)    /usr/bin/eclipvpn auto-update "$mode" ;;
+    backup)         /usr/bin/eclipvpn backup ;;
     restore)
         # Pipe body via stdin to avoid argv injection / argv length limits
         if [ -n "$body" ]; then
-            printf '%s' "$body" | /usr/bin/flowvpn restore
+            printf '%s' "$body" | /usr/bin/eclipvpn restore
         else
             echo '{"error":"no data"}'
         fi
         ;;
-    set-device)     /usr/bin/flowvpn set-device "$ip_addr" "$route" ;;
-    remove-device-route) /usr/bin/flowvpn remove-device "$ip_addr" ;;
+    set-device)     /usr/bin/eclipvpn set-device "$ip_addr" "$route" ;;
+    remove-device-route) /usr/bin/eclipvpn remove-device "$ip_addr" ;;
     *)              echo '{"error":"unknown action"}' ;;
 esac
