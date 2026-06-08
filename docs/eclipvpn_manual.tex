@@ -38,9 +38,9 @@
 
 \hypersetup{
   colorlinks=false,
-  pdftitle={FlowVPN — Руководство пользователя},
-  pdfauthor={FlowVPN},
-  pdfsubject={Установка и настройка FlowVPN на OpenWrt},
+  pdftitle={EclipVPN — Руководство пользователя},
+  pdfauthor={EclipVPN},
+  pdfsubject={Установка и настройка EclipVPN на OpenWrt},
 }
 
 \titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{1em}{}
@@ -52,7 +52,7 @@
 \setlist[enumerate]{leftmargin=*,topsep=2pt,itemsep=2pt}
 
 \lstdefinelanguage{shell}{
-  morekeywords={flowvpn,uci,opkg,nft,ip,jq,ssh,curl,cat,chmod,sleep,grep,tail,head,wc,for,do,done,killall},
+  morekeywords={eclipvpn,uci,opkg,nft,ip,jq,ssh,curl,cat,chmod,sleep,grep,tail,head,wc,for,do,done,killall},
   morecomment=[l]\#,
   morestring=[b]",
   morestring=[b]',
@@ -85,11 +85,11 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyfoot[C]{\thepage}
-\fancyhead[L]{\small\color{gray}FlowVPN}
+\fancyhead[L]{\small\color{gray}EclipVPN}
 \fancyhead[R]{\small\color{gray}Руководство пользователя}
 \renewcommand{\headrulewidth}{0pt}
 
-\title{\vspace{2cm}\Huge\textbf{FlowVPN}\\[0.4em]\large\mdseries Руководство по установке и настройке}
+\title{\vspace{2cm}\Huge\textbf{EclipVPN}\\[0.4em]\large\mdseries Руководство по установке и настройке}
 \author{}
 \date{\today}
 
@@ -110,7 +110,7 @@ VLESS+XHTTP+Reality · sing-box tproxy · Веб-интерфейс
 
 \section{Введение}
 
-FlowVPN направляет трафик домашней сети через VPN-сервер с поддержкой VLESS+XHTTP+Reality (xray-core). Российские сайты идут напрямую благодаря geosite-ru/geoip-ru. Управление через веб-интерфейс на самом роутере.
+EclipVPN направляет трафик домашней сети через VPN-сервер с поддержкой VLESS+XHTTP+Reality (xray-core). Российские сайты идут напрямую благодаря geosite-ru/geoip-ru. Управление через веб-интерфейс на самом роутере.
 
 \subsection{Основные возможности}
 
@@ -123,7 +123,7 @@ FlowVPN направляет трафик домашней сети через V
 \item \textbf{Маршрутизация по устройствам}: VPN или Direct для каждого клиента
 \item \textbf{Скорость в реальном времени}: через Clash API WebSocket
 \item \textbf{Диагностика}: 25 автоматических проверок
-\item \textbf{Журнал}: три источника (FlowVPN/sing-box/xray) с фильтрами
+\item \textbf{Журнал}: три источника (EclipVPN/sing-box/xray) с фильтрами
 \item \textbf{Расписание}: включение и выключение по времени
 \item \textbf{Бэкап}: экспорт и импорт настроек
 \end{itemize}
@@ -164,14 +164,14 @@ cat /tmp/xray | ssh root@192.168.1.1 "cat > /usr/bin/xray && chmod +x /usr/bin/x
 ssh root@192.168.1.1 "/usr/bin/xray version"
 \end{lstlisting}
 
-\subsection{Деплой файлов FlowVPN}
+\subsection{Деплой файлов EclipVPN}
 
 \begin{lstlisting}
-ssh root@192.168.1.1 "mkdir -p /usr/lib/flowvpn /www/flowvpn /etc/flowvpn /tmp/flowvpn"
+ssh root@192.168.1.1 "mkdir -p /usr/lib/eclipvpn /www/flowvpn /etc/eclipvpn /tmp/eclipvpn"
 
-for f in usr/bin/flowvpn usr/lib/flowvpn/parse.sh usr/lib/flowvpn/xray.sh \
-         usr/lib/flowvpn/singbox.sh usr/lib/flowvpn/network.sh \
-         www/cgi-bin/flowvpn www/flowvpn/index.html etc/init.d/flowvpn; do
+for f in usr/bin/eclipvpn usr/lib/eclipvpn/parse.sh usr/lib/eclipvpn/xray.sh \
+         usr/lib/eclipvpn/singbox.sh usr/lib/eclipvpn/network.sh \
+         www/cgi-bin/eclipvpn www/eclipvpn/index.html etc/init.d/eclipvpn; do
     cat "$f" | ssh root@192.168.1.1 "cat > /$f && chmod +x /$f"
 done
 \end{lstlisting}
@@ -180,21 +180,21 @@ done
 
 \begin{lstlisting}
 # Указать ссылку на подписку
-flowvpn set-config subscription_url "https://example.com/api/sub/xxx"
+eclipvpn set-config subscription_url "https://example.com/api/sub/xxx"
 
 # Загрузить серверы и правила маршрутизации
-flowvpn update
+eclipvpn update
 
 # Запустить
-flowvpn start
+eclipvpn start
 
 # Включить автозапуск при загрузке
-/etc/init.d/flowvpn enable
+/etc/init.d/eclipvpn enable
 \end{lstlisting}
 
 \section{Веб-интерфейс}
 
-После запуска откройте \texttt{http://192.168.1.1/flowvpn/} в браузере.
+После запуска откройте \texttt{http://192.168.1.1/eclipvpn/} в браузере.
 
 \subsection{Вкладки}
 
@@ -205,7 +205,7 @@ flowvpn start
 Маршрут & Главная: переключатель VPN, выбор сервера, режим, скорость \\
 Серверы & Список серверов из подписки, пинг, тарифицируемые помечены «Тариф» \\
 Устройства & Подключённые клиенты, переключение VPN/Direct для каждого \\
-Журнал & Соединения с фильтрами (VPN/Direct/DNS/Ошибки/FlowVPN/xray) \\
+Журнал & Соединения с фильтрами (VPN/Direct/DNS/Ошибки/EclipVPN/xray) \\
 Диагностика & 25 автоматических проверок системы \\
 Настройки & Подписка, расписание, автообновление, бэкап \\
 \bottomrule
@@ -227,46 +227,46 @@ flowvpn start
 \subsection{Управление}
 
 \begin{lstlisting}
-flowvpn status                   # JSON со статусом, сервером, IP
-flowvpn start                    # Запуск
-flowvpn stop                     # Остановка с полной очисткой nft+dnsmasq
-flowvpn restart                  # Soft restart — без утечек DNS
-flowvpn update                   # Обновить подписку и правила
+eclipvpn status                   # JSON со статусом, сервером, IP
+eclipvpn start                    # Запуск
+eclipvpn stop                     # Остановка с полной очисткой nft+dnsmasq
+eclipvpn restart                  # Soft restart — без утечек DNS
+eclipvpn update                   # Обновить подписку и правила
 \end{lstlisting}
 
 \subsection{Серверы и режим}
 
 \begin{lstlisting}
-flowvpn set-server 0             # Выбрать сервер по индексу
-flowvpn set-mode all_vpn         # Режим маршрутизации
-flowvpn set-mode blocklist
-flowvpn ping                     # Пинг всех серверов
+eclipvpn set-server 0             # Выбрать сервер по индексу
+eclipvpn set-mode all_vpn         # Режим маршрутизации
+eclipvpn set-mode blocklist
+eclipvpn ping                     # Пинг всех серверов
 \end{lstlisting}
 
 \subsection{Домены}
 
 \begin{lstlisting}
-flowvpn add-domain youtube.com vpn       # Принудительно через VPN
-flowvpn add-domain rutube.ru direct      # Принудительно напрямую
-flowvpn remove-domain youtube.com vpn
-flowvpn get-domains                      # Список текущих
+eclipvpn add-domain youtube.com vpn       # Принудительно через VPN
+eclipvpn add-domain rutube.ru direct      # Принудительно напрямую
+eclipvpn remove-domain youtube.com vpn
+eclipvpn get-domains                      # Список текущих
 \end{lstlisting}
 
 \subsection{Диагностика и журнал}
 
 \begin{lstlisting}
-flowvpn diagnose                 # Быстрая диагностика
-flowvpn healthcheck              # 25 проверок
-flowvpn get-log 100 all          # Журнал
-flowvpn clear-log                # Очистить
-flowvpn system-info              # Версии, RAM, flash, uptime
+eclipvpn diagnose                 # Быстрая диагностика
+eclipvpn healthcheck              # 25 проверок
+eclipvpn get-log 100 all          # Журнал
+eclipvpn clear-log                # Очистить
+eclipvpn system-info              # Версии, RAM, flash, uptime
 \end{lstlisting}
 
 \subsection{Бэкап}
 
 \begin{lstlisting}
-flowvpn backup > flowvpn-backup.json
-cat flowvpn-backup.json | flowvpn restore
+eclipvpn backup > eclipvpn-backup.json
+cat eclipvpn-backup.json | eclipvpn restore
 \end{lstlisting}
 
 \section{Архитектура}
@@ -293,7 +293,7 @@ cat flowvpn-backup.json | flowvpn restore
 \subsection{nftables}
 
 \begin{itemize}
-\item Таблица: \texttt{table ip flowvpn} (\textbf{ip}, не \texttt{inet} — \texttt{tproxy} не работает в \texttt{inet})
+\item Таблица: \texttt{table ip eclipvpn} (\textbf{ip}, не \texttt{inet} — \texttt{tproxy} не работает в \texttt{inet})
 \item Mark \texttt{0x8000} (32768): обход fw4 (\texttt{meta mark \& 0x00008000 accept})
 \item Прерывание: трафик роутера, локальные сети, IP VPN-серверов идут напрямую
 \end{itemize}
@@ -311,7 +311,7 @@ cat flowvpn-backup.json | flowvpn restore
 
 \subsection{Clash API}
 
-При первом запуске генерируется случайный 32-символьный секрет в \texttt{/etc/flowvpn/clash\_secret} (\texttt{chmod 600}). UI получает его через \texttt{/status} и использует в WebSocket. Раньше был хардкод \texttt{"flowvpn"}.
+При первом запуске генерируется случайный 32-символьный секрет в \texttt{/etc/eclipvpn/clash\_secret} (\texttt{chmod 600}). UI получает его через \texttt{/status} и использует в WebSocket. Раньше был хардкод \texttt{"eclipvpn"}.
 
 \subsection{CGI-валидация}
 
@@ -345,16 +345,16 @@ POST body ограничен 64\,КБ. Восстановление бэкапа
 \item Спит \texttt{interval}\,×\,3 для стабилизации, чтобы не вызвать каскадный failover
 \end{enumerate}
 
-Защита от двух экземпляров через лок-файл \texttt{/tmp/flowvpn/watchdog.lock}.
+Защита от двух экземпляров через лок-файл \texttt{/tmp/eclipvpn/watchdog.lock}.
 
 \section{Устранение неполадок}
 
 \subsection{VPN не подключается}
 
 \begin{enumerate}
-\item \texttt{flowvpn diagnose} — должно быть «xray работает» и «VPN IP получен»
-\item \texttt{flowvpn ping} — какой сервер отвечает
-\item \texttt{logread -e flowvpn | tail -20} — последние события
+\item \texttt{eclipvpn diagnose} — должно быть «xray работает» и «VPN IP получен»
+\item \texttt{eclipvpn ping} — какой сервер отвечает
+\item \texttt{logread -e eclipvpn | tail -20} — последние события
 \end{enumerate}
 
 \subsection{Сайт не открывается через VPN}
@@ -369,8 +369,8 @@ POST body ограничен 64\,КБ. Восстановление бэкапа
 
 geosite-ru включает \texttt{google.com} → Gemini идёт напрямую с домашнего IP. Решение:
 \begin{lstlisting}
-flowvpn add-domain gemini.google.com vpn
-flowvpn add-domain ai.google.com vpn
+eclipvpn add-domain gemini.google.com vpn
+eclipvpn add-domain ai.google.com vpn
 \end{lstlisting}
 
 \subsection{Приложение пишет «нет сети»}
@@ -381,9 +381,9 @@ flowvpn add-domain ai.google.com vpn
 
 \begin{lstlisting}
 ssh root@192.168.1.1
-flowvpn stop
+eclipvpn stop
 # Если не помогает — экстренное восстановление:
-nft delete table ip flowvpn
+nft delete table ip eclipvpn
 killall xray sing-box
 uci delete dhcp.@dnsmasq[0].server
 uci set dhcp.@dnsmasq[0].noresolv='0'
@@ -409,17 +409,17 @@ CPU & ${\sim}0\%$ idle, всплески при handshake \\
 \toprule
 \textbf{Путь} & \textbf{Назначение} \\
 \midrule
-\texttt{/usr/bin/flowvpn} & Главный CLI-скрипт \\
-\texttt{/usr/lib/flowvpn/parse.sh} & Парсер VLESS-подписки \\
-\texttt{/usr/lib/flowvpn/xray.sh} & Генерация xray SOCKS-конфига \\
-\texttt{/usr/lib/flowvpn/singbox.sh} & Генерация sing-box-конфига \\
-\texttt{/usr/lib/flowvpn/network.sh} & nftables tproxy + dnsmasq \\
-\texttt{/www/cgi-bin/flowvpn} & CGI API \\
+\texttt{/usr/bin/eclipvpn} & Главный CLI-скрипт \\
+\texttt{/usr/lib/eclipvpn/parse.sh} & Парсер VLESS-подписки \\
+\texttt{/usr/lib/eclipvpn/xray.sh} & Генерация xray SOCKS-конфига \\
+\texttt{/usr/lib/eclipvpn/singbox.sh} & Генерация sing-box-конфига \\
+\texttt{/usr/lib/eclipvpn/network.sh} & nftables tproxy + dnsmasq \\
+\texttt{/www/cgi-bin/eclipvpn} & CGI API \\
 \texttt{/www/flowvpn/index.html} & Веб-интерфейс \\
-\texttt{/etc/flowvpn/config.json} & Конфигурация \\
-\texttt{/etc/flowvpn/clash\_secret} & Случайный секрет Clash API \\
-\texttt{/etc/init.d/flowvpn} & Автозапуск \\
-\texttt{/tmp/flowvpn/} & Состояние, логи, кэш \\
+\texttt{/etc/eclipvpn/config.json} & Конфигурация \\
+\texttt{/etc/eclipvpn/clash\_secret} & Случайный секрет Clash API \\
+\texttt{/etc/init.d/eclipvpn} & Автозапуск \\
+\texttt{/tmp/eclipvpn/} & Состояние, логи, кэш \\
 \bottomrule
 \end{tabularx}
 

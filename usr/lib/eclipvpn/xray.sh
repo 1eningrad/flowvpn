@@ -1,5 +1,5 @@
 #!/bin/ash
-# FlowVPN — xray SOCKS proxy (connects to VPN via XHTTP)
+# EclipVPN — xray SOCKS proxy (connects to VPN via XHTTP)
 
 generate_xray_config() {
     local servers_file="$1" server_idx="$2" config_file="$3"
@@ -89,19 +89,19 @@ generate_xray_config() {
 start_xray() {
     local config_file="$1"
     if [ ! -x /usr/bin/xray ]; then
-        logger -t flowvpn "ERROR: /usr/bin/xray not found or not executable"
+        logger -t eclipvpn "ERROR: /usr/bin/xray not found or not executable"
         return 1
     fi
     # Append-mode (>>) — see singbox.sh for rationale (NUL-hole sparse files).
-    /usr/bin/xray run -config "$config_file" >>/tmp/flowvpn/xray.log 2>>/tmp/flowvpn/xray.log &
-    echo $! > /tmp/flowvpn/xray.pid
+    /usr/bin/xray run -config "$config_file" >>/tmp/eclipvpn/xray.log 2>>/tmp/eclipvpn/xray.log &
+    echo $! > /tmp/eclipvpn/xray.pid
 
     local tries=0
     while [ "$tries" -lt 10 ]; do
         sleep 1
         tries=$((tries + 1))
-        if ! kill -0 "$(cat /tmp/flowvpn/xray.pid)" 2>/dev/null; then
-            rm -f /tmp/flowvpn/xray.pid
+        if ! kill -0 "$(cat /tmp/eclipvpn/xray.pid)" 2>/dev/null; then
+            rm -f /tmp/eclipvpn/xray.pid
             return 1
         fi
         if netstat -tlnp 2>/dev/null | grep -q ":1080"; then
@@ -111,24 +111,24 @@ start_xray() {
     # Process alive but socks port never bound. Don't return success — the
     # caller would then apply nftables tproxy rules pointing at an unbound
     # port, stranding LAN clients. Surface the failure instead.
-    logger -t flowvpn "ERROR: xray started but socks port :1080 never opened"
+    logger -t eclipvpn "ERROR: xray started but socks port :1080 never opened"
     return 1
 }
 
 stop_xray() {
     local pid=""
-    [ -f /tmp/flowvpn/xray.pid ] && pid=$(cat /tmp/flowvpn/xray.pid)
+    [ -f /tmp/eclipvpn/xray.pid ] && pid=$(cat /tmp/eclipvpn/xray.pid)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null
     sleep 1
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
     # Sweep orphans — any other xray running with our prod config means a
     # previous restart raced and left a zombie; if we don't reap it, the
     # next start_xray spawns a third one and they fight over port 1080.
-    for orphan in $(pgrep -f 'xray run -config /tmp/flowvpn/xray.json' 2>/dev/null); do
+    for orphan in $(pgrep -f 'xray run -config /tmp/eclipvpn/xray.json' 2>/dev/null); do
         [ "$orphan" = "$pid" ] && continue
         kill -9 "$orphan" 2>/dev/null
     done
-    rm -f /tmp/flowvpn/xray.pid
+    rm -f /tmp/eclipvpn/xray.pid
 }
 
 is_xray_running() {
@@ -136,11 +136,11 @@ is_xray_running() {
     # restart wrote the wrong PID). Fall back to a config-path scan so we
     # don't trigger a spurious "VPN was killed externally" revival when the
     # process is actually fine but the pidfile is wrong.
-    if [ -f /tmp/flowvpn/xray.pid ]; then
-        local pid=$(cat /tmp/flowvpn/xray.pid 2>/dev/null)
+    if [ -f /tmp/eclipvpn/xray.pid ]; then
+        local pid=$(cat /tmp/eclipvpn/xray.pid 2>/dev/null)
         [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
     fi
-    pgrep -f 'xray run -config /tmp/flowvpn/xray.json' >/dev/null 2>&1
+    pgrep -f 'xray run -config /tmp/eclipvpn/xray.json' >/dev/null 2>&1
 }
 
 test_xray() {

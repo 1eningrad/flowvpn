@@ -9,7 +9,7 @@ start() {
     # as falsy and returns the alternative — so an explicit `false` from
     # the UI toggle was being silently overridden to `true`. The explicit
     # if-else handles all three cases (true / false / missing→default true).
-    auto_start=$(jq -r '.auto_start | if . == false then "false" else "true" end' /etc/flowvpn/config.json 2>/dev/null)
+    auto_start=$(jq -r '.auto_start | if . == false then "false" else "true" end' /etc/eclipvpn/config.json 2>/dev/null)
     [ "$auto_start" = "false" ] && return 0
 
     # Wait up to 60s for WAN. Bumped from 30s after observing slow CGNAT
@@ -23,7 +23,7 @@ start() {
     done
 
     if ! ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
-        logger -t flowvpn "Network not ready after 60s, skipping autostart"
+        logger -t eclipvpn "Network not ready after 60s, skipping autostart"
         return 0
     fi
 
@@ -39,25 +39,25 @@ start() {
         sleep 1; ntp_tries=$((ntp_tries + 1))
     done
     if ! [ "$(date +%Y)" -ge 2025 ] 2>/dev/null; then
-        logger -t flowvpn "Clock not synced after 20s, starting anyway — watchdog will retry on Reality failure"
+        logger -t eclipvpn "Clock not synced after 20s, starting anyway — watchdog will retry on Reality failure"
     fi
 
     # cmd_start now spawns the watchdog itself via _ensure_watchdog —
     # spawning it again here would race on watchdog.lock and leave the
     # locking semantics half-broken (lock owned by one process, pidfile
     # pointing at a different one).
-    /usr/bin/flowvpn start >/dev/null 2>&1 &
+    /usr/bin/eclipvpn start >/dev/null 2>&1 &
 }
 
 stop() {
     # Stop watchdog (try both pidfiles — init.d's and the one watchdog owns)
-    for f in /tmp/flowvpn/watchdog.pid /tmp/flowvpn/watchdog.lock; do
+    for f in /tmp/eclipvpn/watchdog.pid /tmp/eclipvpn/watchdog.lock; do
         [ -f "$f" ] && {
             kill $(cat "$f") 2>/dev/null
             rm -f "$f"
         }
     done
-    /usr/bin/flowvpn stop >/dev/null 2>&1
+    /usr/bin/eclipvpn stop >/dev/null 2>&1
 }
 
 restart() {

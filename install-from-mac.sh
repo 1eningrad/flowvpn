@@ -19,35 +19,67 @@ WITH_REMOTE="${WITH_REMOTE:-1}"
 cd "$SRC"
 
 echo "→ ship sources to $ROUTER"
-ssh "$ROUTER" 'mkdir -p /usr/lib/flowvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/flowvpn /tmp/flowvpn'
+ssh "$ROUTER" 'mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/eclipvpn /tmp/eclipvpn'
 
 COPYFILE_DISABLE=1 tar c \
-    usr/bin/flowvpn \
-    usr/lib/flowvpn/parse.sh \
-    usr/lib/flowvpn/xray.sh \
-    usr/lib/flowvpn/singbox.sh \
-    usr/lib/flowvpn/network.sh \
-    etc/init.d/flowvpn \
-    www/cgi-bin/flowvpn \
+    usr/bin/eclipvpn \
+    usr/lib/eclipvpn/parse.sh \
+    usr/lib/eclipvpn/xray.sh \
+    usr/lib/eclipvpn/singbox.sh \
+    usr/lib/eclipvpn/network.sh \
+    etc/init.d/eclipvpn \
+    www/cgi-bin/eclipvpn \
 | ssh "$ROUTER" 'cd / && tar x'
 
-cat www/flowvpn/index.html | ssh "$ROUTER" 'cat > /www/eclipvpn/index.html'
+cat www/eclipvpn/index.html | ssh "$ROUTER" 'cat > /www/eclipvpn/index.html'
 
 echo "→ install dependencies + xray + Tailscale on router"
 ssh "$ROUTER" "WITH_REMOTE=$WITH_REMOTE sh -s" <<'REMOTE_EOF'
 set -eu
 
-echo "[1/5] opkg deps"
-opkg update >/dev/null 2>&1 || true
-opkg install jq coreutils-base64 kmod-nft-tproxy sing-box unzip 2>&1 | grep -E "Installing|installed" || true
+# Migrate an old "flowvpn"-named install (pre-2026.06) to the new eclipvpn
+# paths before installing. Idempotent.
+if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
+    echo "[0/5] Migrating old flowvpn install -> eclipvpn..."
+    /etc/init.d/flowvpn stop >/dev/null 2>&1 || true
+    /etc/init.d/flowvpn disable >/dev/null 2>&1 || true
+    for p in /proc/[0-9]*; do
+        [ -r "$p/cmdline" ] || continue
+        case $(tr "\0" " " < "$p/cmdline") in
+            "/bin/ash /usr/bin/flowvpn watchdog"*) kill -9 "${p##*/}" 2>/dev/null || true ;;
+        esac
+    done
+    nft delete table ip flowvpn 2>/dev/null || true
+    nft delete table ip flowvpn_dns 2>/dev/null || true
+    rm -f /tmp/dnsmasq.d/flowvpn.conf
+    if [ -d /etc/flowvpn ] && [ ! -e /etc/eclipvpn ]; then
+        mv /etc/flowvpn /etc/eclipvpn
+    elif [ -d /etc/flowvpn ]; then
+        rm -rf /etc/flowvpn
+    fi
+    rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
+fi
+
+echo "[1/5] package deps (apk or opkg)"
+# OpenWrt 25.x uses apk, older uses opkg. curl + ca-bundle are hard runtime
+# deps that were previously missing from this list.
+if command -v apk >/dev/null 2>&1; then PKG_INSTALL="apk add"; apk update >/dev/null 2>&1 || true
+elif command -v opkg >/dev/null 2>&1; then PKG_INSTALL="opkg install"; opkg update >/dev/null 2>&1 || true
+else echo "ERROR: no package manager (apk/opkg)"; exit 1; fi
+$PKG_INSTALL jq curl ca-bundle coreutils-base64 kmod-nft-tproxy sing-box unzip 2>&1 | grep -E "Installing|installed|Installed" || true
+for b in jq curl sing-box; do command -v "$b" >/dev/null 2>&1 || { echo "ERROR: dependency '$b' missing after install"; exit 1; }; done
 
 echo "[2/5] xray 26.4.17"
 ARCH=$(uname -m)
 case "$ARCH" in
-    aarch64) XRAY_ARCH="arm64-v8a" ;;
-    armv7l)  XRAY_ARCH="arm32-v7a" ;;
-    x86_64)  XRAY_ARCH="64" ;;
-    *)       echo "ERROR: unsupported arch $ARCH"; exit 1 ;;
+    aarch64)   XRAY_ARCH="arm64-v8a" ;;
+    armv7l)    XRAY_ARCH="arm32-v7a" ;;
+    x86_64)    XRAY_ARCH="64" ;;
+    i386|i686) XRAY_ARCH="32" ;;
+    mips)      XRAY_ARCH="mips32" ;;
+    mipsel)    XRAY_ARCH="mips32le" ;;
+    riscv64)   XRAY_ARCH="riscv64" ;;
+    *)         echo "ERROR: unsupported arch $ARCH"; exit 1 ;;
 esac
 cd /tmp
 wget -q "https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-${XRAY_ARCH}.zip" -O xray.zip
@@ -58,10 +90,10 @@ rm -f /tmp/xray.zip /tmp/xray
 echo "  installed: $(/usr/bin/xray version 2>&1 | head -1)"
 
 echo "[3/5] permissions + initial config"
-chmod +x /usr/bin/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /usr/lib/flowvpn/*.sh
-/usr/bin/flowvpn >/dev/null 2>&1 || true  # creates default config
+chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn /usr/lib/eclipvpn/*.sh
+/usr/bin/eclipvpn >/dev/null 2>&1 || true  # creates default config
 
-# legacy /flowvpn/ → /eclipvpn/ redirect for old bookmarks
+# legacy /eclipvpn/ → /eclipvpn/ redirect for old bookmarks
 cat > /www/flowvpn/index.html <<'HTML'
 <!DOCTYPE html>
 <meta charset="utf-8">
@@ -86,14 +118,14 @@ if [ "${WITH_REMOTE:-0}" = "1" ] && grep -q "DISTRIB_ID='RouteRich'" /etc/openwr
 fi
 
 echo "[5/5] enable autostart"
-/etc/init.d/flowvpn enable
+/etc/init.d/eclipvpn enable
 
 echo
 echo "===== INSTALL DONE ====="
 echo "next steps (Mac side):"
-echo "  1) on first router: ssh root@192.168.1.1 'flowvpn backup' > ~/eclip-config.json"
-echo "  2) on this router:  scp ~/eclip-config.json root@$(uci -q get network.lan.ipaddr || echo 192.168.2.1):/tmp/"
-echo "                       ssh root@... 'flowvpn restore < /tmp/eclip-config.json'"
+echo "  1) on first router: ssh root@192.168.1.1 'eclipvpn backup' > ~/eclip-config.json"
+echo "  2) restore here:    cat ~/eclip-config.json | ssh root@$(uci -q get network.lan.ipaddr || echo 192.168.2.1) 'eclipvpn restore'"
+echo "     (cat|ssh, not scp — OpenWrt dropbear has no sftp-server)"
 REMOTE_EOF
 
 echo
