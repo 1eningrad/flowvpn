@@ -42,13 +42,27 @@ set-server N                             pick server by index
 probe-server N                           probe a server (throwaway xray, VLESS-Reality) without touching live tunnel
 set-mode all_vpn|blocklist               routing mode
 update                                   refresh subscription + RU/blocklist domain rules
+auto-select | auto-eval                  pick fastest server by probe / re-evaluate live server health
 ping | real-ping                         TCP probe (with ICMP fallback) / VLESS-Reality probe
 diagnose | healthcheck                   quick metrics / full check (DNS, leaks, processes)
-add-domain DOM vpn|direct                user override list
-get-log N FILTER                         tail logs (filter: all|vpn|direct|error|dns|flow)
+system-info                              firmware + xray/sing-box versions, uptime, resources
+add-domain DOM vpn|direct                add to user override list
+remove-domain DOM vpn|direct             remove from user override list
+get-domains                              dump custom + built-in vpn/direct lists
+preset list|add|remove NAME              bundled domain presets (defined in singbox.sh)
+get-devices                              DHCP-lease clients (for per-device routing)
+set-device ID vpn|direct                 per-device route override (id = ip or mac)
+remove-device ID                         clear a per-device override
+get-dns                                  current dnsmasq upstream + mode
+set-config KEY VALUE                     write a whitelisted config.json key
+set-wifi SSID PASSWORD                   change router Wi-Fi via uci
+schedule set|clear ON OFF                timed auto on/off window
+auto-update enable|disable|status        nightly subscription/rules refresh
+get-log N FILTER | clear-log             tail logs (filter: all|vpn|direct|error|dns|flow) / reset tail
+get-traffic | traffic-poll               per-outbound byte accounting / live up-down sample (Clash API)
 get-incidents | clear-incidents          failover history
 reset-traffic                            zero per-chain byte counters
-backup                                   export config as JSON
+backup | restore JSON                    export / import config as JSON
 watchdog                                 internal — single-instance, do not call directly
 ```
 
@@ -57,7 +71,7 @@ CGI surface is the same set, dispatched via query string in `www/cgi-bin/eclipvp
 ## Code layout
 
 ```
-usr/bin/eclipvpn              CLI dispatcher, ~2200 lines, top-level cmd_* functions
+usr/bin/eclipvpn              CLI dispatcher, ~2600 lines, top-level cmd_* functions
 usr/lib/eclipvpn/parse.sh     Subscription fetch + vless:// URL parser
 usr/lib/eclipvpn/xray.sh      xray config gen + start/stop/test
 usr/lib/eclipvpn/singbox.sh   sing-box config gen, RU domain list, blocklist sources
@@ -73,7 +87,7 @@ Library scripts are sourced into `usr/bin/eclipvpn` — they share global vars (
 ## Runtime data flow
 
 ```
-LAN client → dnsmasq:53 → sing-box DNS:5354 → DoH 1.1.1.1:443 (via VPN) or UDP 1.1.1.1 (direct)
+LAN client → dnsmasq:53 → sing-box DNS:5354 → DoH 1.1.1.1:443 (via VPN) or UDP Yandex 77.88.8.8 (direct)
 LAN client → nftables tproxy:2154 → sing-box → xray SOCKS:1080 → VLESS+Reality (VPN)
                                               ↘ direct (RU geosite/geoip + custom direct list)
 ```
@@ -93,6 +107,7 @@ A **force-VPN list** (`vpn_domains.list`, built-in AI services + user's `custom_
 
 - `/etc/eclipvpn/config.json` (chmod 600) — sole config file. Subscription URL, mode, `auto_start`, `auto_mode`, `running_intent`, `device_rules`, `schedule`, `selected_server`. Always write atomically via `save_config` (validates with `jq '.'` then `mv`).
 - `/etc/eclipvpn/clash_secret` (chmod 600) — 32-hex Clash API token, lazily created by `_get_clash_secret`. UI fetches it via `/status`.
+- `/etc/eclipvpn/hwid` (chmod 600) — stable per-router UUID, lazily minted by `_get_hwid` (parse.sh). Sent as `X-HWID` (+ `X-Device-OS/Ver/Model`, custom `User-Agent`) on every subscription fetch via `_sub_curl` for the panel's device-binding/HWID limit. Device-specific: deliberately excluded from `backup`/`restore` so it isn't cloned onto another router.
 - `/etc/eclipvpn/{direct,vpn}_domains.txt` — user's custom domain lists (one per line).
 - `/tmp/eclipvpn/` — all runtime state. Wiped on reboot. Contains `servers.json` (chmod 600, has VLESS UUIDs), generated `xray.json`/`singbox.json`, pid files, logs (`xray.log`, `singbox.log`), `incidents.json`, `traffic_state.json`, `last_switch.json`, `last_update.json`, `subscription_meta.json`, `op.in_progress`, `watchdog.lockdir/`, `auto_state.json`.
 

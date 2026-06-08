@@ -18,6 +18,50 @@ _b64_pad() {
     esac
 }
 
+# Stable per-router hardware ID for the panel's device-binding / HWID limit.
+# Lazily generated once and persisted to /etc/eclipvpn/hwid (chmod 600, same
+# pattern as clash_secret). We mint our own UUID instead of deriving it from the
+# MAC so the value isn't externally guessable and a board swap is a deliberate
+# re-register. It survives reboots and any upgrade that preserves /etc. Kept out
+# of `backup` on purpose — it's device-specific and must not be cloned onto
+# another router by `restore`.
+_get_hwid() {
+    local f=/etc/eclipvpn/hwid
+    if [ ! -s "$f" ]; then
+        mkdir -p /etc/eclipvpn
+        local id=""
+        [ -r /proc/sys/kernel/random/uuid ] && id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+        [ -z "$id" ] && id=$(head -c 16 /dev/urandom 2>/dev/null | hexdump -v -e '/1 "%02x"' 2>/dev/null)
+        [ -z "$id" ] && id=$(awk 'BEGIN{srand();for(i=0;i<32;i++)printf "%x",int(rand()*16)}')
+        printf '%s' "$id" > "$f"
+        chmod 600 "$f" 2>/dev/null
+    fi
+    cat "$f"
+}
+
+# Subscription fetch with HWID + device-metadata headers (Remnawave-style). The
+# panel keys its per-user device limit off X-HWID and shows the rest in its
+# dashboard. Panels that don't care simply ignore the extra headers. $1=url,
+# $2=header-dump file. Both the initial fetch and the landing-page follow-up go
+# through here so the identity is consistent.
+_sub_curl() {
+    local os_ver model
+    os_ver=$(awk -F"'" '/DISTRIB_RELEASE/{print $2}' /etc/openwrt_release 2>/dev/null)
+    [ -z "$os_ver" ] && os_ver=$(awk -F"'" '/DISTRIB_DESCRIPTION/{print $2}' /etc/openwrt_release 2>/dev/null)
+    # Trim the parenthetical hardware-revision suffix OpenWrt appends, e.g.
+    # "Cudy WBR3000UAX v1 (OpenWrt U-Boot layout)" -> "Cudy WBR3000UAX v1".
+    model=$(cat /tmp/sysinfo/model 2>/dev/null | sed 's/ *(.*$//; s/[[:space:]]*$//')
+    [ -z "$model" ] && model=$(cat /tmp/sysinfo/board_name 2>/dev/null)
+    [ -z "$model" ] && model="OpenWrt Router"
+    curl -fsS --max-time 15 --proto '=http,https' \
+        -A "EclipVPN/${ECLIPVPN_VERSION}" \
+        -H "X-HWID: $(_get_hwid)" \
+        -H "X-Device-OS: OpenWrt" \
+        -H "X-Ver-OS: $os_ver" \
+        -H "X-Device-Model: $model" \
+        --dump-header "$2" "$1"
+}
+
 fetch_subscription() {
     local url="$1" out="$2"
     url=$(printf '%s' "$url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -36,8 +80,7 @@ fetch_subscription() {
     # (Subscription-Userinfo) are sensitive while we're writing them.
     umask 077
     local raw
-    raw=$(curl -fsS --max-time 15 --proto '=http,https' \
-        --dump-header "$hdr_file" "$url") || {
+    raw=$(_sub_curl "$url" "$hdr_file") || {
         logger -t eclipvpn "Subscription: fetch failed (HTTP >=400, network, or TLS error)"
         return 1
     }
@@ -56,8 +99,7 @@ fetch_subscription() {
                 prefix=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+).*#\1#')
                 follow_url="${prefix}${sub_path}"
                 logger -t eclipvpn "Subscription: landing page detected, following /api/sub/<redacted>"
-                raw=$(curl -fsS --max-time 15 --proto '=http,https' \
-                    --dump-header "$hdr_file" "$follow_url") || {
+                raw=$(_sub_curl "$follow_url" "$hdr_file") || {
                     logger -t eclipvpn "Subscription: follow-up fetch to api endpoint failed"
                     return 1
                 }
