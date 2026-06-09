@@ -49,14 +49,14 @@ system-info                              firmware + xray/sing-box versions, upti
 add-domain DOM vpn|direct                add to user override list
 remove-domain DOM vpn|direct             remove from user override list
 get-domains                              dump custom + built-in vpn/direct lists
-preset list|add|remove NAME              bundled domain presets (defined in singbox.sh)
+preset list|enable|disable NAME          bundled domain presets (defined in singbox.sh)
 get-devices                              DHCP-lease clients (for per-device routing)
 set-device ID vpn|direct                 per-device route override (id = ip or mac)
 remove-device ID                         clear a per-device override
 get-dns                                  current dnsmasq upstream + mode
 set-config KEY VALUE                     write a whitelisted config.json key
 set-wifi SSID PASSWORD                   change router Wi-Fi via uci
-schedule set|clear ON OFF                timed auto on/off window
+schedule set ON OFF | disable | get      timed auto on/off window
 auto-update enable|disable|status        nightly subscription/rules refresh
 get-log N FILTER | clear-log             tail logs (filter: all|vpn|direct|error|dns|flow) / reset tail
 get-traffic | traffic-poll               per-outbound byte accounting / live up-down sample (Clash API)
@@ -66,12 +66,12 @@ backup | restore JSON                    export / import config as JSON
 watchdog                                 internal — single-instance, do not call directly
 ```
 
-CGI surface is the same set, dispatched via query string in `www/cgi-bin/eclipvpn`.
+CGI surface is dispatched via query string in `www/cgi-bin/eclipvpn` and covers almost the same set — exceptions: `get-dns`, `set-wifi`, `auto-eval` are CLI-only (no CGI action), and `diagnose`/`real-ping` are exposed via CGI but not called by the UI.
 
 ## Code layout
 
 ```
-usr/bin/eclipvpn              CLI dispatcher, ~2600 lines, top-level cmd_* functions
+usr/bin/eclipvpn              CLI dispatcher, ~2700 lines, top-level cmd_* functions
 usr/lib/eclipvpn/parse.sh     Subscription fetch + vless:// URL parser
 usr/lib/eclipvpn/xray.sh      xray config gen + start/stop/test
 usr/lib/eclipvpn/singbox.sh   sing-box config gen, RU domain list, blocklist sources
@@ -106,9 +106,10 @@ A **force-VPN list** (`vpn_domains.list`, built-in AI services + user's `custom_
 ## Files and persistence
 
 - `/etc/eclipvpn/config.json` (chmod 600) — sole config file. Subscription URL, mode, `auto_start`, `auto_mode`, `running_intent`, `device_rules`, `schedule`, `selected_server`. Always write atomically via `save_config` (validates with `jq '.'` then `mv`).
-- `/etc/eclipvpn/clash_secret` (chmod 600) — 32-hex Clash API token, lazily created by `_get_clash_secret`. UI fetches it via `/status`.
+- `/etc/eclipvpn/clash_secret` (chmod 600) — 32-hex Clash API token, lazily created by `_get_clash_secret`. Never leaves the router: clash_api binds to 127.0.0.1, and the UI gets traffic/delay data through the CGI (`traffic-poll`, `get-traffic`, `real-ping`) which uses the secret server-side.
 - `/etc/eclipvpn/hwid` (chmod 600) — stable per-router UUID, lazily minted by `_get_hwid` (parse.sh). Sent as `X-HWID` (+ `X-Device-OS/Ver/Model`, custom `User-Agent`) on every subscription fetch via `_sub_curl` for the panel's device-binding/HWID limit. Device-specific: deliberately excluded from `backup`/`restore` so it isn't cloned onto another router.
 - `/etc/eclipvpn/{direct,vpn}_domains.txt` — user's custom domain lists (one per line).
+- `/etc/eclipvpn/rules/` — cached sing-box `.srs` rule sets (`geosite-category-ru.srs`, `ru.srs`). Persisted (not in /tmp) because raw.githubusercontent.com is often blocked from inside RU: an existing cache wins over a re-download unless forced, and if there's no cache at all `_ensure_srs_present` compiles a valid *empty* `.srs` via sing-box so the VPN still starts (degraded RU routing) instead of failing.
 - `/tmp/eclipvpn/` — all runtime state. Wiped on reboot. Contains `servers.json` (chmod 600, has VLESS UUIDs), generated `xray.json`/`singbox.json`, pid files, logs (`xray.log`, `singbox.log`), `incidents.json`, `traffic_state.json`, `last_switch.json`, `last_update.json`, `subscription_meta.json`, `op.in_progress`, `watchdog.lockdir/`, `auto_state.json`.
 
 `servers.json`, `xray.json`, `singbox.json`, and the subscription raw fetch are credential files (UUIDs / Reality private keys / Clash secret). Always `chmod 600` after writing.
@@ -120,7 +121,7 @@ These are documented in inline comments at the relevant call sites — read them
 - **Watchdog is single-instance** via `mkdir $ECLIPVPN_TMP/watchdog.lockdir` (atomic on busybox; flock-based locking previously raced with init.d). Killing peers from inside `cmd_watchdog` is forbidden — traps may not be installed yet.
 - **Watchdog drives log rotation, auto-recovery, and failover.** If you stop spawning it, logs grow unbounded and externally-killed VPN never revives.
 - **Log writes use append-mode (`>>`)** for both daemons. Rotation does `cat tmp > file` (truncate-overwrite, preserves inode) — never `mv tmp file` (swaps inode; daemons keep writing to the unlinked old fd, lines never appear in UI).
-- **`cmd_restart` is "soft"** — it preserves nftables + dnsmasq redirect across the process swap, so the LAN fails *closed* (no internet) instead of leaking direct traffic. Only `cmd_stop` does full teardown. It also has an **unchanged-config fast path**: if the freshly-generated xray/sing-box configs are byte-identical to what's running *and* the tunnel is live, it skips the swap and returns `{"status":"unchanged",...}` (UI shows "VPN уже работает") — but falls through to a real restart if the tunnel is dead. `restart 1` (force, sent by the UI's manual Restart button) bypasses this fast path; internal callers (set-mode / set-server / watchdog failover) leave it on.
+- **`cmd_restart` is "soft"** — it preserves nftables + dnsmasq redirect across the process swap, so the LAN fails *closed* (no internet) instead of leaking direct traffic. Only `cmd_stop` does full teardown. It also has an **unchanged-config fast path**: if the freshly-generated xray/sing-box configs are byte-identical to what's running *and* the tunnel is live, it skips the swap and returns `{"status":"unchanged",...}` — but falls through to a real restart if the tunnel is dead. `restart 1` (force, always sent by the UI's Restart button, so the UI never actually sees "unchanged") bypasses this fast path; internal callers (set-mode / set-server / watchdog failover) leave it on.
 - **`op.in_progress` sentinel** is set during user-initiated lifecycle ops. Watchdog defers revival while it's held; otherwise watchdog races `cmd_restart`'s `stop_xray` window and spawns a parallel xray fighting for port 1080.
 - **`running_intent` (in config) ≠ `auto_start`.** `auto_start` is only consulted at boot; `running_intent` tells watchdog whether to revive after an external kill.
 - **`pgrep -f 'eclipvpn watchdog'` matches itself.** `_ensure_watchdog` uses the `[/]usr/...` character-class trick to self-exclude — don't "simplify" it.
@@ -131,6 +132,13 @@ These are documented in inline comments at the relevant call sites — read them
 - **Boolean keys in config are stored as JSON `true`/`false`**, not strings. `auto_start` defaults via the explicit `if . == false then false else true end` pattern in `cmd_status` — `// true` is wrong here because jq's `//` treats `false` as falsy.
 - **DNS-direct goes to Yandex 77.88.8.8 (UDP), not Cloudflare 1.1.1.1.** Cloudflare returns SERVFAIL for VTB and a few other RU bank domains — their authoritative NS refuse foreign resolvers. Yandex resolves everything and returns nearby RU CDN endpoints. Don't "modernize" this back to Cloudflare. Under CGNAT that hijacks UDP/53 (e.g. SevenSky), direct resolution can break — RU sites then go via VPN.
 - **QUIC (UDP 443) reject sits *before* the force-VPN match** in the nft chain. Intentional: QUIC over Reality+XHTTP is unstable, so we want Gemini / ChatGPT etc. to fall back to TCP rather than tunnel QUIC. If you reorder force-VPN above the QUIC reject, AI services will try QUIC through the VPN and break.
+- **WAN MTU is capped to 1400 on start** (`_apply_wan_mtu` in network.sh, restored on stop via `/tmp/eclipvpn/wan_mtu.orig`). Some wired CGNAT uplinks silently drop >1400-byte DF packets *and* the ICMP frag-needed replies (PMTU black hole) — the VPN handshake works but the tunnel stalls. Route-level MTU, nft MSS clamping, and xray `tcpMaxSeg` were all tried and do **not** fix it; only the interface cap does. Tunable via config `wan_mtu` (0 = leave the interface alone).
+- **Watchdog throughput guard**: latency probes only prove the server *answers* — a peak-overloaded exit pings fast while shaped to a crawl. Every `TPUT_EVERY` ticks the watchdog measures real tunnel speed through SOCKS; after `TPUT_SLOW_MAX` consecutive readings under `tput_min_kbps` (default 500) it benchmarks all servers by *measured throughput* and switches only if the best candidate clears the threshold and is >2× faster (plus a cooldown) so a peak that throttles every server doesn't cause flapping. Config keys: `tput_guard` (default true), `tput_min_kbps`.
+- **Boot gates in init.d**: waits up to 60s for WAN (slow CGNAT) and up to 20s for NTP clock sync before starting. Reality handshakes fail with a wrong clock, so don't remove the date check.
+- **`set-config` keys are whitelisted** in `cmd_set_config` (`usr/bin/eclipvpn`), with per-key value validation. Adding a new tunable means adding it to both the key whitelist and the matching validation branch.
+- **Cron markers are anchored.** Schedule lines end in `#eclipvpn`, auto-update in `#eclipvpn-update`; `_remove_cron` greps `#eclipvpn$` (anchored) — an unanchored match once deleted the auto-update line on every schedule change. `_ensure_cron_state` (called from cmd_start and cmd_restore) reconciles crontab with config — that's what re-arms schedule/auto-update after `restore` or migration; don't add ad-hoc crontab writes elsewhere.
+- **Subscription and rule updates are fetch-then-swap.** `update_subscription` commits servers.json only when ≥1 server parsed (a 0-server parse once wiped the live list); `refresh_rules` (singbox.sh) fetches into `rules.new` and swaps only after a sanity check, carrying forward optional lists the new fetch missed. Don't reintroduce `rm -rf rules` before a fetch.
+- **Watchdog failover re-arms**: the switch scan fires at `max_fails` and then every 15 ticks while the outage persists (`(fail_count - max_fails) % 15`). `_watchdog_pick_best` does 2 spawn-and-probe attempts per candidate (cold XHTTP+Reality flakes ~50% on first request) and uses probe ports 1182+ — disjoint from `cmd_probe_server`'s 1082+ range, which is deliberate.
 - **Clash API on `:9090` is LAN-exposed.** Token is created lazily, persisted to `/etc/eclipvpn/clash_secret`, and handed to the UI through `/status`. Threat model is "trust the home LAN" — anyone on the same Wi-Fi can read traffic stats / switch proxies. Don't deploy this to a public Wi-Fi router without rethinking that.
 
 ## Adding a new command
