@@ -31,6 +31,7 @@ setup_network() {
     nft add rule ip eclipvpn prerouting ip daddr 127.0.0.0/8 return
     nft add rule ip eclipvpn prerouting ip daddr 172.16.0.0/12 return
     nft add rule ip eclipvpn prerouting ip daddr 192.168.0.0/16 return
+    nft add rule ip eclipvpn prerouting ip daddr 169.254.0.0/16 return
     nft add rule ip eclipvpn prerouting ip daddr 224.0.0.0/4 return
     nft add rule ip eclipvpn prerouting ip daddr 255.255.255.255 return
 

@@ -37,6 +37,44 @@ fetch_rules() {
     _fetch_rule_sets
 }
 
+# Refresh the rule lists for $1=mode WITHOUT destroying the current ones
+# first. cmd_update used to `rm -rf rules` and refetch — an offline run (or
+# blocked GitHub) then left blocklist mode with an empty domains.list and the
+# next restart silently sent everything direct. Fetch into a sidecar dir,
+# sanity-check, swap; on a bad fetch the live lists stay untouched.
+refresh_rules() {
+    local mode="$1"
+    local live_dir="$SR_RULES_DIR"
+    local new_dir="${live_dir}.new"
+    rm -rf "$new_dir"
+    # fetch_rules and its helpers write to $SR_RULES_DIR — redirect them to
+    # the sidecar via ash dynamic scoping (a `local` shadows the global for
+    # every function called from here).
+    local SR_RULES_DIR="$new_dir"
+    fetch_rules "$mode"
+    SR_RULES_DIR="$live_dir"
+    # Sanity gate: heredoc-built lists always materialize; only the
+    # downloaded blocklist can come back empty. Threshold matches the
+    # "check network" warning in _fetch_blocklist_domains.
+    if [ "$mode" != "all_vpn" ]; then
+        local cnt
+        cnt=$(wc -l < "$new_dir/domains.list" 2>/dev/null)
+        if [ -z "$cnt" ] || [ "$cnt" -lt 50 ]; then
+            flog "WARN: blocklist refetch failed/empty — keeping previous rule lists"
+            rm -rf "$new_dir"
+            return 1
+        fi
+    fi
+    # Optional supplements: if the new fetch missed one the previous run
+    # had (their curls are -f and can individually fail), carry it forward.
+    local f
+    for f in telegram.list discord.list meta_ips.list telegram_ips.list; do
+        [ -s "$new_dir/$f" ] || { [ -s "$live_dir/$f" ] && cp "$live_dir/$f" "$new_dir/$f"; }
+    done
+    rm -rf "$live_dir"
+    mv "$new_dir" "$live_dir"
+}
+
 # Persist sing-box .srs rule sets to /etc/eclipvpn/rules/ so sing-box loads
 # them as type=local and never blocks startup on raw.githubusercontent.com.
 # That host is reachable from RU only sporadically (~50% per attempt against
