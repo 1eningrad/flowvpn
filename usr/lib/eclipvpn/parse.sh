@@ -342,5 +342,17 @@ update_subscription() {
 
     mkdir -p /tmp/eclipvpn
     fetch_subscription "$sub_url" "$tmp_file" || return 1
-    parse_subscription_file "$tmp_file" /tmp/eclipvpn/servers.json
+    # Parse into a sidecar and commit only on a non-empty result. Writing
+    # straight to servers.json meant a fetch that SUCCEEDED but parsed to
+    # zero servers (panel format change, garbage body that slipped past the
+    # base64 guard) replaced the live server list with [] — breaking status,
+    # restarts and failover until the panel recovered.
+    local new_file=/tmp/eclipvpn/servers.json.new count
+    count=$(parse_subscription_file "$tmp_file" "$new_file")
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+        mv "$new_file" /tmp/eclipvpn/servers.json
+    else
+        rm -f "$new_file"
+    fi
+    echo "$count"
 }
