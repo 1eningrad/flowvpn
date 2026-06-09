@@ -100,6 +100,11 @@ setup_network() {
 
     # IPv6 kill-switch — everything above is IPv4-only; close the v6 leak.
     _ipv6_killswitch_on "$iface"
+
+    # Cap WAN egress MTU so xray's (router-originated, unclamped) outbound
+    # frames fit PMTU-blackhole uplinks. No-op on clean 1500 paths past the
+    # idempotent check; configurable via wan_mtu (0 = leave interface alone).
+    _apply_wan_mtu
 }
 
 # DNS redirect: point dnsmasq at sing-box's DNS (:5354) for ALL LAN queries.
@@ -176,6 +181,7 @@ teardown_network() {
     ip rule del fwmark 0x1 table 100 2>/dev/null
     ip route del local 0.0.0.0/0 dev lo table 100 2>/dev/null
     _ipv6_killswitch_off
+    _restore_wan_mtu
     _restore_dnsmasq
 }
 
@@ -207,4 +213,55 @@ _ipv6_killswitch_off() {
     [ -w "$p" ] && echo "$saved" > "$p" 2>/dev/null
     rm -f "$f" /tmp/eclipvpn/ipv6_disable.saved
     logger -t eclipvpn "IPv6 kill-switch: restored IPv6 on ${ifc:-LAN}"
+}
+
+# WAN MTU guard for PMTU-blackhole uplinks.
+#
+# Some uplinks (CGNAT, PPPoE, double-NAT, certain wired ISPs) have a path MTU
+# below 1500 AND silently drop oversized DF packets while filtering the ICMP
+# "fragmentation needed" reply — a classic PMTUD black hole. The symptom is
+# brutal and VPN-specific: pings/DNS/small requests fly, but the tunnel crawls
+# or dies. Why VPN-specific: xray's connection to the VPN server is
+# router-ORIGINATED, so the firewall's `mtu_fix` MSS clamp (which only touches
+# FORWARDED LAN traffic) never bounds it; xray happily emits 1500-byte frames
+# that vanish into the black hole. On a clean uplink (e.g. LTE) the same setup
+# works perfectly — which is exactly the "works on LTE, dies on the wired line"
+# report that pinned this down.
+#
+# Empirically (tested live, same server, back-to-back) the ONLY mechanism that
+# fixes it is lowering the WAN *interface* MTU — a device-level hard cap on
+# egress frame size. A per-route `mtu`, an nft `tcp option maxseg size set`
+# clamp, and xray's `sockopt.tcpMaxSeg` were ALL tried and ALL failed to bound
+# what we transmit on the affected uplink; only the interface MTU did. 1400 is
+# the conventional tunnel-safe value (~1% overhead on a clean 1500 path, i.e.
+# harmless on LTE). Tunable via config `wan_mtu`; set it to 0 to leave the
+# interface untouched. Mirrors the IPv6 kill-switch save/restore: original MTU
+# saved in /tmp, restored only on full cmd_stop (soft restart keeps it).
+_wan_default_dev() {
+    ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
+}
+_apply_wan_mtu() {
+    local target
+    target=$(get_config_val wan_mtu 1400)
+    case "$target" in ''|*[!0-9]*) target=1400 ;; esac
+    [ "$target" -eq 0 ] && return 0
+    local dev; dev=$(_wan_default_dev)
+    [ -z "$dev" ] && { logger -t eclipvpn "WARN: wan_mtu: no default-route device"; return 0; }
+    local cur; cur=$(cat "/sys/class/net/$dev/mtu" 2>/dev/null)
+    [ "$cur" = "$target" ] && return 0       # already applied — idempotent, cheap to re-call
+    # Remember the pre-eclipvpn MTU once, so teardown can put it back.
+    [ -f /tmp/eclipvpn/wan_mtu.orig ] || echo "${cur:-1500}" > /tmp/eclipvpn/wan_mtu.orig
+    if ip link set "$dev" mtu "$target" 2>/dev/null; then
+        logger -t eclipvpn "wan_mtu: $dev MTU ${cur:-?} → $target (PMTU-blackhole guard)"
+    else
+        logger -t eclipvpn "WARN: wan_mtu: failed to set $dev MTU $target"
+    fi
+}
+_restore_wan_mtu() {
+    local orig; orig=$(cat /tmp/eclipvpn/wan_mtu.orig 2>/dev/null)
+    [ -z "$orig" ] && return 0
+    local dev; dev=$(_wan_default_dev)
+    [ -n "$dev" ] && ip link set "$dev" mtu "$orig" 2>/dev/null \
+        && logger -t eclipvpn "wan_mtu: restored $dev MTU → $orig"
+    rm -f /tmp/eclipvpn/wan_mtu.orig
 }
