@@ -1321,7 +1321,10 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         </div>
 
         <div class="card card-accent card-accent-direct card-collapsible" id="directCard">
-          <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="directCardBody" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('directCard')}">
+          <!-- No inline onkeydown: the global role=button keydown handler already
+               synthesizes a click — an inline handler made Enter/Space toggle twice
+               (open+close in one keypress, card looked dead to keyboard users). -->
+          <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="directCardBody">
             <div>
               <div class="card-title">Исключения — минуя VPN</div>
               <p class="card-desc" style="margin:3px 0 0">Эти сайты откроются напрямую, без VPN</p>
@@ -1338,7 +1341,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         </div>
 
         <div class="card card-accent card-accent-vpn card-collapsible" id="vpnCard">
-          <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="vpnCardBody" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('vpnCard')}">
+          <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="vpnCardBody">
             <div>
               <div class="card-title">Принудительно через VPN</div>
               <p class="card-desc" style="margin:3px 0 0">Всегда шифровать эти сайты, даже если они в списке РФ</p>
@@ -1355,7 +1358,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         </div>
 
         <div class="card card-accent card-accent-vpn card-collapsible" id="presetsCard">
-          <div class="card-head" onclick="toggleCollapsible('presetsCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="presetsCardBody" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCollapsible('presetsCard')}">
+          <div class="card-head" onclick="toggleCollapsible('presetsCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="presetsCardBody">
             <div>
               <div class="card-title">Сервисы</div>
               <p class="card-desc" style="margin:3px 0 0">Включить — все домены сервиса пойдут через VPN</p>
@@ -1370,8 +1373,11 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
         <div class="card card-accent card-accent-dns">
           <div class="card-title">DNS защита</div>
           <p class="card-desc">DNS-запросы защищены от подмены провайдером</p>
-          <div class="row"><span class="row-label">Через VPN</span><span class="row-val">tls://1.1.1.1</span></div>
-          <div class="row"><span class="row-label">Напрямую</span><span class="row-val">udp://1.1.1.1</span></div>
+          <!-- Must match singbox.sh: VPN DNS is DoH 1.1.1.1, direct DNS is
+               Yandex 77.88.8.8 (deliberately not Cloudflare — RU bank NS
+               refuse foreign resolvers, see CLAUDE.md). -->
+          <div class="row"><span class="row-label">Через VPN</span><span class="row-val">DoH 1.1.1.1</span></div>
+          <div class="row"><span class="row-label">Напрямую</span><span class="row-val">77.88.8.8 (Яндекс)</span></div>
           <div class="row"><span class="row-label">DoT заблокирован</span><span class="row-val" style="color:var(--green)">да</span></div>
         </div>
       </div>
@@ -1726,6 +1732,10 @@ function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)ret
 function renderSubscriptionMeta(meta){
   const card=document.getElementById('subMetaCard');
   if(!card)return;
+  // The 5s status poll rebuilds this card via innerHTML — mid-update that
+  // resurrected an ENABLED «Обновить» button (double-fire risk) and turned
+  // doUpdate's saved button reference into a detached node.
+  if(_updatePending)return;
   // Show the card whenever a subscription exists — even before the first
   // metadata fetch — so the manual «Обновить» button is always reachable.
   if(!state||!state.subscription_url){card.style.display='none';return}
@@ -1839,9 +1849,12 @@ function emojiToCountryCode(s){
   if(!s)return '';
   const m=s.match(/[\u{1F1E6}-\u{1F1FF}][\u{1F1E6}-\u{1F1FF}]/u);
   if(!m)return '';
-  const a=m[0].codePointAt(0)-0x1F1A5;
-  const b=m[0].codePointAt(2)-0x1F1A5;
-  return String.fromCharCode(64+a)+String.fromCharCode(64+b);
+  // RI-A is U+1F1E6 and maps to "A" (65). The old code subtracted 0x1F1A5
+  // AND added 64 — applying the offset twice landed in C1 control chars,
+  // so the Windows fallback badge rendered invisible garbage instead of "FI".
+  const a=m[0].codePointAt(0)-0x1F1E6;
+  const b=m[0].codePointAt(2)-0x1F1E6;
+  return String.fromCharCode(65+a)+String.fromCharCode(65+b);
 }
 
 // Render a flag for a server name. Returns either:
@@ -2002,7 +2015,10 @@ async function fetchStatus(){
       }
     }
     const on=state.running;
-    document.getElementById('vpnToggle').checked=on;
+    // Don't fight an in-flight start/stop: a poll landing mid-operation
+    // still sees the old `running` and would visually bounce the toggle the
+    // user just flipped (same guard as _autoModePending / _switchPending).
+    if(!_vpnPending)document.getElementById('vpnToggle').checked=on;
     renderSubscriptionMeta(state.subscription_meta);
     // Sync persistent auto_mode toggle from backend state, but stay out of
     // the way while a toggle/auto-select op is in flight — otherwise this
@@ -2041,14 +2057,14 @@ async function fetchStatus(){
       hi.className='header-info on';
       hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--green)"></span> '
         +serverNameDisplay(state.server||'')+'<span style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
-      document.getElementById('vpnMiniToggle').checked=true;
+      if(!_vpnPending)document.getElementById('vpnMiniToggle').checked=true;
     }else{
       document.getElementById('statusTitle').textContent='Отключено';
       document.getElementById('statusMeta').innerHTML='<span>Нажмите переключатель, чтобы подключиться</span>';
       const hi=document.getElementById('headerInfo');
       hi.className='header-info off';
       hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--red)"></span> Выключено';
-      document.getElementById('vpnMiniToggle').checked=false;
+      if(!_vpnPending)document.getElementById('vpnMiniToggle').checked=false;
     }
 
     // #subUrl stays empty — it's an "add subscription" field. The active
@@ -2078,11 +2094,15 @@ async function apiFetch(url,opts){
   // in their previous visual position after a successful action.
   const merged=Object.assign({cache:'no-store',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}},opts||{});
   if(opts&&opts.headers) merged.headers=Object.assign({},merged.headers,opts.headers);
-  // Abort hung requests (20s) so a wedged router doesn't leave loading toasts
+  // Abort hung requests so a wedged router doesn't leave loading toasts
   // and pending UI locks (e.g. _vpnPending) stuck forever — fetch otherwise
-  // waits indefinitely and the catch/finally never runs.
+  // waits indefinitely and the catch/finally never runs. Default 20s;
+  // long-running actions (update, auto-select, probe/set-server, restart)
+  // pass opts.timeoutMs — at 20s they aborted client-side while the router
+  // kept going, and e.g. selectServer then "rolled back" a switch that had
+  // actually succeeded.
   const _ac=new AbortController();
-  const _to=setTimeout(()=>_ac.abort(),20000);
+  const _to=setTimeout(()=>_ac.abort(),(opts&&opts.timeoutMs)||20000);
   if(!merged.signal)merged.signal=_ac.signal;
   try{
     const r=await fetch(url,merged);
@@ -2101,7 +2121,7 @@ async function toggleVPN(){
   const on=cb.checked;
   const tid=toast.loading(on?'Подключаемся…':'Отключаем…');
   try{
-    const r=await apiFetch(API+'?action='+(on?'start':'stop'));const d=await r.json();
+    const r=await apiFetch(API+'?action='+(on?'start':'stop'),{timeoutMs:65000});const d=await r.json();
     if(d.error)updateToast(tid,'Ошибка',{type:'error',duration:4500});
     else updateToast(tid,on?'VPN подключён':'VPN отключён',{type:'success'});
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
@@ -2148,14 +2168,14 @@ async function selectServer(i){
 
   try{
     // Phase 1: probe — temporary xray, no production impact if it fails
-    const pr=await apiFetch(API+'?action=probe-server&index='+i);
+    const pr=await apiFetch(API+'?action=probe-server&index='+i,{timeoutMs:90000});
     const pd=await pr.json();
     if(pd.error)throw new Error(pd.error);
 
     tid=updateToast(tid,'Сервер работает ('+pd.ip+') — переключаемся…',{type:'loading',duration:0});
 
     // Phase 2: actual switch — soft restart with new selected_server
-    const sr=await apiFetch(API+'?action=set-server&index='+i);
+    const sr=await apiFetch(API+'?action=set-server&index='+i,{timeoutMs:90000});
     const sd=await sr.json();
     if(sd.error)throw new Error(sd.error);
 
@@ -2273,7 +2293,7 @@ async function doAutoSelect(){
   if(pingBtn)pingBtn.disabled=true;
   let tid=toast.loading('Измеряем все серверы и выбираем лучший…');
   try{
-    const r=await apiFetch(API+'?action=auto-select');const d=await r.json();
+    const r=await apiFetch(API+'?action=auto-select',{timeoutMs:120000});const d=await r.json();
     if(d.error){
       // Re-throw with attempts so catch can still show them
       const err=new Error(d.error);err.attempts=d.attempts;throw err;
@@ -2301,7 +2321,7 @@ async function setMode(m){
   if(card){card.classList.add('applying');setTimeout(()=>card.classList.remove('applying'),900)}
   const tid=toast.loading('Применяем режим…');
   try{
-    const r=await apiFetch(API+'?action=set-mode&mode='+m);const d=await r.json();
+    const r=await apiFetch(API+'?action=set-mode&mode='+m,{timeoutMs:90000});const d=await r.json();
     if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
     else updateToast(tid,'Режим: '+name,{type:'success'});
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
@@ -2315,7 +2335,7 @@ async function addSubscription(){
   const tid=toast.loading('Добавляем подписку, загружаем серверы…');
   try{
     await apiFetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(u));
-    const r=await apiFetch(API+'?action=update');const d=await r.json();
+    const r=await apiFetch(API+'?action=update',{timeoutMs:90000});const d=await r.json();
     if(d.error){updateToast(tid,'Не удалось загрузить серверы',{type:'error',desc:d.error});}
     else{
       updateToast(tid,'Подписка добавлена',{type:'success',desc:'Серверов: '+d.servers});
@@ -2326,18 +2346,25 @@ async function addSubscription(){
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
   scheduleStatus(800);
 }
+let _updatePending=false;
 async function doUpdate(){
   // Manual refresh of the server list. Uses the stored subscription, not the
   // (now empty) add-field, so it works any time a subscription exists.
   if(!state||!state.subscription_url){toast.error('Сначала добавьте подписку');return}
+  if(_updatePending)return;
+  _updatePending=true;
   const b=document.getElementById('updateBtn');if(b){b.disabled=true;b.textContent='Обновляем…';}
   const tid=toast.loading('Обновляем список серверов…');
   try{
-    const r=await apiFetch(API+'?action=update');const d=await r.json();
+    const r=await apiFetch(API+'?action=update',{timeoutMs:90000});const d=await r.json();
     if(d.error)updateToast(tid,'Ошибка обновления',{type:'error',desc:d.error});
     else updateToast(tid,'Список обновлён',{type:'success',desc:'Найдено серверов: '+d.servers});
   }catch(e){updateToast(tid,'Ошибка',{type:'error'})}
-  if(b){b.disabled=false;b.textContent='Обновить';}
+  _updatePending=false;
+  // Re-query instead of reusing `b` — the status poll may have rebuilt the
+  // card while we were away, leaving `b` detached.
+  const b2=document.getElementById('updateBtn');
+  if(b2){b2.disabled=false;b2.textContent='Обновить';}
   scheduleStatus(2000);
 }
 // Disable Update button when subscription URL is empty so user sees
@@ -2356,7 +2383,7 @@ async function doRestart(){
   try{
     // force=1 bypasses the unchanged-config fast path in cmd_restart, so
     // a manual click always physically restarts xray + sing-box.
-    const r=await apiFetch(API+'?action=restart&force=1');
+    const r=await apiFetch(API+'?action=restart&force=1',{timeoutMs:65000});
     const d=await r.json();
     if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
     else if(d.status==='unchanged')updateToast(tid,'VPN уже работает',{type:'info'});
@@ -2367,7 +2394,7 @@ async function doRestart(){
 async function doStop(){
   if(!confirm('Остановить VPN?\n\nВесь трафик пойдёт напрямую (включая заблокированные сайты). Заново включить можно тем же переключателем.'))return;
   const tid=toast.loading('Останавливаем…');
-  try{await apiFetch(API+'?action=stop');updateToast(tid,'VPN остановлен',{type:'success'})}
+  try{await apiFetch(API+'?action=stop',{timeoutMs:65000});updateToast(tid,'VPN остановлен',{type:'success'})}
   catch(e){updateToast(tid,'Ошибка',{type:'error'})}
   scheduleStatus(2000);
 }
@@ -2384,7 +2411,7 @@ function toggleCollapsible(id){
   try{localStorage.setItem('eclipvpn.collapse.'+id,open?'1':'0')}catch(_){}
 }
 function restoreCollapsibles(){
-  ['directCard','vpnCard'].forEach(id=>{
+  ['directCard','vpnCard','presetsCard'].forEach(id=>{
     const el=document.getElementById(id);
     if(!el)return;
     const saved=localStorage.getItem('eclipvpn.collapse.'+id);
@@ -2481,11 +2508,9 @@ document.addEventListener('click', e => {
   const btn = e.target.closest('.tag-remove[data-domain]');
   if (btn) removeDomain(btn.dataset.domain, btn.dataset.list);
 });
-document.addEventListener('keydown', e => {
-  if (e.key !== 'Enter' && e.key !== ' ') return;
-  const btn = e.target.closest && e.target.closest('.tag-remove[data-domain]');
-  if (btn) { e.preventDefault(); removeDomain(btn.dataset.domain, btn.dataset.list); }
-});
+// Keyboard activation comes from the global role=button keydown handler
+// (it synthesizes a click, which lands in the delegate above). A dedicated
+// keydown delegate here fired removeDomain a second time per keypress.
 // Convert non-ASCII (Cyrillic etc.) domain to its ASCII Punycode form so
 // the CGI's strict ASCII-only validator accepts it. "сайт.рф" → "xn--80aswg.xn--p1ai".
 // Returns original on any error so unrelated input is preserved.
@@ -2518,7 +2543,11 @@ async function addDomain(list){
   // Domain → punycode + standard hostname check; bare IPv4 (with optional /CIDR)
   // is also accepted in the direct list — apps that hit hardcoded IPs (camera
   // streams, push services) need IP-based rules since SNI sniffing won't fire.
-  const d=toPunycode(raw);
+  // "*.example.com" → "example.com": the backend matches by domain_suffix,
+  // which already covers subdomains; a literal "*." entry would never match
+  // anything in sing-box, and the validator below rightly rejects "*".
+  let d=toPunycode(raw);
+  if(d.startsWith('*.'))d=d.slice(2);
   const isIp4=/^(\d{1,3}\.){3}\d{1,3}(\/(3[0-2]|[12]?\d))?$/.test(d);
   const isHost=/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(d);
   if(!isIp4 && !isHost){
@@ -2997,7 +3026,7 @@ async function measureServerPing(){
     else toast.error('Высокий ping',p+' мс');
     loadQuickDiag();renderServers(state.servers,state.selected);
   }catch(e){toast.error('Ошибка измерения')}
-  b.disabled=false;b.textContent='Измерить ping текущего сервера';
+  b.disabled=false;b.textContent='Замерить пинг текущего сервера';
 }
 
 // Diagnostics
@@ -3023,7 +3052,7 @@ function hcOpenErrors(){
 async function runHealthcheck(){
   const b=document.getElementById('hcBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем…';
   document.getElementById('hcResults').innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center"><span class="spinner"></span> Выполняем 26 проверок…</div>';
-  try{const r=await apiFetch(API+'?action=healthcheck');const d=await r.json();
+  try{const r=await apiFetch(API+'?action=healthcheck',{timeoutMs:65000});const d=await r.json();
     let ok=0,warn=0,err=0;
     const html=d.map(c=>{
       if(c.status==='ok')ok++;else if(c.status==='warn')warn++;else err++;
@@ -3245,6 +3274,10 @@ function toggleTheme(){
 })();
 
 function syncMiniToggle(el){
+  // toggleVPN refuses to run while an op is pending and reverts the MAIN
+  // checkbox — revert the mini one here too, or they desync until the
+  // next status poll.
+  if(_vpnPending){el.checked=!el.checked;return}
   const main=document.getElementById('vpnToggle');
   main.checked=el.checked;
   toggleVPN();
@@ -3355,7 +3388,7 @@ async function onboardNext1(){
   setOnboardStep(2);
   try{
     await apiFetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(url));
-    const r=await apiFetch(API+'?action=update');const d=await r.json();
+    const r=await apiFetch(API+'?action=update',{timeoutMs:90000});const d=await r.json();
     if(d.error){
       document.getElementById('onboardStep2Desc').textContent='Ошибка: '+(d.error||'не удалось загрузить');
       document.getElementById('onboardStep2Desc').style.color='var(--red)';
