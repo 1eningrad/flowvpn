@@ -50,12 +50,24 @@ start() {
 }
 
 stop() {
-    # Stop watchdog (try both pidfiles — init.d's and the one watchdog owns)
-    for f in /tmp/eclipvpn/watchdog.pid /tmp/eclipvpn/watchdog.lock; do
-        [ -f "$f" ] && {
-            kill $(cat "$f") 2>/dev/null
-            rm -f "$f"
-        }
+    # Stop watchdog (try both pidfiles — init.d's and the one watchdog owns).
+    # Verify the PID's cmdline before killing: the watchdog's exit trap only
+    # removes its lockdir, so these files routinely go stale, and a recycled
+    # PID would mean killing an unrelated process.
+    # watchdog.lockdir/owner is the authoritative PID (the two flat files
+    # are legacy mirrors) — include it so the real watchdog always gets the
+    # signal even when the mirrors are stale.
+    local f pid
+    for f in /tmp/eclipvpn/watchdog.pid /tmp/eclipvpn/watchdog.lock \
+             /tmp/eclipvpn/watchdog.lockdir/owner; do
+        [ -f "$f" ] || continue
+        pid=$(cat "$f" 2>/dev/null)
+        if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ]; then
+            case $(tr "\0" " " < "/proc/$pid/cmdline") in
+                *"/usr/bin/eclipvpn watchdog"*) kill "$pid" 2>/dev/null ;;
+            esac
+        fi
+        rm -f "$f"
     done
     /usr/bin/eclipvpn stop >/dev/null 2>&1
 }

@@ -19,7 +19,11 @@ WITH_REMOTE="${WITH_REMOTE:-1}"
 cd "$SRC"
 
 echo "→ ship sources to $ROUTER"
-ssh "$ROUTER" 'mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/eclipvpn /tmp/eclipvpn'
+# NOTE: deliberately NOT /etc/eclipvpn here — the migration below preserves
+# the old /etc/flowvpn config only when /etc/eclipvpn does not exist yet.
+# Pre-creating it (even empty) used to flip the migration into its rm -rf
+# branch and destroy the subscription.
+ssh "$ROUTER" 'mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /tmp/eclipvpn'
 
 COPYFILE_DISABLE=1 tar c \
     usr/bin/eclipvpn \
@@ -50,12 +54,30 @@ if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ];
         esac
     done
     nft delete table ip flowvpn 2>/dev/null || true
+    nft delete table inet flowvpn 2>/dev/null || true
     nft delete table ip flowvpn_dns 2>/dev/null || true
-    rm -f /tmp/dnsmasq.d/flowvpn.conf
-    if [ -d /etc/flowvpn ] && [ ! -e /etc/eclipvpn ]; then
-        mv /etc/flowvpn /etc/eclipvpn
-    elif [ -d /etc/flowvpn ]; then
-        rm -rf /etc/flowvpn
+    # Old cron entries point at the binary deleted below; new ones are
+    # re-created from config by _ensure_cron_state on first start.
+    crontab -l 2>/dev/null | grep -v '/usr/bin/flowvpn ' | crontab - 2>/dev/null || true
+    if [ -f /tmp/dnsmasq.d/flowvpn.conf ]; then
+        # dnsmasq only rereads conf-dir on restart — without it a redirect
+        # to the dead old sing-box keeps LAN DNS broken until first start.
+        rm -f /tmp/dnsmasq.d/flowvpn.conf
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    fi
+    if [ -d /etc/flowvpn ]; then
+        if [ ! -e /etc/eclipvpn ]; then
+            mv /etc/flowvpn /etc/eclipvpn
+        elif [ -f /etc/flowvpn/config.json ] \
+             && ! grep -q '"subscription_url": *"http' /etc/eclipvpn/config.json 2>/dev/null; then
+            # /etc/eclipvpn already exists (pre-created dir, or an untouched
+            # default config minted by a stray CGI hit between ship and
+            # migrate) — adopt the old install's files instead of nuking them.
+            cp -a /etc/flowvpn/. /etc/eclipvpn/
+            rm -rf /etc/flowvpn
+        else
+            rm -rf /etc/flowvpn
+        fi
     fi
     rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
 fi
@@ -84,8 +106,11 @@ esac
 cd /tmp
 wget -q "https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-${XRAY_ARCH}.zip" -O xray.zip
 unzip -o xray.zip xray -d /tmp/ >/dev/null
-cp /tmp/xray /usr/bin/xray
-chmod +x /usr/bin/xray
+# Stage + mv: cp into a running xray's inode fails with ETXTBSY on upgrades;
+# rename always succeeds and the live process keeps its old inode.
+cp /tmp/xray /usr/bin/xray.new
+chmod +x /usr/bin/xray.new
+mv /usr/bin/xray.new /usr/bin/xray
 rm -f /tmp/xray.zip /tmp/xray
 echo "  installed: $(/usr/bin/xray version 2>&1 | head -1)"
 
@@ -93,7 +118,7 @@ echo "[3/5] permissions + initial config"
 chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn /usr/lib/eclipvpn/*.sh
 /usr/bin/eclipvpn >/dev/null 2>&1 || true  # creates default config
 
-# legacy /eclipvpn/ → /eclipvpn/ redirect for old bookmarks
+# legacy /flowvpn/ → /eclipvpn/ redirect for old bookmarks
 cat > /www/flowvpn/index.html <<'HTML'
 <!DOCTYPE html>
 <meta charset="utf-8">

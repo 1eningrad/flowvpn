@@ -4,17 +4,28 @@
 # Public repo:
 #   curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
 #
-# Private repo (use a fine-grained PAT, read-only "Contents"):
-#   REPO_TOKEN=ghp_xxxxx sh -c "$(curl -sSL \
-#     -H 'Authorization: Bearer $REPO_TOKEN' \
-#     https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh)"
+# Private repo (use a fine-grained PAT, read-only "Contents").
+# Note the double quotes around the header — single quotes would send the
+# literal string $REPO_TOKEN — and the explicit REPO_TOKEN= re-export into
+# the piped sh, whose environment is separate from the curl command:
+#   REPO_TOKEN=ghp_xxxxx; curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
+#     https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh \
+#     | REPO_TOKEN="$REPO_TOKEN" sh
 
 set -e
 
 REPO="https://raw.githubusercontent.com/1eningrad/flowvpn/main"
-# wget needs explicit header for private repo. Empty when REPO_TOKEN unset.
-WGET_AUTH=""
-[ -n "$REPO_TOKEN" ] && WGET_AUTH="--header=Authorization: Bearer $REPO_TOKEN"
+# Private-repo auth: the header value contains spaces ("Bearer <token>"), so
+# it cannot live in a flat $WGET_AUTH string — unquoted expansion split it
+# into three words and busybox wget treated "Bearer" and the token as extra
+# URLs, sending no auth at all. A function keeps the argument intact.
+fetch() {
+    if [ -n "${REPO_TOKEN:-}" ]; then
+        wget -q --header="Authorization: Bearer $REPO_TOKEN" "$1" -O "$2"
+    else
+        wget -q "$1" -O "$2"
+    fi
+}
 
 ARCH=$(uname -m)
 
@@ -33,8 +44,13 @@ fi
 # paths: stop+disable the old service, kill its watchdog, clean its nft/dnsmasq
 # state, move config (preserving subscription/settings), remove old files.
 # Idempotent — safe if no old install exists.
+OLD_ENABLED=0
 if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
     echo "[0/6] Migrating old flowvpn install -> eclipvpn..."
+    # Remember whether the old service auto-started so we can re-enable the
+    # new one at the end — `disable` below would otherwise silently turn a
+    # boot-surviving install into a manual-start one.
+    ls /etc/rc.d/S*flowvpn >/dev/null 2>&1 && OLD_ENABLED=1
     /etc/init.d/flowvpn stop >/dev/null 2>&1 || true
     /etc/init.d/flowvpn disable >/dev/null 2>&1 || true
     for p in /proc/[0-9]*; do
@@ -44,12 +60,31 @@ if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ];
         esac
     done
     nft delete table ip flowvpn 2>/dev/null || true
+    nft delete table inet flowvpn 2>/dev/null || true
     nft delete table ip flowvpn_dns 2>/dev/null || true
-    rm -f /tmp/dnsmasq.d/flowvpn.conf
-    if [ -d /etc/flowvpn ] && [ ! -e /etc/eclipvpn ]; then
-        mv /etc/flowvpn /etc/eclipvpn
-    elif [ -d /etc/flowvpn ]; then
-        rm -rf /etc/flowvpn
+    # Old cron entries point at the binary we're about to delete. The new
+    # ones are re-created from config by _ensure_cron_state on first start.
+    crontab -l 2>/dev/null | grep -v '/usr/bin/flowvpn ' | crontab - 2>/dev/null || true
+    if [ -f /tmp/dnsmasq.d/flowvpn.conf ]; then
+        # Drop-in removal has no effect until dnsmasq rereads its conf-dir —
+        # restart it so a redirect to the (now dead) old sing-box doesn't
+        # keep LAN DNS broken until the user starts the new service.
+        rm -f /tmp/dnsmasq.d/flowvpn.conf
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    fi
+    if [ -d /etc/flowvpn ]; then
+        if [ ! -e /etc/eclipvpn ]; then
+            mv /etc/flowvpn /etc/eclipvpn
+        elif [ -f /etc/flowvpn/config.json ] \
+             && ! grep -q '"subscription_url": *"http' /etc/eclipvpn/config.json 2>/dev/null; then
+            # /etc/eclipvpn already exists (pre-created dir, or an untouched
+            # default config) — adopt the old install's files instead of
+            # discarding the user's subscription/settings.
+            cp -a /etc/flowvpn/. /etc/eclipvpn/
+            rm -rf /etc/flowvpn
+        else
+            rm -rf /etc/flowvpn
+        fi
     fi
     rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
 fi
@@ -90,14 +125,20 @@ XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linu
 cd /tmp
 wget -q "$XRAY_URL" -O xray.zip || { echo "ERROR: Failed to download xray"; exit 1; }
 
-if command -v unzip >/dev/null 2>&1; then
-    unzip -o xray.zip xray -d /tmp/ >/dev/null
-else
-    opkg install unzip >/dev/null 2>&1
-    unzip -o xray.zip xray -d /tmp/ >/dev/null
+# busybox has no unzip; install via whichever package manager this firmware
+# uses. The old fallback hardcoded `opkg`, which doesn't exist on apk-based
+# 25.x — exit 127 under set -e with both streams nulled, i.e. a silent abort.
+if ! command -v unzip >/dev/null 2>&1; then
+    $PKG_INSTALL unzip >/dev/null 2>&1 || true
+    command -v unzip >/dev/null 2>&1 || { echo "ERROR: unzip missing and '$PKG_INSTALL unzip' failed"; exit 1; }
 fi
-cp /tmp/xray /usr/bin/xray
-chmod +x /usr/bin/xray
+unzip -o xray.zip xray -d /tmp/ >/dev/null
+# Stage + mv instead of cp-in-place: writing into a running xray's inode
+# fails with ETXTBSY (upgrade over a live install); rename is always allowed
+# and the running process keeps its old inode until the next restart.
+cp /tmp/xray /usr/bin/xray.new
+chmod +x /usr/bin/xray.new
+mv /usr/bin/xray.new /usr/bin/xray
 rm -f /tmp/xray.zip /tmp/xray
 echo "  xray $(/usr/bin/xray version 2>&1 | head -1)"
 
@@ -115,12 +156,12 @@ for file in \
     usr/lib/eclipvpn/network.sh \
     www/cgi-bin/eclipvpn \
     etc/init.d/eclipvpn; do
-    wget -q $WGET_AUTH "$REPO/$file" -O "/$file" || { echo "ERROR: Failed to download $file"; exit 1; }
+    fetch "$REPO/$file" "/$file" || { echo "ERROR: Failed to download $file"; exit 1; }
     chmod +x "/$file"
 done
 
 # UI: source www/eclipvpn/index.html → install to /www/eclipvpn/index.html
-wget -q $WGET_AUTH "$REPO/www/flowvpn/index.html" -O /www/eclipvpn/index.html \
+fetch "$REPO/www/eclipvpn/index.html" /www/eclipvpn/index.html \
     || { echo "ERROR: Failed to download UI"; exit 1; }
 
 # Backward-compat redirect for /eclipvpn/ bookmarks.
@@ -134,6 +175,13 @@ EOF
 
 echo "[4/6] Initial configuration..."
 /usr/bin/eclipvpn >/dev/null 2>&1 || true  # Creates default config
+
+# Migrated installs keep their boot behavior: the old service was disabled
+# in [0/6], so re-enable the new one if the old one auto-started.
+if [ "$OLD_ENABLED" = "1" ]; then
+    /etc/init.d/eclipvpn enable >/dev/null 2>&1 || true
+    echo "  autostart re-enabled (migrated from flowvpn)"
+fi
 
 echo "[5/6] Optional: RemoteRouteRich (always-on remote access via vendor Tailscale)..."
 # Vendor-hosted Headscale at rc.routerich.ru — works under CGNAT, no white IP, free.
