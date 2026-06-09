@@ -173,6 +173,7 @@ cmd_start() {
     trap '_op_end' EXIT INT TERM
     _rotate_log
     _ensure_watchdog
+    _ensure_cron_state
 
     # Repair stale DNS state from older code (uci-committed redirect to a
     # not-yet-running sing-box). Without this, a power-yank reboot leaves
@@ -211,9 +212,14 @@ cmd_start() {
         [ "$count" -gt 0 ] 2>/dev/null || { echo '{"error":"subscription failed"}'; return 1; }
     fi
 
-    # Step 2: Fetch routing rules
-    if [ ! -f "$ECLIPVPN_TMP/rules/ru_domains.list" ] && [ ! -f "$ECLIPVPN_TMP/rules/domains.list" ]; then
-        fetch_rules "$mode"
+    # Step 2: Fetch routing rules. Mode-aware check: a cached dir from the
+    # OTHER mode (e.g. config restored with mode=blocklist over an all_vpn
+    # run's rules) used to pass the old either-file test and start sing-box
+    # with the wrong mode's lists.
+    if [ "$mode" = "all_vpn" ]; then
+        [ -f "$ECLIPVPN_TMP/rules/ru_domains.list" ] || fetch_rules "$mode"
+    else
+        [ -f "$ECLIPVPN_TMP/rules/domains.list" ] || fetch_rules "$mode"
     fi
 
     local selected
@@ -628,8 +634,10 @@ cmd_update() {
     local count
     count=$(update_subscription "$ECLIPVPN_CONFIG")
     local mode=$(get_config_val mode "all_vpn")
-    rm -rf "$ECLIPVPN_TMP/rules"
-    fetch_rules "$mode"
+    # Fetch-then-swap (refresh_rules): the old `rm -rf rules` + refetch left
+    # blocklist mode ruleless when the refetch failed — e.g. an offline
+    # nightly cron run — and the next restart sent everything direct.
+    refresh_rules "$mode" || flog "WARN: rule refresh failed — keeping previous lists"
     # Periodic refresh of sing-box .srs rule sets — cmd_update is the
     # natural moment to redownload upstream geosite/geoip without paying
     # the cost on every cmd_start. Failure leaves the cached copy in
@@ -974,12 +982,12 @@ cmd_set_mode() {
     flog "Switching mode to $new_mode"
     local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$ECLIPVPN_CONFIG")
     save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
-    rm -rf "$ECLIPVPN_TMP/rules" "$ECLIPVPN_TMP/singbox.json"
-    # Rebuild rule lists for the new mode. cmd_restart only regenerates the
-    # sing-box config from existing rule files — without this fetch_rules,
-    # both modes start with empty lists (RU heredoc / blocklist / force-VPN
-    # all missing) and routing collapses to the remote rule_sets only.
-    fetch_rules "$new_mode"
+    rm -f "$ECLIPVPN_TMP/singbox.json"
+    # Rebuild rule lists for the new mode (fetch-then-swap). cmd_restart only
+    # regenerates the sing-box config from existing rule files — without this
+    # refresh, both modes start with empty lists (RU heredoc / blocklist /
+    # force-VPN all missing) and routing collapses to the remote rule_sets.
+    refresh_rules "$new_mode" || flog "WARN: rule refresh failed for mode=$new_mode — routing degraded until next update"
     if is_xray_running; then
         cmd_restart
     else
@@ -997,7 +1005,8 @@ cmd_add_domain() {
         *)      echo '{"error":"invalid list, use direct or vpn"}'; return 1 ;;
     esac
     mkdir -p /etc/eclipvpn
-    grep -qxF "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
+    # `--` so a domain starting with "-" can't be parsed as a grep option.
+    grep -qxF -- "$domain" "$file" 2>/dev/null || echo "$domain" >> "$file"
     # _fetch_*_domains rebuilds the merged source list ({ru,vpn}_domains.list)
     # from heredoc + the user's custom file. cmd_restart then bakes it into
     # singbox.json's domain_suffix array — sing-box reads its config once at
@@ -1022,7 +1031,7 @@ cmd_remove_domain() {
         vpn)    file="$CUSTOM_VPN" ;;
         *)      echo '{"error":"invalid list"}'; return 1 ;;
     esac
-    [ -f "$file" ] && { grep -vxF "$domain" "$file" > "${file}.tmp"; mv "${file}.tmp" "$file"; }
+    [ -f "$file" ] && { grep -vxF -- "$domain" "$file" > "${file}.tmp"; mv "${file}.tmp" "$file"; }
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
     local applied=false
@@ -1118,12 +1127,19 @@ cmd_preset() {
             fi
             save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
 
-            # Rebuild vpn_domains.list and reload sing-box rules. Same flow
-            # as add-domain — sing-box restart is what makes new VPN routes
-            # take effect.
+            # Rebuild vpn_domains.list and apply via cmd_restart — same flow
+            # as add-domain. A bare start_singbox here was a double bug: it
+            # spawned a SECOND sing-box over the live one (ports taken → the
+            # newcomer died after 10s, clobbering the pidfile on the way out)
+            # and never regenerated singbox.json, so the preset's domains
+            # stayed inert until some unrelated restart.
             _fetch_vpn_domains 2>/dev/null
-            is_xray_running && start_singbox >/dev/null 2>&1
-            echo "{\"status\":\"$op\",\"preset\":\"$name\"}"
+            local applied=false
+            if is_xray_running && cmd_restart >/dev/null 2>&1; then
+                applied=true
+            fi
+            jq -n --arg s "$op" --arg p "$name" --argjson a "$applied" \
+                '{status:$s, preset:$p, applied:$a}'
             ;;
         *)
             echo "{\"error\":\"unknown op: $op (use list/enable/disable)\"}"
@@ -1368,6 +1384,14 @@ cmd_set_config() {
             ;;
         selected_server|tput_min_kbps|wan_mtu)
             case "$value" in ''|*[!0-9]*) echo '{"error":"'"$key"' must be numeric"}'; return 1 ;; esac
+            # wan_mtu: 0 = leave the interface alone; otherwise clamp to a
+            # sane range — _apply_wan_mtu would happily set MTU 100 and
+            # take the whole WAN down.
+            if [ "$key" = "wan_mtu" ] && [ "$value" != "0" ]; then
+                if [ "$value" -lt 576 ] || [ "$value" -gt 1500 ]; then
+                    echo '{"error":"wan_mtu must be 0 (off) or 576-1500"}'; return 1
+                fi
+            fi
             tmp=$(jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$ECLIPVPN_CONFIG")
             ;;
         *)
@@ -1717,22 +1741,45 @@ _watchdog_pick_best() {
         jq --argjson p "$probe_port" \
             '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
             "$wd_test" > "$wd_probe"
-        /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
-        local probe_pid=$!
-        sleep 2
-
-        local out
-        out=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 \
-              -o /dev/null -w "%{http_code} %{time_total}" \
-              https://cp.cloudflare.com/generate_204 2>/dev/null)
-        local code="${out%% *}" t="${out##* }"
+        # Two spawn-and-probe attempts per candidate, fresh xray for the
+        # second. The first request through a cold VLESS+XHTTP+Reality
+        # session hangs to full timeout ~50% of the time on some endpoints —
+        # the same flake cmd_probe_server retries 4× for. A single-shot
+        # probe here falsely rejected healthy failover candidates, which
+        # surfaced as "no working candidates" during recoverable outages.
+        # Waiting for the SOCKS port to listen (instead of a blind sleep 2)
+        # makes the common case faster, not slower.
+        local out="" code="" t="" probe_pid="" attempt
+        for attempt in 1 2; do
+            /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
+            probe_pid=$!
+            local ready=0 wait_i=0
+            while [ "$wait_i" -lt 5 ]; do
+                kill -0 "$probe_pid" 2>/dev/null || break
+                if netstat -tlnp 2>/dev/null | grep -q ":$probe_port "; then
+                    ready=1; break
+                fi
+                sleep 1; wait_i=$((wait_i + 1))
+            done
+            if [ "$ready" -eq 1 ]; then
+                out=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 \
+                      -o /dev/null -w "%{http_code} %{time_total}" \
+                      https://cp.cloudflare.com/generate_204 2>/dev/null)
+                code="${out%% *}"; t="${out##* }"
+                if [ "$code" = "204" ] || [ "$code" = "200" ]; then break; fi
+            fi
+            # Failed attempt: respawn rather than retry the same xray — a
+            # hung cold session never recovers within its own process.
+            kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null
+            probe_pid=""
+        done
         # Measure candidate throughput while its probe-xray is still alive —
         # only in throughput mode, only if it answered the reachability probe.
         local cand_kbps=""
         if [ "$metric" = "throughput" ] && { [ "$code" = "204" ] || [ "$code" = "200" ]; }; then
             cand_kbps=$(_watchdog_throughput_kbps "$probe_port")
         fi
-        kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null
+        [ -n "$probe_pid" ] && { kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null; }
         rm -f "$wd_test" "$wd_probe"
 
         if [ "$code" = "204" ] || [ "$code" = "200" ]; then
@@ -1794,7 +1841,10 @@ cmd_watchdog() {
 
     # Unique probe port per-process — survives concurrent set-server probes
     # and other ad-hoc xray runs that might collide on a fixed port.
-    local probe_port=$((1082 + $$ % 100))
+    # Base 1182, NOT cmd_probe_server's 1082: the ranges must not overlap,
+    # or a CLI/UI probe in another process could land on the same port as a
+    # concurrent failover scan and curl through the wrong server's xray.
+    local probe_port=$((1182 + $$ % 100))
 
     while true; do
         sleep "$interval"
@@ -2017,7 +2067,13 @@ cmd_watchdog() {
             [ $((silent_fails % 15)) -eq 0 ] && logger -t eclipvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
         fi
 
-        if [ "$fail_count" -eq "$max_fails" ]; then
+        # Fire the failover scan at max_fails, then re-fire every 15 ticks
+        # (~5 min) while the outage persists. The original `-eq max_fails`
+        # fired exactly once: after a scan that found no candidates,
+        # fail_count kept climbing past max_fails and the switch path was
+        # disarmed until a probe happened to succeed — a dead current server
+        # stayed selected even when alternatives came back hours later.
+        if [ "$fail_count" -ge "$max_fails" ] && [ $(( (fail_count - max_fails) % 15 )) -eq 0 ]; then
             logger -t eclipvpn "Watchdog: switching server (cause: $why)"
 
             local current=$(get_config_val selected_server 0)
@@ -2267,7 +2323,40 @@ _setup_cron() {
 }
 
 _remove_cron() {
-    crontab -l 2>/dev/null | grep -v "#eclipvpn" | crontab -
+    # Anchored: a bare "#eclipvpn" substring match also swallowed the
+    # auto-update line ("#eclipvpn-update"), so every schedule set/disable
+    # silently killed the nightly refresh while config still said enabled.
+    crontab -l 2>/dev/null | grep -v "#eclipvpn$" | crontab -
+}
+
+# Reconcile crontab with config.json. Two cases this self-heals:
+#   - `restore` onto a fresh router: schedule/auto_update arrive as config
+#     flags, but no crontab lines exist — both features look enabled in the
+#     UI while nothing ever fires;
+#   - migration from a pre-rename install: its cron lines point at the
+#     deleted /usr/bin/flowvpn binary.
+# Cheap (one crontab read + two jq calls), called from cmd_start (covers
+# boot and every manual start) and from cmd_restore.
+_ensure_cron_state() {
+    local cur
+    cur=$(crontab -l 2>/dev/null)
+    case "$cur" in
+        *"/usr/bin/flowvpn"*)
+            printf '%s\n' "$cur" | grep -v "/usr/bin/flowvpn " | crontab -
+            cur=$(crontab -l 2>/dev/null)
+            ;;
+    esac
+    if [ "$(jq -r '.schedule.enabled // false' "$ECLIPVPN_CONFIG" 2>/dev/null)" = "true" ]; then
+        printf '%s\n' "$cur" | grep -q "#eclipvpn$" || _setup_cron
+    else
+        printf '%s\n' "$cur" | grep -q "#eclipvpn$" && _remove_cron
+    fi
+    if [ "$(jq -r '.auto_update // false' "$ECLIPVPN_CONFIG" 2>/dev/null)" = "true" ]; then
+        printf '%s\n' "$cur" | grep -q "#eclipvpn-update$" || _setup_auto_update_cron
+    else
+        printf '%s\n' "$cur" | grep -q "#eclipvpn-update$" && _remove_auto_update_cron
+    fi
+    return 0
 }
 
 # ============================================================
@@ -2339,15 +2428,20 @@ cmd_restore() {
     # Domain lists are merged into ru_domains.list / vpn_domains.list at
     # the next mode/start. A backup blob is untrusted input, so filter to
     # the same shape the CGI's `domain` validator accepts: no leading dot,
-    # no consecutive dots, only [a-zA-Z0-9.*_-]. Anything else (control
-    # chars, shell metacharacters, blank lines) is dropped.
-    local re='^[a-zA-Z0-9*][a-zA-Z0-9.*_-]*$'
+    # no consecutive dots, only [a-zA-Z0-9.*_/-]. The slash is deliberate —
+    # the direct list holds IP-CIDR entries like 192.168.0.0/24 (the CGI
+    # allows them); the old slash-less filter silently dropped them on
+    # restore. Anything else (control chars, metacharacters) is dropped.
+    local re='^[a-zA-Z0-9*][a-zA-Z0-9.*_/-]*$'
     printf '%s' "$data" | jq -r '.direct_domains // ""' \
         | tr -d '\r' | grep -v '\.\.' | grep -E "$re" \
         > /etc/eclipvpn/direct_domains.txt 2>/dev/null
     printf '%s' "$data" | jq -r '.vpn_domains // ""' \
         | tr -d '\r' | grep -v '\.\.' | grep -E "$re" \
         > /etc/eclipvpn/vpn_domains.txt 2>/dev/null
+    # The restored config may carry schedule/auto_update flags from the old
+    # router — re-arm crontab to match, or both silently stay inert here.
+    _ensure_cron_state
     echo '{"status":"restored"}'
 }
 
