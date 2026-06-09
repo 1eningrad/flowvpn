@@ -1,0 +1,11 @@
+# Every text file in this repo ships VERBATIM (tar/cat over ssh) to busybox
+# ash on the router — a CRLF working tree turns `do` into `do\r` and the
+# on-router `ash -n` gate rejects the deploy (seen live 2026-06-10 on a
+# Windows checkout with core.autocrlf=true). Force LF in the working tree
+# regardless of the cloning machine's autocrlf setting. Beware: MSYS/git-bash
+# grep/sed/od read files in text mode and silently hide \r — verify line
+# endings by comparing `wc -c` against `git cat-file -s :path`.
+* text=auto eol=lf
+
+*.png binary
+*.pdf binary
