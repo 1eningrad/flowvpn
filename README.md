@@ -41,15 +41,16 @@ ssh root@router-ip
 curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
 ```
 
-**Если приватный** — нужен fine-grained Personal Access Token (read-only `Contents` на этом репо):
+**Если приватный** — нужен fine-grained Personal Access Token (read-only `Contents` на этом репо). Заголовок — в двойных кавычках (в одинарных `$REPO_TOKEN` не раскроется), и токен надо явно пробросить в окружение `sh`, читающего скрипт из пайпа:
 ```bash
 ssh root@router-ip
-REPO_TOKEN=ghp_xxxxx sh -c "$(curl -sSL \
-  -H 'Authorization: Bearer $REPO_TOKEN' \
-  https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh)"
+REPO_TOKEN=ghp_xxxxx
+curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
+  https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh \
+  | REPO_TOKEN="$REPO_TOKEN" sh
 ```
 
-Установщик ставит зависимости, скачивает xray под архитектуру, кладёт скрипты и UI в правильные пути, создаёт redirect со старого `/eclipvpn/` на `/eclipvpn/`.
+Установщик ставит зависимости, скачивает xray под архитектуру, кладёт скрипты и UI в правильные пути, создаёт redirect со старого `/flowvpn/` на `/eclipvpn/`.
 
 ## Ручная установка
 
@@ -299,11 +300,12 @@ Public repo:
 curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
 ```
 
-Private repo (fine-grained PAT, read-only `Contents`):
+Private repo (fine-grained PAT, read-only `Contents`; double quotes matter — single quotes would send the literal string `$REPO_TOKEN` — and the token must be re-exported into the piped `sh`):
 ```bash
-REPO_TOKEN=ghp_xxxxx sh -c "$(curl -sSL \
-  -H 'Authorization: Bearer $REPO_TOKEN' \
-  https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh)"
+REPO_TOKEN=ghp_xxxxx
+curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
+  https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh \
+  | REPO_TOKEN="$REPO_TOKEN" sh
 ```
 
 See the Russian section above for full documentation.
