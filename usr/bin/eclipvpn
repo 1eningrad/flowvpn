@@ -7,6 +7,13 @@ ECLIPVPN_LIB="/usr/lib/eclipvpn"
 ECLIPVPN_CONFIG="/etc/eclipvpn/config.json"
 ECLIPVPN_TMP="/tmp/eclipvpn"
 
+# Raise the open-files cap for everything spawned from here (daemons, watchdog,
+# probe xrays). OpenWrt default is 4096; sing-box held 754 fds on an ordinary
+# evening with 24 LAN clients (2026-06-10), and fd exhaustion kills xray with
+# no useful log line (XKeen's most-reported crash cause). Root, so raising the
+# hard limit is allowed; harmless no-op where already higher.
+ulimit -n 8192 2>/dev/null
+
 . "$ECLIPVPN_LIB/parse.sh"
 . "$ECLIPVPN_LIB/xray.sh"
 . "$ECLIPVPN_LIB/singbox.sh"
@@ -31,11 +38,32 @@ _get_clash_secret() {
 }
 # Atomic config write — validates JSON before overwriting.
 # chmod 600 because config.json holds the subscription URL (panel credential).
+# Also keeps 3 rolling backups (config.json.1 = newest): the jq check below
+# only catches syntactic damage, while history's config losses were semantic —
+# valid JSON with the subscription gone (bad restore, buggy writer). Volatile
+# keys that flip in normal operation (selected_server on every failover,
+# running_intent on every start/stop) are excluded from the change detection
+# so an evening of throttling-wave failovers doesn't flush the real-settings
+# history out of the 3 slots.
+# Recovery: cp /etc/eclipvpn/config.json.1 /etc/eclipvpn/config.json && eclipvpn restart 1
 save_config() {
     local data="$1"
     printf '%s\n' "$data" > "${ECLIPVPN_CONFIG}.tmp"
     if jq '.' "${ECLIPVPN_CONFIG}.tmp" >/dev/null 2>&1; then
         chmod 600 "${ECLIPVPN_CONFIG}.tmp" 2>/dev/null
+        if [ -f "$ECLIPVPN_CONFIG" ]; then
+            local _old_sig _new_sig
+            _old_sig=$(jq -S 'del(.selected_server, .running_intent)' "$ECLIPVPN_CONFIG" 2>/dev/null)
+            _new_sig=$(jq -S 'del(.selected_server, .running_intent)' "${ECLIPVPN_CONFIG}.tmp" 2>/dev/null)
+            if [ "$_old_sig" != "$_new_sig" ]; then
+                mv -f "${ECLIPVPN_CONFIG}.2" "${ECLIPVPN_CONFIG}.3" 2>/dev/null
+                mv -f "${ECLIPVPN_CONFIG}.1" "${ECLIPVPN_CONFIG}.2" 2>/dev/null
+                # cp, not mv — config.json must never be absent even briefly,
+                # concurrent readers (CGI status polls) race this function.
+                cp "$ECLIPVPN_CONFIG" "${ECLIPVPN_CONFIG}.1" 2>/dev/null
+                chmod 600 "${ECLIPVPN_CONFIG}.1" 2>/dev/null
+            fi
+        fi
         mv "${ECLIPVPN_CONFIG}.tmp" "$ECLIPVPN_CONFIG"
     else
         rm -f "${ECLIPVPN_CONFIG}.tmp"
@@ -106,6 +134,18 @@ _ensure_watchdog() {
     fi
     /usr/bin/eclipvpn watchdog >/dev/null 2>&1 &
     echo $! > "$ECLIPVPN_TMP/watchdog.pid"
+}
+
+# Cron-driven "supervisor for the supervisor" (*/5 line tagged #eclipvpn-watch,
+# maintained by _ensure_cron_state). The watchdog is the only thing reviving
+# dead daemons and rotating logs, but until this command nothing revived the
+# watchdog ITSELF — an OOM-killed watchdog silently lost failover and rotation
+# until the next manual start/restart, potentially for weeks.
+# Gated on running_intent: init.d stop kills the watchdog deliberately (and
+# its cmd_stop call clears the intent), so a dead watchdog must then STAY dead.
+cmd_ensure_watchdog() {
+    [ "$(get_config_val running_intent false)" = "true" ] || return 0
+    _ensure_watchdog
 }
 
 # Mirror VPN server IPs into zapret's user-exclude list. Without this,
@@ -1809,7 +1849,9 @@ _watchdog_pick_best() {
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=5 fail_count=0 tick=0 silent_fails=0
     # Throughput-guard state (see the guard block on the connectivity-OK path).
-    local slow_count=0 last_tput_switch=0
+    # tput_switch_helped: 1 = at least one good reading since the last
+    # throughput switch/benchmark — the cooldown only gates while it's 0.
+    local slow_count=0 last_tput_switch=0 tput_switch_helped=1
     local TPUT_EVERY=6        # measure current-server speed every ~2 min (6×20s)
     local TPUT_SLOW_MAX=3     # consecutive low reads before acting (~6 min sustained)
     local TPUT_COOLDOWN=1200  # min seconds between throughput-driven switches (anti-flap)
@@ -1854,6 +1896,22 @@ cmd_watchdog() {
         # level is quiet, but we still want quick recovery if log noise
         # ever spikes (e.g. xray reconnect storm).
         [ $((tick % 10)) -eq 0 ] && _rotate_log
+
+        # fd pressure check every ~10 min (30 ticks). fd exhaustion kills xray
+        # with no useful log line (XKeen's most-reported crash cause) — a
+        # warning here lets syslog explain a later crash/restart loop.
+        if [ $((tick % 30)) -eq 0 ]; then
+            local _fdname _fdp _fdn _fdl
+            for _fdname in xray singbox; do
+                _fdp=$(cat "$ECLIPVPN_TMP/${_fdname}.pid" 2>/dev/null)
+                [ -n "$_fdp" ] && [ -d "/proc/$_fdp/fd" ] || continue
+                _fdn=$(ls "/proc/$_fdp/fd" 2>/dev/null | wc -l)
+                _fdl=$(awk '/^Max open files/{print $4}' "/proc/$_fdp/limits" 2>/dev/null)
+                case "$_fdl" in ''|*[!0-9]*) continue ;; esac
+                [ $((_fdn * 10)) -ge $((_fdl * 9)) ] && \
+                    logger -t eclipvpn "Watchdog: $_fdname fd usage high: $_fdn/$_fdl"
+            done
+        fi
 
         # Auto-mode periodic re-evaluation every ~20 minutes (60 ticks).
         # cmd_auto_eval has its own internal rate-limit and hysteresis,
@@ -1954,8 +2012,13 @@ cmd_watchdog() {
             # user sees "everything is molasses". Periodically measure REAL
             # tunnel throughput; if it collapses for several consecutive checks,
             # fail over to the candidate with the best MEASURED speed (not
-            # latency). Cooldown + "only switch if a candidate is clearly
-            # faster" stop a peak that throttles every server from flapping.
+            # latency). Anti-flap is two-layered: a switch needs a candidate
+            # clearly faster (>2×) than the crawl, and the cooldown applies
+            # only while the last switch/benchmark produced no good reading
+            # since (tput_switch_helped=0 — the "every server is throttled"
+            # peak). A switch that DID restore speed and later got re-squeezed
+            # (rolling TSPU waves, observed 2026-06-10) may act again as soon
+            # as TPUT_SLOW_MAX low reads re-accumulate (~7 min), not 20.
             if [ "$(get_config_val tput_guard true)" = "true" ] && [ $((tick % TPUT_EVERY)) -eq 0 ]; then
                 local min_kbps; min_kbps=$(get_config_val tput_min_kbps 500)
                 case "$min_kbps" in ''|*[!0-9]*) min_kbps=500 ;; esac
@@ -1965,13 +2028,17 @@ cmd_watchdog() {
                     logger -t eclipvpn "Watchdog: low throughput ${kbps}KB/s < ${min_kbps} ($slow_count/$TPUT_SLOW_MAX)"
                 else
                     [ "$slow_count" -gt 0 ] && [ -n "$kbps" ] && logger -t eclipvpn "Watchdog: throughput recovered (${kbps}KB/s)"
+                    # A real good reading (not an empty no-data probe) proves
+                    # the current server delivers — the next degradation is a
+                    # fresh wave, not the same incident: lift the cooldown gate.
+                    [ -n "$kbps" ] && tput_switch_helped=1
                     slow_count=0
                 fi
 
                 if [ "$slow_count" -ge "$TPUT_SLOW_MAX" ]; then
                     local now=$(date +%s)
-                    if [ $((now - last_tput_switch)) -lt "$TPUT_COOLDOWN" ]; then
-                        : # recent throughput switch didn't lift things — cool down, don't flap
+                    if [ $((now - last_tput_switch)) -lt "$TPUT_COOLDOWN" ] && [ "$tput_switch_helped" -eq 0 ]; then
+                        : # last switch/benchmark never lifted things — cool down, don't flap
                     else
                         local cur_idx=$(get_config_val selected_server 0)
                         local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
@@ -1995,17 +2062,20 @@ cmd_watchdog() {
                                     save_config "$tmp" || flog "WARN: throughput failover save_config failed"
                                     ( cmd_restart ) >/dev/null 2>&1
                                     last_tput_switch=$(date +%s)
+                                    tput_switch_helped=0
                                     slow_count=0
                                     sleep $((interval * 3))
                                 else
                                     logger -t eclipvpn "Watchdog: all servers slow (best ${cand_kbps}KB/s) — staying put"
                                     _log_incident "slow_noalt" "$cur_host" "$cur_name" "скорость низкая везде (текущий ${kbps}КБ/с, лучший кандидат ${cand_kbps}КБ/с)"
                                     last_tput_switch=$(date +%s)
+                                    tput_switch_helped=0
                                     slow_count=0
                                 fi
                             else
                                 logger -t eclipvpn "Watchdog: no throughput candidates answered — staying put"
                                 last_tput_switch=$(date +%s)
+                                tput_switch_helped=0
                                 slow_count=0
                             fi
                         fi
@@ -2356,6 +2426,13 @@ _ensure_cron_state() {
     else
         printf '%s\n' "$cur" | grep -q "#eclipvpn-update$" && _remove_auto_update_cron
     fi
+    # Watchdog supervision line — installed unconditionally (the command
+    # self-gates on running_intent, so it's inert after a deliberate stop).
+    # Marker #eclipvpn-watch: the anchored greps elsewhere (#eclipvpn$ in
+    # _remove_cron, #eclipvpn-update in _remove_auto_update_cron) can't
+    # collide with it.
+    printf '%s\n' "$cur" | grep -q "#eclipvpn-watch$" || \
+        (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/bin/eclipvpn ensure-watchdog >/dev/null 2>&1 #eclipvpn-watch") | crontab -
     return 0
 }
 
@@ -2775,6 +2852,7 @@ case "$1" in
     healthcheck)    cmd_healthcheck ;;
     system-info)    cmd_system_info ;;
     watchdog)       cmd_watchdog "$2" ;;
+    ensure-watchdog) cmd_ensure_watchdog ;;
     get-traffic)    cmd_get_traffic ;;
     traffic-poll)   cmd_traffic_poll ;;
     reset-traffic)  cmd_reset_traffic ;;
