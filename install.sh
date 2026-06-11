@@ -167,6 +167,9 @@ for file in \
     usr/lib/eclipvpn/singbox.sh \
     usr/lib/eclipvpn/network.sh \
     usr/lib/eclipvpn/watchdog.sh \
+    usr/lib/eclipvpn/lifecycle.sh \
+    usr/lib/eclipvpn/servers.sh \
+    usr/lib/eclipvpn/domains.sh \
     www/cgi-bin/eclipvpn \
     etc/init.d/eclipvpn; do
     fetch "$REPO/$file" "/$file" || { echo "ERROR: Failed to download $file"; exit 1; }
