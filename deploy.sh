@@ -39,6 +39,9 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/lifecycle.sh \
     usr/lib/eclipvpn/servers.sh \
     usr/lib/eclipvpn/domains.sh \
+    usr/lib/eclipvpn/traffic.sh \
+    usr/lib/eclipvpn/health.sh \
+    usr/lib/eclipvpn/config.sh \
     etc/init.d/eclipvpn \
     www/cgi-bin/eclipvpn \
 | ssh "$ROUTER" 'cd / && tar x'
@@ -116,7 +119,8 @@ for f in /usr/bin/eclipvpn /usr/lib/eclipvpn/parse.sh /usr/lib/eclipvpn/xray.sh 
          /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/network.sh \
          /usr/lib/eclipvpn/watchdog.sh /usr/lib/eclipvpn/lifecycle.sh \
          /usr/lib/eclipvpn/servers.sh /usr/lib/eclipvpn/domains.sh \
-         /etc/init.d/eclipvpn; do
+         /usr/lib/eclipvpn/traffic.sh /usr/lib/eclipvpn/health.sh \
+         /usr/lib/eclipvpn/config.sh /etc/init.d/eclipvpn; do
     ash -n "$f" || { echo "SYNTAX FAIL: $f" >&2; exit 1; }
 done
 
