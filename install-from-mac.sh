@@ -31,6 +31,13 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
     usr/lib/eclipvpn/network.sh \
+    usr/lib/eclipvpn/watchdog.sh \
+    usr/lib/eclipvpn/lifecycle.sh \
+    usr/lib/eclipvpn/servers.sh \
+    usr/lib/eclipvpn/domains.sh \
+    usr/lib/eclipvpn/traffic.sh \
+    usr/lib/eclipvpn/health.sh \
+    usr/lib/eclipvpn/config.sh \
     etc/init.d/eclipvpn \
     www/cgi-bin/eclipvpn \
 | ssh "$ROUTER" 'cd / && tar x'
