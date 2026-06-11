@@ -103,8 +103,14 @@ _fetch_one_srs() {
     # cmd_start and can blow past init.d/watchdog expectations.
     local i=0
     while [ "$i" -lt 3 ]; do
+        # Validate it's actually a sing-box rule-set, not a 200-status
+        # interception/CAPTCHA page >1KB: every .srs starts with the magic
+        # bytes "SRS" (0x53 0x52 0x53). Without this a garbage page gets mv'd
+        # into the PERSISTENT /etc cache, the cache-wins check then pins it,
+        # and sing-box fails rule-set load on every start until manual deletion.
         if curl -fsSL --max-time 10 -o "$tmp" "$url" 2>/dev/null \
-           && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ]; then
+           && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ] \
+           && [ "$(dd if="$tmp" bs=1 count=3 2>/dev/null)" = "SRS" ]; then
             mv "$tmp" "$dest"
             return 0
         fi
@@ -132,12 +138,40 @@ _ensure_srs_present() {
     done
 }
 _make_empty_srs() {
-    local dest="$1" src="${1}.src.json"
+    # Compile to a temp then atomic-mv: a crash mid-compile must not leave a
+    # partial .srs at the final path that the [ -s ] checks would accept.
+    local dest="$1" src="${1}.src.json" tmp="${1}.tmp.$$"
     printf '%s' '{"version":1,"rules":[]}' > "$src"
-    sing-box rule-set compile --output "$dest" "$src" 2>/dev/null
+    /usr/bin/sing-box rule-set compile --output "$tmp" "$src" 2>/dev/null
     local rc=$?
     rm -f "$src"
-    [ "$rc" -eq 0 ] && [ -s "$dest" ]
+    if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
+        mv "$tmp" "$dest"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# Validate $1 as an IPv4 address or IPv4/CIDR (octets 0-255, prefix 0-32).
+# Used to gate emission of IP-CIDR rules — an invalid one makes sing-box
+# refuse the whole config (LAN-wide fail-closed outage), and the custom-direct
+# list is reachable from any LAN client via the unauthenticated add-domain CGI.
+_is_ipv4_cidr() {
+    local ip="$1" pfx=""
+    case "$ip" in
+        */*) pfx="${ip##*/}"; ip="${ip%%/*}"
+             case "$pfx" in ''|*[!0-9]*) return 1 ;; esac
+             { [ "$pfx" -ge 0 ] && [ "$pfx" -le 32 ]; } 2>/dev/null || return 1 ;;
+    esac
+    case "$ip" in *[!0-9.]*|*..*|.*|*.) return 1 ;; esac
+    local IFS=. o n=0
+    for o in $ip; do
+        case "$o" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+        n=$((n + 1))
+    done
+    [ "$n" -eq 4 ]
 }
 
 _fetch_ru_domains() {
@@ -376,15 +410,29 @@ RUEOF
     # an IP directly (cached A record, hardcoded host) need an IP-based rule
     # to bypass VPN.
     if [ -f "$CUSTOM_DIRECT" ]; then
-        while IFS= read -r line; do
+        # tr -d '\r': a CRLF custom file (scp'd from Windows) would otherwise
+        # bake "domain\r" suffixes that silently never match.
+        tr -d '\r' < "$CUSTOM_DIRECT" | while IFS= read -r line; do
             case "$line" in "#"*|"") continue ;; esac
             case "$line" in
                 [0-9]*.[0-9]*.[0-9]*.[0-9]*)
-                    echo "IP-CIDR,$line" >> "$SR_RULES_DIR/ru_domains.list" ;;
+                    if _is_ipv4_cidr "$line"; then
+                        echo "IP-CIDR,$line"
+                    else
+                        # Looked like an IP but isn't valid. A slash means it was
+                        # meant as a CIDR (e.g. 10.0.0.1/99) → drop it rather than
+                        # feed sing-box a config it will reject. No slash means it's
+                        # a domain that happens to start with digit labels
+                        # (1.2.3.4.example.com) → keep as a domain suffix.
+                        case "$line" in
+                            */*) flog "WARN: skipping invalid CIDR direct entry: $line" ;;
+                            *)   echo "DOMAIN-SUFFIX,$line" ;;
+                        esac
+                    fi ;;
                 *)
-                    echo "DOMAIN-SUFFIX,$line" >> "$SR_RULES_DIR/ru_domains.list" ;;
+                    echo "DOMAIN-SUFFIX,$line" ;;
             esac
-        done < "$CUSTOM_DIRECT"
+        done >> "$SR_RULES_DIR/ru_domains.list"
     fi
 }
 
@@ -442,19 +490,22 @@ VPNEOF
     local enabled
     enabled=$(jq -r '.enabled_presets // [] | .[]' "$ECLIPVPN_CONFIG" 2>/dev/null)
     for p in $enabled; do
-        if _preset_domains "$p" > /tmp/.preset.$$ 2>/dev/null; then
-            echo "# preset: $p" >> "$SR_RULES_DIR/vpn_domains.list"
-            cat /tmp/.preset.$$ >> "$SR_RULES_DIR/vpn_domains.list"
-        fi
-        rm -f /tmp/.preset.$$
-    done
+        # Capture in a var instead of a predictable /tmp/.preset.$$ temp file
+        # (world-readable path outside our /tmp/eclipvpn namespace).
+        local _pd
+        _pd=$(_preset_domains "$p" 2>/dev/null) && [ -n "$_pd" ] && {
+            echo "# preset: $p"
+            printf '%s\n' "$_pd"
+        }
+    done >> "$SR_RULES_DIR/vpn_domains.list"
 
     # Append user's custom VPN-forced domains (one per line, comments stripped).
+    # tr -d '\r' guards against CRLF custom files (Windows scp).
     if [ -f "$CUSTOM_VPN" ]; then
-        while IFS= read -r line; do
+        tr -d '\r' < "$CUSTOM_VPN" | while IFS= read -r line; do
             case "$line" in "#"*|"") continue ;; esac
-            echo "$line" >> "$SR_RULES_DIR/vpn_domains.list"
-        done < "$CUSTOM_VPN"
+            echo "$line"
+        done >> "$SR_RULES_DIR/vpn_domains.list"
     fi
 }
 
@@ -549,13 +600,25 @@ _fetch_blocklist_domains() {
     # These lists ship as plain domains, one per line (no DOMAIN-SUFFIX prefix
     # like Shadowrocket lists). Wrap each line in the SR format that
     # convert_sr_to_singbox_rule already understands.
-    curl -s --max-time 30 "$url" | \
+    # Fetch-then-swap. A failed/blocked fetch must NOT clobber a good live
+    # domains.list with an empty file: `> file` always creates it, and the
+    # cold-boot gate in cmd_start tests `-f` (not `-s`), so a 0-line file gets
+    # cached as a valid list and blocklist mode then runs rule-less (everything
+    # direct) until the next successful update. Stage into .new, sanity-check
+    # the line count, swap only on success. -fsS also drops HTTP error pages
+    # (>50-line CAPTCHA/block pages would otherwise pass the count gate).
+    local tmp_dl="$SR_RULES_DIR/domains.list.new"
+    curl -fsS --max-time 30 "$url" 2>/dev/null | \
         awk 'NF && !/^#/ && !/^!/ {gsub(/[[:space:]]+/, "", $0); if(length($0)) print "DOMAIN-SUFFIX," $0}' \
-        > "$SR_RULES_DIR/domains.list"
-
-    local cnt=$(wc -l < "$SR_RULES_DIR/domains.list" 2>/dev/null)
-    [ -z "$cnt" ] || [ "$cnt" -lt 50 ] && \
-        flog "WARNING: blocklist source $source returned only $cnt entries — check network"
+        > "$tmp_dl"
+    local cnt=$(wc -l < "$tmp_dl" 2>/dev/null)
+    [ -z "$cnt" ] && cnt=0
+    if [ "$cnt" -ge 50 ]; then
+        mv "$tmp_dl" "$SR_RULES_DIR/domains.list"
+    else
+        rm -f "$tmp_dl"
+        flog "WARNING: blocklist source $source returned only $cnt entries — keeping previous domains.list"
+    fi
 
     # Telegram + Discord lists supplement domain-based routing for these
     # specific apps (their domain routing alone is unreliable due to
@@ -694,7 +757,10 @@ generate_singbox_config() {
             final: $final_outbound,
             auto_detect_interface: true
         }
-    }' > "$output"
+    }' > "$output" || { flog "ERROR: failed to generate sing-box config (jq)"; return 1; }
+    # A truncated/empty output here would otherwise be reported as success and
+    # sing-box would fail to start with a misleading message.
+    [ -s "$output" ] || { flog "ERROR: generated sing-box config is empty"; return 1; }
     # sing-box config holds the Clash API secret; tighten file mode.
     chmod 600 "$output" 2>/dev/null
 }
@@ -712,7 +778,7 @@ _build_allvpn_rules() {
     # JSON instead of breaking the rule string we hand to sing-box.
     local vpn_rule=""
     if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
-        vpn_rule=$(grep -vE '^(#|$)' "$SR_RULES_DIR/vpn_domains.list" \
+        vpn_rule=$(tr -d '\r' < "$SR_RULES_DIR/vpn_domains.list" | grep -vE '^(#|$)' \
             | jq -R -s '[split("\n")[] | select(length > 0)]
                         | if length == 0 then null else {domain_suffix: .} end')
         [ "$vpn_rule" = "null" ] && vpn_rule=""
@@ -816,7 +882,11 @@ _build_blocklist_rules() {
             + (if .domain_suffix then {domain_suffix: .domain_suffix} else {} end)
             + (if .domain_keyword then {domain_keyword: .domain_keyword} else {} end)
             + {action: "route", server: "dns-proxy"}')
-        [ "$dns_rule" = '{"action":"route","server":"dns-proxy"}' ] && continue
+        # Skip a rule that carries no domain condition — it would route ALL DNS
+        # to dns-proxy. The old string compare against a compact literal never
+        # matched jq's pretty-printed output, so the guard was dead; check for
+        # an actual domain key instead.
+        echo "$dns_rule" | jq -e 'has("domain") or has("domain_suffix") or has("domain_keyword")' >/dev/null 2>&1 || continue
         [ "$first" = "1" ] || dns_rules="$dns_rules,"
         dns_rules="$dns_rules$dns_rule"
         first=""
@@ -853,7 +923,7 @@ start_singbox() {
     while [ "$tries" -lt 10 ]; do
         sleep 1; tries=$((tries + 1))
         kill -0 "$(cat /tmp/eclipvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/eclipvpn/singbox.pid; return 1; }
-        netstat -tlnp 2>/dev/null | grep -q ":2154" && return 0
+        netstat -tlnp 2>/dev/null | grep -q ":2154 " && return 0
     done
     # Process alive but tproxy port never bound. Caller (cmd_start) would
     # otherwise apply nftables rules redirecting LAN traffic to an unbound

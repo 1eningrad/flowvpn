@@ -1984,6 +1984,12 @@ async function fetchStatus(){
     if(_switchPending&&typeof state.selected==='number'){
       fresh.selected=state.selected;
     }
+    // pings{} is keyed by array index. When the server list changes (a
+    // subscription update / reorder), a stale pings[i] would render against a
+    // different server — clear it so stale numbers don't mislead.
+    const _oldHosts=(state.servers||[]).map(s=>s&&s.host).join(',');
+    const _newHosts=(fresh.servers||[]).map(s=>s&&s.host).join(',');
+    if(_oldHosts!==_newHosts)pings={};
     state=fresh;
     _uptimeBase = state.running ? {sec:(+state.uptime||0), at:Date.now()} : null;
     // Detect watchdog failover: if last_switch.time is newer than what we've
@@ -2092,6 +2098,10 @@ async function apiFetch(url,opts){
   // cached GET responses for endpoints whose state changes server-side
   // (auto-update, schedule, status, get-domains), making toggles "stick"
   // in their previous visual position after a successful action.
+  // Anti-CSRF is enforced server-side off the Referer/Origin header (uhttpd
+  // drops custom headers, so a marker header wouldn't survive). The browser
+  // sends a same-host Referer automatically on these same-origin calls, which
+  // the CGI checks against its Host for state-changing actions.
   const merged=Object.assign({cache:'no-store',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}},opts||{});
   if(opts&&opts.headers) merged.headers=Object.assign({},merged.headers,opts.headers);
   // Abort hung requests so a wedged router doesn't leave loading toasts
@@ -2144,6 +2154,10 @@ async function selectServer(i){
   // failed click silently kills auto-mode without the user knowing.
   const wasAuto=state.auto_mode;
   if(wasAuto){
+    // Hold _autoModePending across the whole switch so a status poll landing
+    // mid-operation doesn't re-read the not-yet-committed backend auto_mode=true
+    // and visually flip the toggle back on for a cycle. Cleared in finally.
+    _autoModePending=true;
     state.auto_mode=false;
     const am=document.getElementById('autoModeToggle');
     if(am)am.checked=false;
@@ -2210,6 +2224,7 @@ async function selectServer(i){
     loadIncidents();
   }finally{
     _switchPending=false;
+    _autoModePending=false;   // release the auto-mode sync lock taken above
     // Render first, then unlock — avoids a microsecond gap where stale DOM
     // is interactive after the lock is removed.
     renderServers(state.servers,state.selected);
@@ -2508,6 +2523,21 @@ document.addEventListener('click', e => {
   const btn = e.target.closest('.tag-remove[data-domain]');
   if (btn) removeDomain(btn.dataset.domain, btn.dataset.list);
 });
+
+// Delegated handler for device rows (data-dev-id + data-dev-route). data-*
+// keeps the mac/ip out of an HTML-attr→JS-string boundary (defense-in-depth,
+// parity with the domain tags). Click + keyboard (Enter/Space) activation —
+// the row is role="button" tabindex="0", which the old inline onclick never
+// wired for the keyboard.
+document.addEventListener('click', e => {
+  const d = e.target.closest('.device[data-dev-id]');
+  if (d) toggleDeviceRoute(d.dataset.devId, d.dataset.devRoute);
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const d = e.target.closest('.device[data-dev-id]');
+  if (d) { e.preventDefault(); toggleDeviceRoute(d.dataset.devId, d.dataset.devRoute); }
+});
 // Keyboard activation comes from the global role=button keydown handler
 // (it synthesizes a click, which lands in the delegate above). A dedicated
 // keydown delegate here fired removeDomain a second time per keypress.
@@ -2663,7 +2693,7 @@ function renderDevices(){
     // Prefer MAC for the rule key — IP can change across DHCP renewals,
     // MAC is fixed to the device.
     const id=esc(dev.mac||dev.ip);
-    return `<div class="device" onclick="toggleDeviceRoute('${id}','${isVpn?'direct':'vpn'}')" tabindex="0" role="button" aria-label="${title.replace(/<[^>]+>/g,'')} — ${isVpn?'через VPN':'напрямую'}, нажмите чтобы переключить">
+    return `<div class="device" data-dev-id="${id}" data-dev-route="${isVpn?'direct':'vpn'}" tabindex="0" role="button" aria-label="${title.replace(/<[^>]+>/g,'')} — ${isVpn?'через VPN':'напрямую'}, нажмите чтобы переключить">
       <div class="device-avatar ${avatarCls}"><svg class="icon icon-lg"><use href="${t.icon}"/></svg></div>
       <div class="device-info">
         <div class="device-name">${title}${typeHint}</div>
@@ -3228,12 +3258,18 @@ async function restoreBackup(event){
   try{parsed=JSON.parse(t)}
   catch(e){toast.error('Неверный формат файла');event.target.value='';return}
   if(!parsed||typeof parsed.config!=='object'){toast.error('Не похоже на бэкап EclipVPN');event.target.value='';return}
-  if(!confirm('Восстановить настройки из бэкапа?\n\nТекущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. VPN перезапустится.')){
+  if(!confirm('Восстановить настройки из бэкапа?\n\nТекущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. Если VPN запущен, он перезапустится с новыми настройками.')){
     event.target.value='';return;
   }
   try{
-    await apiFetch(API+'?action=restore',{method:'POST',body:t});
-    toast.success('Настройки восстановлены');fetchStatus();
+    const r=await apiFetch(API+'?action=restore',{method:'POST',body:t,timeoutMs:90000});
+    const d=await r.json().catch(()=>({}));
+    if(d&&d.error){toast.error('Ошибка восстановления',d.error);}
+    // applied=true → the live tunnel was restarted with the restored config.
+    // applied=false → nothing was running (e.g. a fresh router): servers.json
+    // isn't part of a backup, so the user must Update+Start to pull servers.
+    else if(d&&d.applied){toast.success('Настройки восстановлены','VPN перезапущен');fetchStatus();}
+    else{toast.success('Настройки восстановлены','Нажмите «Обновить», затем «Включить» — серверы подписки подтянутся');fetchStatus();}
   }catch(e){toast.error('Ошибка восстановления')}
   event.target.value='';
 }
