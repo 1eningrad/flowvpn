@@ -72,18 +72,28 @@ CGI surface is dispatched via query string in `www/cgi-bin/eclipvpn` and covers 
 ## Code layout
 
 ```
-usr/bin/eclipvpn              CLI dispatcher, ~2700 lines, top-level cmd_* functions
+usr/bin/eclipvpn              CLI dispatcher (~400 lines): init, the dispatch case,
+                              core helpers (get_config_val/flog/save_config/_op_*/
+                              _rotate_log/_ensure_watchdog) and the shared incident
+                              helpers (_is_metered_server/_record_switch/_log_incident)
 usr/lib/eclipvpn/parse.sh     Subscription fetch + vless:// URL parser
 usr/lib/eclipvpn/xray.sh      xray config gen + start/stop/test
 usr/lib/eclipvpn/singbox.sh   sing-box config gen, RU domain list, blocklist sources
 usr/lib/eclipvpn/network.sh   nftables + dnsmasq redirect setup/teardown
-www/cgi-bin/eclipvpn          CGI shim: query-string → CLI dispatch
+usr/lib/eclipvpn/watchdog.sh  connectivity probing, auto-failover, throughput guard
+usr/lib/eclipvpn/lifecycle.sh cmd_start / stop / restart / status
+usr/lib/eclipvpn/servers.sh   set-server / probe / update / ping / auto-select + auto-eval
+usr/lib/eclipvpn/domains.sh   routing mode, custom domain lists, service presets
+usr/lib/eclipvpn/traffic.sh   Clash-API traffic accounting (get-traffic/poll/real-ping/reset)
+usr/lib/eclipvpn/health.sh    devices / logs / dns / diagnose / incidents / healthcheck / system-info
+usr/lib/eclipvpn/config.sh    set-config / schedule / auto-update / backup-restore / device-routing / wifi
+www/cgi-bin/eclipvpn          CGI shim: query-string → CLI dispatch (+ anti-CSRF/rebinding gate)
 www/eclipvpn/index.html       Single-file SPA UI (installs to /www/eclipvpn/index.html)
 etc/init.d/eclipvpn           OpenWrt service stub (autostart-on-boot)
 deploy.sh / install.sh       Rollout scripts
 ```
 
-Library scripts are sourced into `usr/bin/eclipvpn` — they share global vars (`$ECLIPVPN_TMP`, `$ECLIPVPN_CONFIG`, `$SR_RULES_DIR`, etc.) and helpers (`flog`, `get_config_val`).
+Library scripts are sourced into `usr/bin/eclipvpn` (the `. "$ECLIPVPN_LIB/*.sh"` block at the top) — they share global vars (`$ECLIPVPN_TMP`, `$ECLIPVPN_CONFIG`, `$SR_RULES_DIR`, etc.) and helpers (`flog`, `get_config_val`, `save_config`). The libs only *define* functions — no top-level code — and every cross-lib call resolves at invocation time, so **source order among them does not matter**. The dispatcher was split out of a single ~2900-line file (2026-06); a new `cmd_*` goes in the matching domain lib (or stays in the dispatcher only if it's core/shared infra), and the dispatch case at the bottom of `usr/bin/eclipvpn` is wired the same way regardless.
 
 ## Runtime data flow
 
@@ -146,7 +156,7 @@ These are documented in inline comments at the relevant call sites — read them
 
 ## Adding a new command
 
-1. Add `cmd_foo()` in `usr/bin/eclipvpn` (or extend a library file if it fits there).
+1. Add `cmd_foo()` in the matching domain lib under `usr/lib/eclipvpn/` (lifecycle/servers/domains/traffic/health/config/watchdog) — or in `usr/bin/eclipvpn` itself only if it's core/shared infra. If you create a NEW lib file, add it to the `. "$ECLIPVPN_LIB/*.sh"` block in `usr/bin/eclipvpn` **and** to the ship/syntax-check lists in `deploy.sh` and `install.sh`.
 2. Wire the dispatch case at the bottom of `usr/bin/eclipvpn` (`foo) cmd_foo "$2" ;;`).
 3. Wire `www/cgi-bin/eclipvpn` to forward the action (and validate any new parameters in the boundary block).
 4. Add fetch + render in `www/eclipvpn/index.html` (`API='/cgi-bin/eclipvpn'`, polled actions in `loadStatus`/`loadDomains`/etc).
