@@ -1,0 +1,475 @@
+#!/bin/ash
+# EclipVPN — server management: select / probe / update / ping / auto-select+eval.
+# Sourced into /usr/bin/eclipvpn; shares its globals and helpers, all
+# resolved at call time, so source order among the libs does not matter.
+
+# ============================================================
+# Server management
+# ============================================================
+
+cmd_set_server() {
+    local idx="$1"
+    [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    flog "Setting server to index $idx"
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
+    [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    if is_xray_running; then
+        cmd_restart
+    else
+        local name=$(jq -r ".[$idx].name" "$ECLIPVPN_TMP/servers.json")
+        jq -n --arg srv "$name" '{status:"server set",server:$srv}'
+    fi
+}
+
+# Pre-flight: spin up a temp xray bound to an unused port and verify the
+# target server actually answers, before we tear down the running VPN.
+# Returns: {"status":"ok","ip":"...","latency_ms":N} on success
+#          {"error":"..."} on failure (production xray/sing-box untouched)
+cmd_probe_server() {
+    local idx="$1"
+    [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total
+    total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
+    [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    [ -x /usr/bin/xray ] || { echo '{"error":"xray binary missing"}'; return 1; }
+    mkdir -p "$ECLIPVPN_TMP"
+
+    # Run the actual probe in a subshell. In ash `trap EXIT` is process-wide,
+    # not function-scoped — running this body as a function inside e.g. the
+    # watchdog process would clobber the watchdog's own EXIT trap (which
+    # cleans up watchdog.lock). Subshell isolates the trap to the probe.
+    (
+        # Unique filenames so a probe and a concurrent watchdog failover
+        # don't overwrite each other's xray configs. Need a .json suffix
+        # because xray sniffs format from filename (refuses files without).
+        # busybox mktemp doesn't accept a suffix in the template, so:
+        # mktemp → rename.
+        local _t _p test_cfg probe_cfg
+        _t=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX") || exit 1
+        _p=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX") || { rm -f "$_t"; exit 1; }
+        test_cfg="${_t}.json"; probe_cfg="${_p}.json"
+        mv "$_t" "$test_cfg"; mv "$_p" "$probe_cfg"
+        local probe_pid=""
+        trap 'kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null; rm -f "$test_cfg" "$probe_cfg"' EXIT INT TERM
+
+        local probe_port=$((1082 + $$ % 100))
+        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$idx" "$test_cfg"
+        [ -s "$test_cfg" ] || { echo '{"error":"failed to generate xray config"}'; exit 1; }
+        jq --argjson p "$probe_port" \
+            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+            "$test_cfg" > "$probe_cfg"
+
+        # Up to 4 spawn-and-test attempts. A freshly-spawned xray's very
+        # first request through VLESS+XHTTP+Reality occasionally hangs to
+        # full timeout (measured ~50% on DE/NL endpoints when probing while
+        # prod xray is connected to a different server — likely cold xmux
+        # state on the remote). Once a probe xray hits this, retrying *its*
+        # curl doesn't recover; only respawning xray does. The user-visible
+        # symptom was "не получается переключиться с первого раза" — the
+        # picker click triggered a flaky probe, toast said "Не удалось
+        # переключить", and the immediate second click succeeded.
+        # 4 attempts × ~16s worst-case (6s listen wait + 10s curl) ≤ 64s,
+        # but typical success on attempt 1-2 keeps real wall-clock <20s.
+        # The 10s curl budget (was 6s) covers the cold Reality+XHTTP
+        # handshake on DE/NL endpoints — 6s was tripping on live servers
+        # that ping fine but need >6s on first request. An outright dead
+        # server is detected on attempt 1 because curl returns immediately
+        # (port unreachable) — this loop only burns time on flakes.
+        local t0 t1 elapsed test_ip="" attempt
+        t0=$(date +%s%3N 2>/dev/null)
+        for attempt in 1 2 3 4; do
+            # Spawn a fresh xray for each attempt — reusing a hung instance
+            # doesn't help (its outbound state is broken).
+            [ -n "$probe_pid" ] && {
+                kill "$probe_pid" 2>/dev/null
+                wait "$probe_pid" 2>/dev/null
+                probe_pid=""
+            }
+            /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
+            probe_pid=$!
+
+            # Wait for the SOCKS inbound to actually listen before curl-ing.
+            # busybox sleep doesn't accept fractional seconds, so this is
+            # 1s granularity, capped at 6s.
+            local ready=0 wait_i=0
+            while [ "$wait_i" -lt 6 ]; do
+                kill -0 "$probe_pid" 2>/dev/null || break
+                if netstat -tlnp 2>/dev/null | grep -q ":$probe_port "; then
+                    ready=1
+                    break
+                fi
+                sleep 1
+                wait_i=$((wait_i + 1))
+            done
+            [ "$ready" -eq 0 ] && continue
+
+            test_ip=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 10 https://api.ipify.org 2>/dev/null)
+            [ -n "$test_ip" ] && break
+        done
+        t1=$(date +%s%3N 2>/dev/null)
+        # Fallback: if busybox date doesn't support %3N, both are non-numeric.
+        case "$t0$t1" in *[!0-9]*) elapsed=0;; *) elapsed=$((t1 - t0));; esac
+        [ "$elapsed" -lt 0 ] 2>/dev/null && elapsed=0
+
+        if [ -n "$test_ip" ]; then
+            local name
+            name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
+            jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" \
+                '{status:"ok", ip:$ip, server:$name, latency_ms:$ms}'
+            exit 0
+        else
+            echo '{"error":"server unreachable"}'
+            exit 1
+        fi
+    )
+}
+
+cmd_update() {
+    # Capture previous server count so the UI can detect whether this run
+    # actually changed anything (cron auto-update fires every N hours and
+    # most of the time returns the same list — we don't want to spam toasts).
+    local prev=0
+    [ -f "$ECLIPVPN_TMP/servers.json" ] && prev=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+    [ -z "$prev" ] && prev=0
+
+    local count
+    count=$(update_subscription "$ECLIPVPN_CONFIG")
+    local mode=$(get_config_val mode "all_vpn")
+    # Fetch-then-swap (refresh_rules): the old `rm -rf rules` + refetch left
+    # blocklist mode ruleless when the refetch failed — e.g. an offline
+    # nightly cron run — and the next restart sent everything direct.
+    refresh_rules "$mode" || flog "WARN: rule refresh failed — keeping previous lists"
+    # Periodic refresh of sing-box .srs rule sets — cmd_update is the
+    # natural moment to redownload upstream geosite/geoip without paying
+    # the cost on every cmd_start. Failure leaves the cached copy in
+    # place; logs note the warning but cmd_update doesn't fail on it.
+    _fetch_rule_sets force || true
+    if [ "$count" -gt 0 ] 2>/dev/null; then
+        # Record the run for the UI's status polling — last_update lets the
+        # frontend show a toast only when prev != count (avoids "updated:
+        # same 7 servers" noise on cron-driven refresh).
+        jq -n --argjson t "$(date +%s)" --argjson c "$count" --argjson p "$prev" \
+            '{time:$t, count:$c, prev_count:$p}' > "$ECLIPVPN_TMP/last_update.json"
+        echo "{\"status\":\"updated\",\"servers\":$count,\"prev\":$prev}"
+        _sync_zapret_exclude
+        is_xray_running && cmd_restart >/dev/null
+    else
+        echo '{"error":"update failed"}'
+        return 1
+    fi
+}
+
+cmd_ping() {
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
+    local tmpdir=$(mktemp -d "$ECLIPVPN_TMP/ping.XXXXXX")
+
+    # Per-server probe runs in parallel. Strategy lifted from v2rayN/v2rayNG
+    # tcping: 3 attempts × 3s TCP-connect, take the minimum. Empirically
+    # observed ~20% TCP-RST flap on one upstream (Finland) — 2×2s gave 4%
+    # false-negatives, 3×3s drops that below 1%.
+    #
+    # ICMP fallback when all 3 TCP attempts fail: many providers RST :443
+    # bursts but ICMP keeps flowing, so we still surface a usable number
+    # instead of "нет" for a server that's actually reachable.
+    local i=0
+    while [ "$i" -lt "$total" ]; do
+        local host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
+        local out="$tmpdir/$i"
+        (
+            best=-1
+            for attempt in 1 2 3; do
+                t=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+                if [ -n "$t" ] && [ "$t" != "0.000000" ]; then
+                    ms=$(echo "$t" | awk '{printf "%d", $1 * 1000}')
+                    if [ "$best" -lt 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
+                fi
+            done
+            if [ "$best" -lt 0 ]; then
+                # ICMP fallback — single packet, 2s deadline.
+                icmp=$(ping -c 1 -W 2 "$host" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," "); print int(a[1]+0.5); exit}')
+                [ -n "$icmp" ] && [ "$icmp" -gt 0 ] 2>/dev/null && best=$icmp
+            fi
+            echo "$best" > "$out"
+        ) &
+        i=$((i + 1))
+    done
+    wait
+
+    local results="[]"
+    i=0
+    while [ "$i" -lt "$total" ]; do
+        local name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+        local ms=$(cat "$tmpdir/$i" 2>/dev/null)
+        [ -z "$ms" ] && ms=-1
+        results=$(echo "$results" | jq --arg n "$name" --argjson ms "$ms" --argjson i "$i" '. + [{name:$n, ping:$ms, index:$i}]')
+        i=$((i + 1))
+    done
+    rm -rf "$tmpdir"
+    echo "$results" | jq '.'
+}
+
+# Find the lowest-RTT non-metered server and switch to it. Used by the
+# "Auto" button — picks a sensible default for the user without making
+# them squint at numbers. Skips metered (МТС/Т2/etc) since they hand back
+# Russian IPs and would defeat the VPN.
+#
+# Two-stage selection: TCP RTT to filter candidates fast, then real VLESS
+# probe on the winner. Without the probe, we'd happily pick a server whose
+# port answers TCP but whose Reality keys have rotated — UI would say
+# "switched" while VPN is broken. With it, we either confirm the switch
+# really worked or report failure honestly.
+# Helper to append an attempt entry to the running list. Used purely to
+# keep the auto_select function readable.
+_attempt_add() {
+    # $1 = jq array string, $2 = name, $3 = idx, $4 = rtt (or -1), $5 = status
+    echo "$1" | jq --arg n "$2" --argjson i "$3" --argjson ms "$4" --arg s "$5" \
+        '. + [{name:$n, index:$i, rtt_ms:(if $ms < 0 then null else $ms end), status:$s}]'
+}
+
+cmd_auto_select() {
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    local total i=0 name host ms
+    total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
+
+    # attempts collects an ordered audit trail of every server we considered:
+    # what status (skipped_metered / unreachable / probe_failed / selected /
+    # already_active) and its RTT. This is what powers the "why X and not Y"
+    # explanation in the UI toast.
+    local attempts="[]"
+    local candidates=""
+    while [ "$i" -lt "$total" ]; do
+        name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+        host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
+        if _is_metered_server "$name"; then
+            attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "skipped_metered")
+        else
+            ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+            [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+            if [ "$ms" -gt 0 ] 2>/dev/null; then
+                candidates="$candidates$ms $i\n"
+            else
+                attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "unreachable")
+            fi
+        fi
+        i=$((i + 1))
+    done
+
+    if [ -z "$candidates" ]; then
+        jq -n --argjson att "$attempts" '{error:"no reachable servers", attempts:$att}'
+        return 1
+    fi
+    local sorted
+    sorted=$(printf '%b' "$candidates" | sort -n)
+
+    local cur best_idx best_ms best_name
+    cur=$(get_config_val selected_server 0)
+
+    while IFS=' ' read -r ms idx; do
+        [ -z "$idx" ] && continue
+        name=$(jq -r --argjson i "$idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
+        if [ "$idx" = "$cur" ] && is_xray_running && [ -n "$(test_xray)" ]; then
+            attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "already_active")
+            jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" \
+                '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
+            return 0
+        fi
+        flog "Auto-select: probing $name (idx=$idx rtt=${ms}ms)"
+        local probe
+        probe=$(cmd_probe_server "$idx" 2>/dev/null)
+        if echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+            attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "selected")
+            best_idx="$idx"; best_ms="$ms"; best_name="$name"
+            break
+        fi
+        attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "probe_failed")
+        flog "Auto-select: $name failed VLESS probe — trying next"
+    done <<EOF
+$sorted
+EOF
+
+    if [ -z "$best_idx" ]; then
+        jq -n --argjson att "$attempts" '{error:"no working servers (all failed VLESS probe)", attempts:$att}'
+        return 1
+    fi
+
+    flog "Auto-select: chose $best_name idx=$best_idx rtt=${best_ms}ms"
+    if [ "$cur" = "$best_idx" ]; then
+        jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
+            '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
+        return 0
+    fi
+
+    # Whole switch + state stamp under one op-lock — prevents watchdog
+    # auto_eval racing on config and auto_state. Subshell exit code:
+    # 0 = ok, 1 = lock contention, 2 = cmd_restart failure (rolled back).
+    mkdir -p "$ECLIPVPN_TMP"
+    local sf="$ECLIPVPN_TMP/auto_state.json"
+    local oplock="$ECLIPVPN_TMP/auto.lock"
+    (
+        if command -v flock >/dev/null 2>&1; then flock -w 5 -x 200 || exit 1; fi
+        local tmp
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+        save_config "$tmp"
+        if is_xray_running; then
+            if ! cmd_restart >/dev/null 2>&1; then
+                tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+                save_config "$tmp"
+                cmd_restart >/dev/null 2>&1
+                exit 2
+            fi
+        fi
+        [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
+        local now=$(date +%s)
+        jq --argjson t "$now" '.last_eval = $t | .last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+    ) 200>"$oplock"
+    local rc=$?
+    case "$rc" in
+        0) ;;
+        1)
+            jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"another auto operation in progress", server:$n, attempts:$att}'
+            return 1
+            ;;
+        2)
+            flog "Auto-select: restart failed — rolled back to idx=$cur"
+            jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"restart failed", server:$n, attempts:$att}'
+            return 1
+            ;;
+        *)
+            jq -n --arg n "$best_name" --argjson att "$attempts" '{error:"unexpected", server:$n, attempts:$att}'
+            return 1
+            ;;
+    esac
+
+    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
+        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true, attempts:$att}'
+}
+
+# Periodic re-evaluation invoked by the watchdog. Honours hysteresis so we
+# don't bounce between similar-RTT servers, and a cooldown so even when
+# improvements appear we don't switch more than once per hour (unless the
+# current tunnel is actually broken — then any working candidate is fine).
+cmd_auto_eval() {
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || return 1
+    is_xray_running || return 0   # not running → not our job, watchdog handles
+
+    mkdir -p "$ECLIPVPN_TMP"
+    local sf="$ECLIPVPN_TMP/auto_state.json"
+    local oplock="$ECLIPVPN_TMP/auto.lock"
+
+    # Whole eval runs under an op-level flock. -n (non-blocking) — if a
+    # user-triggered cmd_auto_select is running, we silently skip this tick
+    # rather than queue up a redundant eval behind it.
+    (
+        if command -v flock >/dev/null 2>&1; then flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }; fi
+
+        [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
+
+        local now last_eval last_switch
+        now=$(date +%s)
+        last_eval=$(jq -r '.last_eval // 0' "$sf")
+        last_switch=$(jq -r '.last_switch // 0' "$sf")
+
+        # Self-rate-limit: at most once per 20 min, even if watchdog calls more often.
+        [ $((now - last_eval)) -lt 1200 ] && exit 0
+
+        # Update last_eval up-front so a hung eval doesn't hold off the next one
+        # forever; we'll write it again at the very end too.
+        jq --argjson t "$now" '.last_eval = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+
+        # Is the current tunnel actually carrying traffic? (test_xray returns the
+        # exit IP via the running socks; empty = dead tunnel.)
+        local current_broken=0
+        [ -z "$(test_xray)" ] && current_broken=1
+
+        # Cooldown: if current is fine and we switched < 1h ago, do nothing.
+        if [ "$current_broken" -eq 0 ] && [ $((now - last_switch)) -lt 3600 ]; then
+            exit 0
+        fi
+
+        # Measure RTT for all non-metered servers; remember current's RTT for hysteresis.
+        local total i=0 name host ms current_idx current_rtt=-1 candidates=""
+        total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
+        current_idx=$(get_config_val selected_server 0)
+        # Bounds-check: subscription may have shrunk while we were on a higher
+        # index. Treat that as broken so we move to a real server.
+        if [ "$current_idx" -ge "$total" ] 2>/dev/null; then
+            flog "Auto-mode: current_idx=$current_idx out of range (total=$total) — treating as broken"
+            current_broken=1
+            current_idx=0
+        fi
+        while [ "$i" -lt "$total" ]; do
+            name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+            host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
+            if ! _is_metered_server "$name"; then
+                ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+                [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+                if [ "$ms" -gt 0 ] 2>/dev/null; then
+                    candidates="$candidates$ms $i\n"
+                    [ "$i" = "$current_idx" ] && current_rtt="$ms"
+                fi
+            fi
+            i=$((i + 1))
+        done
+        [ -z "$candidates" ] && exit 0
+
+        local best_line best_rtt best_idx
+        best_line=$(printf '%b' "$candidates" | sort -n | head -1)
+        best_rtt=$(echo "$best_line" | awk '{print $1}')
+        best_idx=$(echo "$best_line" | awk '{print $2}')
+
+        [ "$best_idx" = "$current_idx" ] && exit 0   # already on best by RTT
+
+        # Hysteresis. Three branches:
+        #   - tunnel dead (test_xray empty)        → switch to anything working
+        #   - current TCP unreachable but VPN ok   → switch to anything reachable
+        #     (don't strand on a host we can't even reach by TCP)
+        #   - both RTTs known                      → 30% OR 50ms improvement
+        local should_switch=0
+        if [ "$current_broken" -eq 1 ]; then
+            should_switch=1
+            flog "Auto-mode: current tunnel dead, looking for any working server"
+        elif [ "$current_rtt" -le 0 ] && [ "$best_rtt" -gt 0 ]; then
+            should_switch=1
+            flog "Auto-mode: current TCP unreachable, switching to best reachable ($best_rtt ms)"
+        elif [ "$current_rtt" -gt 0 ] && [ "$best_rtt" -gt 0 ]; then
+            local rel=$((current_rtt * 7 / 10))     # 30% lower
+            local abs=$((current_rtt - 50))         # 50ms lower
+            if [ "$best_rtt" -lt "$rel" ] || [ "$best_rtt" -lt "$abs" ]; then
+                should_switch=1
+                flog "Auto-mode: $current_rtt ms → $best_rtt ms — switching"
+            fi
+        fi
+
+        [ "$should_switch" -eq 0 ] && exit 0
+
+        # Real VLESS probe before committing
+        local probe
+        probe=$(cmd_probe_server "$best_idx" 2>/dev/null)
+        if ! echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+            flog "Auto-mode: best candidate failed VLESS probe — staying"
+            exit 0
+        fi
+
+        # Commit + restart, with rollback on failure
+        local tmp
+        tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+        save_config "$tmp"
+        if cmd_restart >/dev/null 2>&1; then
+            _record_switch "$current_idx" "$best_idx" "auto"
+            jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+            local bn
+            bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
+            flog "Auto-mode: switched to $bn"
+        else
+            tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
+            save_config "$tmp"
+            cmd_restart >/dev/null 2>&1
+            flog "Auto-mode: restart failed, rolled back"
+        fi
+    ) 200>"$oplock"
+}
