@@ -151,7 +151,11 @@ _clean_legacy_dnsmasq_uci() {
     servers=$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)
     case " $servers " in
         *" 127.0.0.1#5354 "*|*"127.0.0.1#5354"*)
-            uci delete dhcp.@dnsmasq[0].server 2>/dev/null
+            # del_list removes ONLY our redirect entry. A plain
+            # `uci delete ...server` nukes the entire list, destroying any
+            # upstream DNS the user configured via LuCI (e.g. 8.8.8.8). The
+            # noresolv/cachesize options were ours, so revert them to defaults.
+            uci del_list dhcp.@dnsmasq[0].server='127.0.0.1#5354' 2>/dev/null
             uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
             uci delete dhcp.@dnsmasq[0].cachesize 2>/dev/null
             uci commit dhcp

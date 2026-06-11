@@ -5,8 +5,11 @@ generate_xray_config() {
     local servers_file="$1" server_idx="$2" config_file="$3"
 
     local server
-    server=$(jq ".[$server_idx]" "$servers_file")
-    [ "$server" = "null" ] && return 1
+    # --argjson, not "$server_idx" interpolated into the jq program text: a
+    # corrupt non-numeric selected_server would otherwise be a jq syntax error
+    # (server="") that slips past the "null" check below into a garbage config.
+    server=$(jq --argjson i "$server_idx" '.[$i]' "$servers_file" 2>/dev/null)
+    [ "$server" = "null" ] || [ -z "$server" ] && return 1
 
     local host port_s uuid transport path mode security sni fp pbk sid extra flow
     host=$(echo "$server" | jq -r '.host')
@@ -81,7 +84,10 @@ generate_xray_config() {
         routing: {
             domainStrategy: "AsIs"
         }
-    }' > "$config_file"
+    }' > "$config_file" || { logger -t eclipvpn "ERROR: failed to generate xray config (jq)"; return 1; }
+    # A truncated/empty config here would otherwise be reported as success and
+    # start_xray would fail with a misleading "xray failed".
+    [ -s "$config_file" ] || { logger -t eclipvpn "ERROR: generated xray config is empty"; return 1; }
     # xray config holds the live VLESS UUID and Reality keys — credential file.
     chmod 600 "$config_file" 2>/dev/null
 }
@@ -104,7 +110,7 @@ start_xray() {
             rm -f /tmp/eclipvpn/xray.pid
             return 1
         fi
-        if netstat -tlnp 2>/dev/null | grep -q ":1080"; then
+        if netstat -tlnp 2>/dev/null | grep -q ":1080 "; then
             return 0
         fi
     done

@@ -9,12 +9,18 @@ url_decode() {
 # Pad a base64 string to a multiple of 4 with '='. Some subscription
 # providers strip padding, which makes busybox `base64 -d` reject the input.
 _b64_pad() {
-    local s="$1" n=${#1}
+    # Strip whitespace (incl. embedded newlines from 76-col-wrapped bodies)
+    # BEFORE measuring length — otherwise the modulo is computed over the wrong
+    # count and the padding is wrong. printf %s, not echo, so a leading -n/-e
+    # in the body isn't eaten as an option.
+    local s
+    s=$(printf '%s' "$1" | tr -d '[:space:]')
+    local n=${#s}
     local rem=$((n % 4))
     case "$rem" in
-        2) echo "${s}==" ;;
-        3) echo "${s}=" ;;
-        *) echo "$s" ;;
+        2) printf '%s\n' "${s}==" ;;
+        3) printf '%s\n' "${s}=" ;;
+        *) printf '%s\n' "$s" ;;
     esac
 }
 
@@ -77,14 +83,19 @@ fetch_subscription() {
     local hdr_file="/tmp/eclipvpn/sub_headers.txt"
     mkdir -p /tmp/eclipvpn
     # umask 077 — both response body (vless:// URLs with UUIDs) and headers
-    # (Subscription-Userinfo) are sensitive while we're writing them.
+    # (Subscription-Userinfo) are sensitive while we're writing them. Saved and
+    # restored on every exit path so the tightened mask doesn't silently leak
+    # into every other file this eclipvpn invocation creates afterwards
+    # (rule lists, logs, pids would all become 600/700).
+    local _oumask; _oumask=$(umask)
     umask 077
     local raw
     raw=$(_sub_curl "$url" "$hdr_file") || {
+        umask "$_oumask"
         logger -t eclipvpn "Subscription: fetch failed (HTTP >=400, network, or TLS error)"
         return 1
     }
-    [ -z "$raw" ] && { logger -t eclipvpn "Subscription: empty response from server"; return 1; }
+    [ -z "$raw" ] && { umask "$_oumask"; logger -t eclipvpn "Subscription: empty response from server"; return 1; }
 
     # EclipVPN's bot hands users the user-facing landing URL
     # (<panel-host>/<token>) instead of the API endpoint
@@ -100,10 +111,11 @@ fetch_subscription() {
                 follow_url="${prefix}${sub_path}"
                 logger -t eclipvpn "Subscription: landing page detected, following /api/sub/<redacted>"
                 raw=$(_sub_curl "$follow_url" "$hdr_file") || {
+                    umask "$_oumask"
                     logger -t eclipvpn "Subscription: follow-up fetch to api endpoint failed"
                     return 1
                 }
-                [ -z "$raw" ] && { logger -t eclipvpn "Subscription: api endpoint returned empty body"; return 1; }
+                [ -z "$raw" ] && { umask "$_oumask"; logger -t eclipvpn "Subscription: api endpoint returned empty body"; return 1; }
             fi
             ;;
     esac
@@ -118,12 +130,15 @@ fetch_subscription() {
         :
     elif _b64_pad "$raw" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
         :
-    elif printf '%s' "$raw" | tr -d '[:space:]' | tr '_-' '/+' | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
+    elif _b64_pad "$(printf '%s' "$raw" | tr '_-' '/+')" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
+        # URL-safe base64 (-_ instead of +/). _b64_pad strips whitespace and
+        # re-pads — busybox base64 -d rejects the unpadded form panels often send.
         :
     else
         printf '%s' "$raw" > "$out"
     fi
     chmod 600 "$out" 2>/dev/null
+    umask "$_oumask"
     [ -s "$out" ] || { logger -t eclipvpn "Subscription: decoded body is empty"; return 1; }
 
     _parse_subscription_headers "$hdr_file"
@@ -172,22 +187,31 @@ _parse_subscription_headers() {
 
     [ -z "$update_interval" ] || ! [ "$update_interval" -gt 0 ] 2>/dev/null && update_interval=0
 
-    ( umask 077; jq -n \
+    # Numerics come in as --arg strings and convert via `tonumber? // 0`, NOT
+    # --argjson: a leading-zero value (upload=007) or any garbage from a 200
+    # error page is invalid JSON for --argjson, which would abort jq AFTER the
+    # shell already truncated the file — wiping previously-good meta to 0 bytes.
+    # tonumber? swallows the bad value; temp+mv keeps the old meta on any failure.
+    ( umask 077
+      jq -n \
         --arg title "$title" \
         --arg announce "$announce_text" \
-        --argjson upload "$upload" \
-        --argjson download "$download" \
-        --argjson total "$total" \
-        --argjson expire "$expire" \
-        --argjson update_interval "$update_interval" \
+        --arg upload "$upload" \
+        --arg download "$download" \
+        --arg total "$total" \
+        --arg expire "$expire" \
+        --arg update_interval "$update_interval" \
         --argjson fetched_at "$(date +%s)" \
         '{
             title: (if $title == "" then null else $title end),
             announce: (if $announce == "" then null else $announce end),
-            upload: $upload, download: $download, total: $total, expire: $expire,
-            update_interval_hours: $update_interval,
+            upload: ($upload|tonumber? // 0), download: ($download|tonumber? // 0),
+            total: ($total|tonumber? // 0), expire: ($expire|tonumber? // 0),
+            update_interval_hours: ($update_interval|tonumber? // 0),
             fetched_at: $fetched_at
-        }' > /tmp/eclipvpn/subscription_meta.json )
+        }' > /tmp/eclipvpn/subscription_meta.json.tmp \
+        && mv /tmp/eclipvpn/subscription_meta.json.tmp /tmp/eclipvpn/subscription_meta.json \
+        || rm -f /tmp/eclipvpn/subscription_meta.json.tmp )
     rm -f "$hdr_file"
 }
 
@@ -198,7 +222,14 @@ parse_vless_url() {
     local userhost params fragment
     local stripped="${url#vless://}"
 
-    fragment="${stripped##*#}"
+    # Only treat text after a real '#' as the name fragment. Without the guard,
+    # ${stripped##*#} on a URL with NO '#' returns the ENTIRE string, so a
+    # nameless entry gets name = "uuid@host:port?pbk=…" — leaking the VLESS UUID
+    # out of the chmod-600 boundary into status/incidents/syslog.
+    case "$stripped" in
+        *'#'*) fragment="${stripped##*#}" ;;
+        *)     fragment="" ;;
+    esac
     stripped="${stripped%%#*}"
 
     params="${stripped#*\?}"
@@ -248,7 +279,12 @@ parse_vless_url() {
                 # anything that is not a syntactically-valid JSON object —
                 # malformed JSON would break xray startup, and crafted JSON
                 # could inject xhttp options (custom headers, absolute URLs).
-                if printf '%s' "$val" | jq -e 'type == "object"' >/dev/null 2>&1; then
+                # Require a SINGLE JSON object. `jq -e 'type=="object"'` keys
+                # off the LAST output, so multi-document input like `[1] {"a":1}`
+                # passes (false,true → exit 0) and later breaks the `.[0]*.[1]`
+                # merge in xray.sh. `-s` slurps every document into one array;
+                # length==1 rejects the multi-doc bypass.
+                if printf '%s' "$val" | jq -e -s 'length == 1 and (.[0] | type) == "object"' >/dev/null 2>&1; then
                     extra="$val"
                 else
                     extra="{}"

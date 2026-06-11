@@ -59,6 +59,50 @@ unset IFS
     *) _bad ip ;;
 esac
 
+# --- Anti-CSRF / anti-DNS-rebinding -----------------------------------
+# The threat model trusts the LAN, but NOT a malicious web page the user
+# opens while on the LAN (drive-by CSRF) nor a DNS-rebound origin that maps
+# its own hostname onto the router IP. Without this, a single cross-site GET
+# like ?action=set-config&key=subscription_url&value=//evil silently repoints
+# the subscription at attacker-controlled servers — full traffic MITM.
+#
+# 1. Host allow-list — a rebound attacker.com carries its own Host header.
+#    Accept only IP literals / loopback / bare-hostname / *.lan; reject any
+#    dotted name containing letters (i.e. a real public domain).
+_host_np="$HTTP_HOST"
+case "$_host_np" in
+    \[*\]*) ;;                                  # IPv6 literal — leave as-is
+    *:*) _host_np="${_host_np%:*}" ;;           # strip :port for IPv4/hostname
+esac
+case "$_host_np" in
+    \[*\]) ;;                                    # IPv6 literal
+    localhost|*.lan) ;;                          # loopback / mDNS LAN name
+    *.*)                                         # dotted: IPv4 ok, domain reject
+        case "$_host_np" in
+            *[!0-9.]*) echo '{"error":"forbidden: host not allowed"}'; exit 0 ;;
+        esac ;;
+    *) ;;                                        # bare hostname (no dot) — ok
+esac
+# 2. State-changing actions must prove they came from our own page. uhttpd
+#    only exposes a fixed header allow-list to CGI (Accept/Host/Origin/Referer/
+#    User-Agent — custom headers like X-Requested-With are dropped), so the
+#    check rides on Origin/Referer: a mutating request MUST carry one and its
+#    host must equal our Host. Our UI's same-origin fetch always sends a
+#    same-host Referer (no `no-referrer` policy is set); a cross-site fetch
+#    sends a foreign Origin; a cross-site <img>/<form> sends a foreign Referer
+#    or, under a no-referrer policy, none at all — all rejected. Read-only
+#    actions are exempt so plain curl/monitoring still works (their responses
+#    aren't readable cross-site, so reading them via CSRF gains nothing).
+case "$action" in
+    status|ping|real-ping|healthcheck|diagnose|system-info|backup|traffic-poll|get-*) ;;
+    *)
+        _src="${HTTP_ORIGIN:-$HTTP_REFERER}"
+        [ -z "$_src" ] && { echo '{"error":"forbidden: missing Origin/Referer"}'; exit 0; }
+        _src="${_src#*://}"; _src="${_src%%/*}"
+        [ "$_src" = "$HTTP_HOST" ] || { echo '{"error":"forbidden: cross-site request blocked"}'; exit 0; }
+        ;;
+esac
+
 # Read POST body, capped at 64KB to prevent OOM via huge requests
 body=""
 [ "$REQUEST_METHOD" = "POST" ] && body=$(head -c 65536)

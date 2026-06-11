@@ -2519,7 +2519,19 @@ cmd_restore() {
     # The restored config may carry schedule/auto_update flags from the old
     # router — re-arm crontab to match, or both silently stay inert here.
     _ensure_cron_state
-    echo '{"status":"restored"}'
+
+    # Apply immediately. The old code returned "restored" while the live tunnel
+    # kept the PREVIOUS config until a manual restart — yet the UI dialog
+    # promised "VPN перезапустится". If the VPN is running, a soft restart
+    # picks up the restored mode/device_rules. servers.json is intentionally
+    # NOT in a backup, so on a fresh router this stays down until the user
+    # presses Start (cmd_start fetches the subscription then) — `applied`
+    # tells the UI which case happened so it can prompt honestly.
+    local applied=false
+    if is_xray_running && cmd_restart >/dev/null 2>&1; then
+        applied=true
+    fi
+    jq -n --argjson a "$applied" '{status:"restored", applied:$a}'
 }
 
 # ============================================================
@@ -2643,11 +2655,11 @@ cmd_healthcheck() {
         || _hc "sing-box" "error" "Не запущен"
 
     # 2. Ports
-    netstat -tlnp 2>/dev/null | grep -q ":1080" && _hc "SOCKS :1080" "ok" "xray слушает" \
+    netstat -tlnp 2>/dev/null | grep -q ":1080 " && _hc "SOCKS :1080" "ok" "xray слушает" \
         || _hc "SOCKS :1080" "error" "Порт не открыт"
-    netstat -tlnp 2>/dev/null | grep -q ":2154" && _hc "tproxy :2154" "ok" "sing-box слушает" \
+    netstat -tlnp 2>/dev/null | grep -q ":2154 " && _hc "tproxy :2154" "ok" "sing-box слушает" \
         || _hc "tproxy :2154" "error" "Порт не открыт"
-    netstat -ulnp 2>/dev/null | grep -q ":5354" && _hc "DNS :5354" "ok" "sing-box DNS слушает" \
+    netstat -ulnp 2>/dev/null | grep -q ":5354 " && _hc "DNS :5354" "ok" "sing-box DNS слушает" \
         || _hc "DNS :5354" "error" "Порт не открыт"
 
     # 3. nftables
@@ -2796,6 +2808,13 @@ cmd_healthcheck() {
 cmd_set_wifi() {
     local ssid="$1" password="$2"
     [ -z "$password" ] && { echo '{"error":"missing password"}'; return 1; }
+    # WPA2-PSK keys must be 8-63 chars. Anything shorter/longer makes hostapd
+    # refuse to bring the radio up → total Wi-Fi loss, and you may be
+    # administering the router over that very Wi-Fi. Reject before committing.
+    local _plen=${#password}
+    if [ "$_plen" -lt 8 ] || [ "$_plen" -gt 63 ]; then
+        echo '{"error":"password must be 8-63 characters"}'; return 1
+    fi
     uci set wireless.default_radio0.encryption="psk2"
     uci set wireless.default_radio0.key="$password"
     uci set wireless.default_radio1.encryption="psk2"
