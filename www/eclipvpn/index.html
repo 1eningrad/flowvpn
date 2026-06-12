@@ -1918,7 +1918,12 @@ function renderServers(servers,sel,switchingIdx){
 const INCIDENT_LABEL={
   check_fail:'Сбой проверки',
   auto_switch:'Авто-переключение',
-  switch_failed:'Не удалось переключиться'
+  switch_failed:'Не удалось переключиться',
+  slow_degraded:'Низкая скорость — переключение',
+  slow_redial:'Низкая скорость — переподключение',
+  slow_noalt:'Низкая скорость везде',
+  wan_down:'Провайдер недоступен',
+  wan_recovered:'Интернет восстановлен'
 };
 function fmtIncidentTime(ts){
   const d=new Date(ts*1000);
