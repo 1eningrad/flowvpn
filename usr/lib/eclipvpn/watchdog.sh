@@ -80,6 +80,73 @@ _watchdog_throughput_kbps() {
     [ "$best" -gt 0 ] && echo "$best"
 }
 
+# Spawn a throwaway xray for server index $1 on SOCKS port $2 and measure it.
+# $3 metric: latency (default) → ms; throughput → KB/s (0 = answered the
+# reachability probe but moved no data). Echoes "ok <value>" on success or
+# "fail <http-code>" if the server never answered — callers run this via
+# $(...), a subshell, so a result can only come back on stdout (a global
+# var set in here never reaches them; that bug shipped once). Used by
+# _watchdog_pick_best for failover candidates and by the throughput guard's
+# re-dial check against the CURRENT server.
+# Two spawn-and-probe attempts, fresh xray for the second. The first request
+# through a cold VLESS+XHTTP+Reality session hangs to full timeout ~50% of
+# the time on some endpoints — the same flake cmd_probe_server retries 4×
+# for. A single-shot probe falsely rejected healthy failover candidates,
+# which surfaced as "no working candidates" during recoverable outages.
+# Waiting for the SOCKS port to listen (instead of a blind sleep 2) makes
+# the common case faster, not slower.
+_watchdog_probe_candidate() {
+    local idx="$1" pp="$2" metric="${3:-latency}"
+    local servers_json="$ECLIPVPN_TMP/servers.json"
+    # xray requires .json suffix; mktemp+rename to get it.
+    local _wt _wp wd_test wd_probe
+    _wt=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX")
+    _wp=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX")
+    wd_test="${_wt}.json"; wd_probe="${_wp}.json"
+    mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
+    generate_xray_config "$servers_json" "$idx" "$wd_test"
+    jq --argjson p "$pp" \
+        '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+        "$wd_test" > "$wd_probe"
+    local out="" code="" t="" probe_pid="" attempt
+    for attempt in 1 2; do
+        /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
+        probe_pid=$!
+        local ready=0 wait_i=0
+        while [ "$wait_i" -lt 5 ]; do
+            kill -0 "$probe_pid" 2>/dev/null || break
+            if netstat -tlnp 2>/dev/null | grep -q ":$pp "; then
+                ready=1; break
+            fi
+            sleep 1; wait_i=$((wait_i + 1))
+        done
+        if [ "$ready" -eq 1 ]; then
+            out=$(curl -s --socks5-hostname "127.0.0.1:$pp" --max-time 5 \
+                  -o /dev/null -w "%{http_code} %{time_total}" \
+                  https://cp.cloudflare.com/generate_204 2>/dev/null)
+            code="${out%% *}"; t="${out##* }"
+            if [ "$code" = "204" ] || [ "$code" = "200" ]; then break; fi
+        fi
+        # Failed attempt: respawn rather than retry the same xray — a
+        # hung cold session never recovers within its own process.
+        kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null
+        probe_pid=""
+    done
+    local value=""
+    if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+        if [ "$metric" = "throughput" ]; then
+            # Measure while the probe-xray is still alive.
+            value=$(_watchdog_throughput_kbps "$pp")
+            value="${value:-0}"
+        else
+            value=$(awk -v t="$t" 'BEGIN { printf "%d", t*1000 }')
+        fi
+    fi
+    [ -n "$probe_pid" ] && { kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null; }
+    rm -f "$wd_test" "$wd_probe"
+    if [ -n "$value" ]; then echo "ok $value"; else echo "fail ${code:-none}"; fi
+}
+
 # Pick best non-metered, non-current candidate. metric=latency (default)
 # selects lowest probe latency; metric=throughput measures actual tunnel
 # speed per candidate and selects highest KB/s — used by the throughput
@@ -99,74 +166,22 @@ _watchdog_pick_best() {
         if _is_metered_server "$cand_name"; then
             i=$((i+1)); continue
         fi
-
-        # xray requires .json suffix; mktemp+rename to get it.
-        local _wt _wp wd_test wd_probe
-        _wt=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX")
-        _wp=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX")
-        wd_test="${_wt}.json"; wd_probe="${_wp}.json"
-        mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
-        generate_xray_config "$servers_json" "$i" "$wd_test"
-        jq --argjson p "$probe_port" \
-            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
-            "$wd_test" > "$wd_probe"
-        # Two spawn-and-probe attempts per candidate, fresh xray for the
-        # second. The first request through a cold VLESS+XHTTP+Reality
-        # session hangs to full timeout ~50% of the time on some endpoints —
-        # the same flake cmd_probe_server retries 4× for. A single-shot
-        # probe here falsely rejected healthy failover candidates, which
-        # surfaced as "no working candidates" during recoverable outages.
-        # Waiting for the SOCKS port to listen (instead of a blind sleep 2)
-        # makes the common case faster, not slower.
-        local out="" code="" t="" probe_pid="" attempt
-        for attempt in 1 2; do
-            /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
-            probe_pid=$!
-            local ready=0 wait_i=0
-            while [ "$wait_i" -lt 5 ]; do
-                kill -0 "$probe_pid" 2>/dev/null || break
-                if netstat -tlnp 2>/dev/null | grep -q ":$probe_port "; then
-                    ready=1; break
-                fi
-                sleep 1; wait_i=$((wait_i + 1))
-            done
-            if [ "$ready" -eq 1 ]; then
-                out=$(curl -s --socks5-hostname "127.0.0.1:$probe_port" --max-time 5 \
-                      -o /dev/null -w "%{http_code} %{time_total}" \
-                      https://cp.cloudflare.com/generate_204 2>/dev/null)
-                code="${out%% *}"; t="${out##* }"
-                if [ "$code" = "204" ] || [ "$code" = "200" ]; then break; fi
-            fi
-            # Failed attempt: respawn rather than retry the same xray — a
-            # hung cold session never recovers within its own process.
-            kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null
-            probe_pid=""
-        done
-        # Measure candidate throughput while its probe-xray is still alive —
-        # only in throughput mode, only if it answered the reachability probe.
-        local cand_kbps=""
-        if [ "$metric" = "throughput" ] && { [ "$code" = "204" ] || [ "$code" = "200" ]; }; then
-            cand_kbps=$(_watchdog_throughput_kbps "$probe_port")
-        fi
-        [ -n "$probe_pid" ] && { kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null; }
-        rm -f "$wd_test" "$wd_probe"
-
-        if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+        local res=$(_watchdog_probe_candidate "$i" "$probe_port" "$metric")
+        if [ "${res%% *}" = "ok" ]; then
+            local val="${res#ok }"
             if [ "$metric" = "throughput" ]; then
-                local k="${cand_kbps:-0}"
-                logger -t eclipvpn "Watchdog: $cand_name ${k}KB/s"
-                if [ "$k" -gt "$best_kbps" ]; then
-                    best_kbps=$k; best_idx=$i
+                logger -t eclipvpn "Watchdog: $cand_name ${val}KB/s"
+                if [ "$val" -gt "$best_kbps" ]; then
+                    best_kbps=$val; best_idx=$i
                 fi
             else
-                local ms=$(awk -v t="$t" 'BEGIN { printf "%d", t*1000 }')
-                logger -t eclipvpn "Watchdog: $cand_name probe ${ms}ms"
-                if [ "$ms" -lt "$best_ms" ]; then
-                    best_ms=$ms; best_idx=$i
+                logger -t eclipvpn "Watchdog: $cand_name probe ${val}ms"
+                if [ "$val" -lt "$best_ms" ]; then
+                    best_ms=$val; best_idx=$i
                 fi
             fi
         else
-            logger -t eclipvpn "Watchdog: $cand_name probe failed (code=$code)"
+            logger -t eclipvpn "Watchdog: $cand_name probe failed (code=${res#fail })"
         fi
         i=$((i+1))
     done
@@ -180,10 +195,15 @@ cmd_watchdog() {
     # Throughput-guard state (see the guard block on the connectivity-OK path).
     # tput_switch_helped: 1 = at least one good reading since the last
     # throughput switch/benchmark — the cooldown only gates while it's 0.
+    # tput_redialed: 1 = this incident already spent its one in-place re-dial.
+    # tput_fast_retry_used: 1 = the one early retry after a flopped action
+    # (no good reading since) has been spent — next gate is the full cooldown.
     local slow_count=0 last_tput_switch=0 tput_switch_helped=1
+    local tput_redialed=0 tput_fast_retry_used=0
     local TPUT_EVERY=6        # measure current-server speed every ~2 min (6×20s)
     local TPUT_SLOW_MAX=3     # consecutive low reads before acting (~6 min sustained)
     local TPUT_COOLDOWN=1200  # min seconds between throughput-driven switches (anti-flap)
+    local TPUT_COOLDOWN_FAST=300  # the single early retry after a flop comes this soon
 
     # Single-instance via atomic mkdir. The earlier file-based lock was
     # unreliable: under the init.d/cmd_start spawn race the lock would end
@@ -339,15 +359,32 @@ cmd_watchdog() {
             # exit pings fast and returns 204 instantly while its bandwidth is
             # shaped to a crawl — latency-based failover never fires, but the
             # user sees "everything is molasses". Periodically measure REAL
-            # tunnel throughput; if it collapses for several consecutive checks,
-            # fail over to the candidate with the best MEASURED speed (not
-            # latency). Anti-flap is two-layered: a switch needs a candidate
-            # clearly faster (>2×) than the crawl, and the cooldown applies
-            # only while the last switch/benchmark produced no good reading
-            # since (tput_switch_helped=0 — the "every server is throttled"
-            # peak). A switch that DID restore speed and later got re-squeezed
+            # tunnel throughput; if it collapses for several consecutive
+            # checks, act in two stages:
+            #   1. RE-DIAL: the policer pins flows per-TCP-connection (root
+            #      cause 2026-06-11) — a fresh flow to the SAME exit often
+            #      escapes the squeeze while the live tunnel's pinned flow
+            #      crawls (probe 11.7MB/s vs live 199KB/s on one server,
+            #      2026-06-12). If a throwaway xray to the current server
+            #      measures clearly fast, force-restart in place (new flows,
+            #      same server) instead of burning a switch. One attempt per
+            #      incident.
+            #   2. SWITCH: fail over to the candidate with the best MEASURED
+            #      speed (not latency).
+            # Anti-flap is layered: a switch needs a candidate clearly faster
+            # (>2×) than the crawl, and the cooldown applies only while the
+            # last switch/benchmark produced no good reading since
+            # (tput_switch_helped=0 — the "every server is throttled" peak).
+            # A switch that DID restore speed and later got re-squeezed
             # (rolling TSPU waves, observed 2026-06-10) may act again as soon
             # as TPUT_SLOW_MAX low reads re-accumulate (~7 min), not 20.
+            # And after a FLOPPED action (squeezed before any good reading —
+            # the per-flow lottery lost) the FIRST re-action is allowed after
+            # TPUT_COOLDOWN_FAST, not the full cooldown: on 2026-06-12 a
+            # switch flopped while a free server existed, and the full gate
+            # left the user at 250KB/s for 10 min until a manual switch. One
+            # early retry catches that; a second consecutive flop means the
+            # peak really is everywhere — wait out the full 20 min.
             if [ "$(get_config_val tput_guard true)" = "true" ] && [ $((tick % TPUT_EVERY)) -eq 0 ]; then
                 local min_kbps; min_kbps=$(get_config_val tput_min_kbps 500)
                 case "$min_kbps" in ''|*[!0-9]*) min_kbps=500 ;; esac
@@ -359,20 +396,51 @@ cmd_watchdog() {
                     [ "$slow_count" -gt 0 ] && [ -n "$kbps" ] && logger -t eclipvpn "Watchdog: throughput recovered (${kbps}KB/s)"
                     # A real good reading (not an empty no-data probe) proves
                     # the current server delivers — the next degradation is a
-                    # fresh wave, not the same incident: lift the cooldown gate.
-                    [ -n "$kbps" ] && tput_switch_helped=1
+                    # fresh wave, not the same incident: lift the cooldown gate
+                    # and re-arm the per-incident re-dial / early-retry budgets.
+                    [ -n "$kbps" ] && { tput_switch_helped=1; tput_redialed=0; tput_fast_retry_used=0; }
                     slow_count=0
                 fi
 
                 if [ "$slow_count" -ge "$TPUT_SLOW_MAX" ]; then
                     local now=$(date +%s)
-                    if [ $((now - last_tput_switch)) -lt "$TPUT_COOLDOWN" ] && [ "$tput_switch_helped" -eq 0 ]; then
+                    local cool=$TPUT_COOLDOWN
+                    [ "$tput_fast_retry_used" -eq 0 ] && cool=$TPUT_COOLDOWN_FAST
+                    if [ $((now - last_tput_switch)) -lt "$cool" ] && [ "$tput_switch_helped" -eq 0 ]; then
                         : # last switch/benchmark never lifted things — cool down, don't flap
                     else
+                        # Acting from a helped=0 state means this IS the one
+                        # early retry — spend it.
+                        [ "$tput_switch_helped" -eq 0 ] && tput_fast_retry_used=1
                         local cur_idx=$(get_config_val selected_server 0)
                         local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                         local cur_name=$(jq -r ".[$cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                         local cur_host=$(jq -r ".[$cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                        local did_redial=0
+                        if [ "$tput_redialed" -eq 0 ]; then
+                            tput_redialed=1
+                            logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — probing a fresh flow to it"
+                            local fres=$(_watchdog_probe_candidate "$cur_idx" "$probe_port" throughput)
+                            local fresh_kbps=""
+                            [ "${fres%% *}" = "ok" ] && fresh_kbps="${fres#ok }"
+                            if [ -n "$fresh_kbps" ] && [ "$fresh_kbps" -ge "$min_kbps" ] && [ "$fresh_kbps" -gt $((kbps * 2)) ]; then
+                                logger -t eclipvpn "Watchdog: re-dialing $cur_name in place (fresh flow ${fresh_kbps}KB/s vs ${kbps}KB/s)"
+                                _log_incident "slow_redial" "$cur_host" "$cur_name" "низкая скорость (${kbps}КБ/с), свежий поток к тому же серверу даёт ${fresh_kbps}КБ/с — переподключение без смены сервера"
+                                # Force (=1) past the unchanged-config fast
+                                # path: configs are byte-identical and the
+                                # tunnel answers probes, so a plain restart
+                                # would no-op instead of replacing the flows.
+                                ( cmd_restart 1 ) >/dev/null 2>&1
+                                last_tput_switch=$(date +%s)
+                                tput_switch_helped=0
+                                slow_count=0
+                                did_redial=1
+                                sleep $((interval * 3))
+                            else
+                                logger -t eclipvpn "Watchdog: fresh flow to $cur_name also slow (${fresh_kbps:-0}KB/s)"
+                            fi
+                        fi
+                        if [ "$did_redial" -eq 0 ]; then
                         logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — benchmarking servers"
                         if [ -n "$total" ] && [ "$total" -gt 1 ]; then
                             local pick=$(_watchdog_pick_best "$cur_idx" "$total" "$probe_port" throughput)
@@ -392,6 +460,7 @@ cmd_watchdog() {
                                     ( cmd_restart ) >/dev/null 2>&1
                                     last_tput_switch=$(date +%s)
                                     tput_switch_helped=0
+                                    tput_redialed=0  # new server gets its own re-dial chance
                                     slow_count=0
                                     sleep $((interval * 3))
                                 else
@@ -407,6 +476,7 @@ cmd_watchdog() {
                                 tput_switch_helped=0
                                 slow_count=0
                             fi
+                        fi
                         fi
                     fi
                 fi
