@@ -1,0 +1,19 @@
+# EclipVPN installer - Russian UI strings (UTF-8, key=value).
+# Loaded as data by install-eclipvpn-gui.ps1 (never parsed as script).
+subtitle=Офлайн-установщик
+host=IP роутера
+user=Пользователь
+pass=Пароль
+install=Установить
+detect=Найти
+searching=Поиск роутера...
+foundFmt=Роутер: {0}
+typeOpenwrt=(OpenWrt)
+typeSsh=(SSH)
+notFound=Роутер не найден - введите IP вручную
+ready=Готов к установке.
+starting=Запуск...
+needHost=Введите IP-адрес роутера.
+needPass=Введите пароль роутера.
+doneFmt=Готово. Откройте  http://{0}/eclipvpn/
+failed=Ошибка: смотрите лог выше.
