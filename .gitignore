@@ -16,3 +16,13 @@ combined.tmp
 .DS_Store
 *.bak
 *.bak.*
+
+# Claude Code local tooling / session state (may hold backups + secrets)
+.claude/
+
+# Windows installer — generated artifacts + bundled binaries (regenerable via build-*.ps1)
+windows-installer/EclipVPN-Installer.exe
+windows-installer/bundle.zip
+windows-installer/eclip.ico
+windows-installer/payload/
+windows-installer/lib/
