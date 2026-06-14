@@ -126,7 +126,14 @@ fetch_subscription() {
     # contains URL-looking lines ("://") — the grep guard prevents accepting a
     # garbage decode (e.g. running the URL-safe -_->/+ transform over STANDARD
     # base64, which silently corrupts it). Fall back to $raw as plaintext.
-    if printf '%s' "$raw" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
+    # A JSON body (array / {"servers":[...]}) is a subscription too — keep it
+    # verbatim and let parse_subscription_file detect+parse it. Short-circuit
+    # before the base64 cascade so a JSON body can't be mangled by a stray
+    # base64 decode that happens to contain "://". Detect with jq directly: a
+    # base64 / vless:// body is never a valid top-level JSON array or object.
+    if printf '%s' "$raw" | jq -e 'type=="array" or type=="object"' >/dev/null 2>&1; then
+        printf '%s' "$raw" > "$out"
+    elif printf '%s' "$raw" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
         :
     elif _b64_pad "$raw" | base64 -d 2>/dev/null > "$out" && grep -q '://' "$out" 2>/dev/null; then
         :
@@ -315,8 +322,81 @@ parse_vless_url() {
           transport:$transport, path:$path, mode:$mode, flow:$flow, extra:$extra}'
 }
 
+# Parse a JSON subscription body into servers.json. Accepts a bare array or a
+# {"servers":[...]} wrapper; each element is either a vless:// string (reused
+# through parse_vless_url) or a full server object. `extra` may be a nested
+# object or a JSON string — it's normalised to a string (same shape the vless://
+# path produces, so xray.sh's `jq -s '.[0]*.[1]'` merge keeps working). Echoes
+# the server count (0 = caller keeps the previous servers.json, fetch-then-swap).
+_parse_json_subscription() {
+    local file="$1" output="$2"
+    local total
+    total=$(jq '(if type=="array" then . elif (type=="object" and has("servers")) then .servers else [] end) | length' "$file" 2>/dev/null)
+    case "$total" in ''|*[!0-9]*) total=0 ;; esac
+
+    # Map object entries to the canonical schema and validate (host/uuid/port).
+    local valid_objs
+    valid_objs=$(jq -c '
+        (if type=="array" then . elif (type=="object" and has("servers")) then .servers else [] end)
+        | [ .[] | select(type=="object")
+            | { name:(.name//""), host:(.host//""),
+                port:(((.port//443)) | if type=="string" then (tonumber? // 0) else . end),
+                uuid:(.uuid//""), security:(.security//""), sni:(.sni//""),
+                fp:(.fp//""), pbk:(.pbk//""), sid:(.sid//""),
+                transport:(.transport//""), path:(.path//""), mode:(.mode//""), flow:(.flow//""),
+                extra:((.extra // {}) | if type=="string" then . else tojson end) } ]
+        | map(select(.host!="" and .uuid!="" and (.port|type)=="number"
+              and .port>0 and .port<=65535 and .host!="0.0.0.0" and .host!="127.0.0.1"))
+    ' "$file" 2>/dev/null)
+    [ -z "$valid_objs" ] && valid_objs="[]"
+
+    # Any vless:// string entries go through the existing URL parser.
+    local vlines
+    vlines=$(jq -r '
+        (if type=="array" then . elif (type=="object" and has("servers")) then .servers else [] end)
+        | [ .[] | select(type=="string") | select(test("^vless://")) ] | .[]
+    ' "$file" 2>/dev/null)
+
+    local out="$valid_objs"
+    if [ -n "$vlines" ]; then
+        local oldifs="$IFS"; IFS='
+'
+        local vline srv
+        for vline in $vlines; do
+            [ -z "$vline" ] && continue
+            if srv=$(parse_vless_url "$vline"); then
+                out=$(printf '%s' "$out" | jq -c --argjson s "$srv" '. + [$s]')
+            fi
+        done
+        IFS="$oldifs"
+    fi
+
+    local count
+    count=$(printf '%s' "$out" | jq 'length' 2>/dev/null)
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    ( umask 077; printf '%s' "$out" | jq '.' > "$output" )
+    chmod 600 "$output" 2>/dev/null
+
+    local rej=$((total - count)); [ "$rej" -lt 0 ] && rej=0
+    if [ "$count" -eq 0 ]; then
+        logger -t eclipvpn "Subscription(JSON): 0 valid servers (saw $total entries — need host/uuid/port or vless:// strings)"
+    elif [ "$rej" -gt 0 ]; then
+        logger -t eclipvpn "Subscription(JSON): $rej of $total entries rejected (missing host/uuid / bad port)"
+    fi
+    echo "$count"
+}
+
 parse_subscription_file() {
     local file="$1" output="$2"
+    # Same URL may return JSON instead of the classic base64 vless:// list.
+    # Detect with jq directly (a base64 / vless:// body is never a valid
+    # top-level JSON array or object) — do NOT sniff the first char with
+    # `tr -d '[:space:]'`: busybox tr reads that as the literal set
+    # [ : s p a c e ] and strips the leading '[', breaking detection.
+    if jq -e 'type=="array" or type=="object"' "$file" >/dev/null 2>&1; then
+        _parse_json_subscription "$file" "$output"
+        return
+    fi
     local servers="[]"
     local total=0 rejected=0 unknown=0
     # `|| [ -n "$line" ]` ensures the last line is processed even when the

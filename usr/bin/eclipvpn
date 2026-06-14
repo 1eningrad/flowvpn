@@ -229,6 +229,14 @@ _rotate_log() {
 # auto-switch to them — doing so defeats the purpose of a VPN.
 _is_metered_server() {
     local name="$1"
+    # "Обход …" entries are CDN-fronted bypass relays — they exit via a foreign
+    # server through a RU CDN; the carrier in the name is which carrier they're
+    # tuned for, NOT a metered mobile exit handing back a Russian IP. So they
+    # must NOT be skipped from auto-select / watchdog failover the way real
+    # metered exits (МТС/Т2/Билайн/Мегафон *location* servers) are.
+    case "$name" in
+        *Обход*|*обход*) return 1 ;;
+    esac
     case "$name" in
         *МТС*|*мтс*|*MTS*|*mts*) return 0 ;;
         *Т2*|*т2*|*Tele2*|*tele2*|*Би*) return 0 ;;
