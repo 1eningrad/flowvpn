@@ -2306,7 +2306,7 @@ async function selectServer(i){
 }
 async function doPing(){
   const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';
-  try{const r=await apiFetch(API+'?action=ping');const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}
+  try{const r=await apiFetch(API+'?action=ping',{timeoutMs:90000});const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}
   b.disabled=false;b.textContent='Проверить пинг'
 }
 // Maps backend status code to a short Russian phrase for the toast log.

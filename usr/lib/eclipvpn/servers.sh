@@ -197,14 +197,15 @@ cmd_ping() {
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     local tmpdir=$(mktemp -d "$ECLIPVPN_TMP/ping.XXXXXX")
 
-    # Per-server probe runs in parallel. Strategy lifted from v2rayN/v2rayNG
-    # tcping: 3 attempts × 3s TCP-connect, take the minimum. Empirically
-    # observed ~20% TCP-RST flap on one upstream (Finland) — 2×2s gave 4%
-    # false-negatives, 3×3s drops that below 1%.
-    #
-    # ICMP fallback when all 3 TCP attempts fail: many providers RST :443
-    # bursts but ICMP keeps flowing, so we still surface a usable number
-    # instead of "нет" for a server that's actually reachable.
+    # Per-server probe runs in parallel. Small pool: 3 attempts × 3s TCP-connect,
+    # take the minimum (v2rayN-style; ~20% TCP-RST flap on one upstream needed 3×
+    # to drop false-negatives <1%), plus an ICMP fallback (some providers RST :443
+    # bursts but answer ICMP). BIG pool (>40 servers, multi-subscription): a 177-
+    # server sweep at 3 attempts took ~52s and never reached the UI — uhttpd kills
+    # the CGI at network_timeout=30s, and the browser fetch times out earlier — so
+    # for big pools do ONE 2s attempt and skip the per-server ICMP fallback (except
+    # hysteria2, which has no TCP listener), landing well under the timeout.
+    local fast=0; [ "$total" -gt 40 ] 2>/dev/null && fast=1
     local i=0
     while [ "$i" -lt "$total" ]; do
         local host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
@@ -215,16 +216,22 @@ cmd_ping() {
             # hysteria2 is QUIC (UDP) — a TCP connect to :443 always fails, so
             # skip straight to ICMP for it (saves 3×3s of dead TCP probing).
             if [ "$proto" != "hysteria2" ]; then
-                for attempt in 1 2 3; do
-                    t=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+                _att=3; _ct=3
+                [ "$fast" = "1" ] && { _att=1; _ct=2; }
+                _n=0
+                while [ "$_n" -lt "$_att" ]; do
+                    _n=$((_n + 1))
+                    t=$(curl -s -o /dev/null --max-time "$_ct" --connect-timeout "$_ct" -w '%{time_connect}' "https://$host:443" 2>/dev/null)
                     if [ -n "$t" ] && [ "$t" != "0.000000" ]; then
                         ms=$(echo "$t" | awk '{printf "%d", $1 * 1000}')
                         if [ "$best" -lt 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
                     fi
                 done
             fi
-            if [ "$best" -lt 0 ]; then
-                # ICMP fallback — single packet, 2s deadline.
+            # ICMP fallback (single packet, 2s): always for hysteria2 (no TCP);
+            # for TCP only in a small pool — in a big pool the extra 2s per down
+            # server would blow the time budget (down → -1 immediately instead).
+            if [ "$best" -lt 0 ] && { [ "$proto" = "hysteria2" ] || [ "$fast" != "1" ]; }; then
                 icmp=$(ping -c 1 -W 2 "$host" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," "); print int(a[1]+0.5); exit}')
                 [ -n "$icmp" ] && [ "$icmp" -gt 0 ] 2>/dev/null && best=$icmp
             fi
