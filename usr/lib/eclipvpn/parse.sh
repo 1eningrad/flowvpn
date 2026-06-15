@@ -5,8 +5,15 @@
 # the `sub` management command live in subscriptions.sh.
 
 url_decode() {
+    # Decode %XX and '+' only. Two busybox-ash hazards the obvious form trips:
+    #  - the final `printf '%b'` interprets C escapes, so a LITERAL backslash
+    #    already in the field (trojan/hysteria2/ss password, a server name) was
+    #    silently mangled. Pre-escape literal backslashes (\ -> \\) FIRST, before
+    #    the %XX -> \xHH transform, so %b renders \\ back to one '\' and only the
+    #    injected \xHH are interpreted.
+    #  - busybox `echo` eats a leading -n/-e/-E; use `printf '%s'` instead.
     local data="$1"
-    printf '%b' "$(echo "$data" | sed 's/+/ /g; s/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g')"
+    printf '%b' "$(printf '%s' "$data" | sed 's/\\/\\\\/g; s/+/ /g; s/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g')"
 }
 
 # Pad a base64 string to a multiple of 4 with '='. Some subscription
@@ -417,7 +424,12 @@ _parse_json_subscription() {
                 security:(.security//""), sni:(.sni//""),
                 fp:(.fp//""), pbk:(.pbk//""), sid:(.sid//""),
                 transport:(.transport//""), path:(.path//""), mode:(.mode//""), flow:(.flow//""),
-                extra:((.extra // {}) | if type=="string" then . else tojson end),
+                extra:((.extra // {}) as $e
+                       | if ($e|type)=="object" then ($e|tojson)
+                         elif ($e|type)=="string" then
+                           ((try ($e|fromjson) catch null) as $p
+                            | if ($p|type)=="object" then ($p|tojson) else "{}" end)
+                         else "{}" end),
                 obfs:(.obfs//""), obfs_pw:(.obfs_pw//""),
                 insecure:((.insecure//0) | if type=="boolean" then (if . then 1 else 0 end) elif type=="string" then (tonumber? // 0) else . end) } ]
         | map(select(.host!="" and (.port|type)=="number"

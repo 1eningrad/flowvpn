@@ -118,6 +118,14 @@ cmd_start() {
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$selected" -ge "$total" ] && selected=0
 
+    # Tear down any leftover daemon before bring-up. cmd_start is reached as the
+    # cold-start fall-through of cmd_restart when `! _vpn_running`; on a Hysteria2
+    # -> xray switch that fall-through fires while the OLD hysteria2 sing-box is
+    # still alive, and _tunnel_bringup assumes a clean slate — without this the
+    # new xray/sing-box collide on :1080/:2154. No-op on a genuine cold start.
+    stop_singbox
+    stop_xray
+
     # Steps 3-5: bring up the proxy engine(s) for the selected server.
     # Engine-aware — hysteria2 runs sing-box only; xray protocols run xray +
     # sing-box. _tunnel_bringup leaves daemons stopped on any failure.
