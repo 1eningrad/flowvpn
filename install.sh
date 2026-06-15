@@ -133,6 +133,18 @@ if ! command -v unzip >/dev/null 2>&1; then
     command -v unzip >/dev/null 2>&1 || { echo "ERROR: unzip missing and '$PKG_INSTALL unzip' failed"; exit 1; }
 fi
 unzip -o xray.zip xray -d /tmp/ >/dev/null
+# Integrity check before installing over the live binary. Without a published
+# sha256 (which would also vary per arch) we at least verify it's an ELF
+# executable that self-reports the exact pinned version — this rejects an HTML
+# error page, a truncated/blocked download, or a wrong-arch/tampered binary
+# instead of mv'ing garbage onto /usr/bin/xray. Not a substitute for a signature.
+if [ "$(dd if=/tmp/xray bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+    echo "ERROR: downloaded xray is not an ELF binary (blocked or garbage download)"; rm -f /tmp/xray.zip /tmp/xray; exit 1
+fi
+chmod +x /tmp/xray
+if ! /tmp/xray version 2>/dev/null | grep -q "26.4.17"; then
+    echo "ERROR: xray integrity check failed — binary does not report version 26.4.17"; rm -f /tmp/xray.zip /tmp/xray; exit 1
+fi
 # Stage + mv instead of cp-in-place: writing into a running xray's inode
 # fails with ETXTBSY (upgrade over a live install); rename is always allowed
 # and the running process keeps its old inode until the next restart.
@@ -151,9 +163,17 @@ mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/eclipvpn
 for file in \
     usr/bin/eclipvpn \
     usr/lib/eclipvpn/parse.sh \
+    usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
     usr/lib/eclipvpn/network.sh \
+    usr/lib/eclipvpn/watchdog.sh \
+    usr/lib/eclipvpn/lifecycle.sh \
+    usr/lib/eclipvpn/servers.sh \
+    usr/lib/eclipvpn/domains.sh \
+    usr/lib/eclipvpn/traffic.sh \
+    usr/lib/eclipvpn/health.sh \
+    usr/lib/eclipvpn/config.sh \
     www/cgi-bin/eclipvpn \
     etc/init.d/eclipvpn; do
     fetch "$REPO/$file" "/$file" || { echo "ERROR: Failed to download $file"; exit 1; }

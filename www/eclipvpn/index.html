@@ -382,6 +382,24 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .speed-up .speed-value{color:var(--accent-warm)}
 
 /* Servers list */
+/* Bounded, internally-scrolled list so a big multi-subscription pool (100s of
+   servers) doesn't become one giant page-length strip. */
+.server-list{max-height:min(58vh,520px);overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
+.server-list::-webkit-scrollbar{width:8px}
+.server-list::-webkit-scrollbar-thumb{background:var(--card-hover);border-radius:4px}
+/* Collapsible provider group header (sticky so you keep context while scrolling). */
+.sub-group-head{
+  position:sticky;top:0;z-index:2;
+  display:flex;align-items:center;gap:7px;
+  padding:8px 6px 5px;margin-top:2px;cursor:pointer;user-select:none;
+  font-size:11px;font-weight:600;color:var(--text-dim);
+  text-transform:uppercase;letter-spacing:.04em;
+  background:var(--card);
+}
+.sub-group-head:hover{color:var(--text-muted)}
+.sub-group-head .sgh-chev{font-size:10px;width:10px;text-align:center;transition:transform .12s}
+.sub-group-head .sgh-count{font-weight:500;color:var(--text-dim);background:var(--card-hover);padding:0 7px;border-radius:9px;text-transform:none;letter-spacing:0}
+.sub-group-head .sgh-active{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
 .server{
   display:flex;align-items:center;gap:10px;
   padding:8px 12px;border-radius:6px;cursor:pointer;
@@ -452,6 +470,12 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   padding:2px 6px;border-radius:6px;flex-shrink:0;
   background:rgba(251,191,36,0.12);color:var(--yellow);
   border:1px solid rgba(251,191,36,0.25)
+}
+.server-proto{
+  font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;
+  padding:2px 6px;border-radius:6px;flex-shrink:0;
+  background:rgba(255,255,255,0.06);color:var(--text-dim);
+  border:1px solid rgba(255,255,255,0.10)
 }
 .server-fail{
   font-size:10px;font-weight:700;letter-spacing:0.02em;
@@ -1476,13 +1500,17 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
       <!-- Settings -->
       <div class="section" id="sec-settings">
         <div class="card">
-          <div class="card-title">Подписка</div>
-          <p class="card-desc">Вставьте ссылку на список VPN-серверов от провайдера и нажмите «Добавить»</p>
-          <div class="flex">
-            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://…" aria-label="URL подписки на серверы" onkeydown="if(event.key==='Enter')addSubscription()">
+          <div class="card-head">
+            <div class="card-title">Подписки</div>
+            <button class="btn btn-ghost btn-sm" id="updateBtn" onclick="doUpdate()">Обновить</button>
+          </div>
+          <p class="card-desc">Можно добавить несколько провайдеров — серверы со всех включённых подписок объединяются в один список.</p>
+          <div id="subList"></div>
+          <div class="flex" style="margin-top:10px">
+            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://… ссылка на подписку" aria-label="URL подписки на серверы" onkeydown="if(event.key==='Enter')addSubscription()">
             <button class="btn btn-primary btn-sm" onclick="addSubscription()">Добавить</button>
           </div>
-          <div id="subMetaCard" style="display:none;margin-top:12px"></div>
+          <input class="input" id="subName" type="text" maxlength="40" placeholder="Название (пусто — возьмём из подписки)" aria-label="Название подписки" style="margin-top:8px" onkeydown="if(event.key==='Enter')addSubscription()">
         </div>
         <div class="card">
           <div class="setting-row">
@@ -1727,66 +1755,69 @@ function fmtAgo(ts){
 }
 function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';if(b<1073741824)return(b/1048576).toFixed(2)+' MB';if(b<1099511627776)return(b/1073741824).toFixed(2)+' GB';return(b/1099511627776).toFixed(2)+' TB'}
 
-// Render the subscription meta card: title, quota bar, expire date,
-// provider announce message. Hidden if no metadata yet (first run).
-function renderSubscriptionMeta(meta){
-  const card=document.getElementById('subMetaCard');
-  if(!card)return;
-  // The 5s status poll rebuilds this card via innerHTML — mid-update that
-  // resurrected an ENABLED «Обновить» button (double-fire risk) and turned
-  // doUpdate's saved button reference into a detached node.
-  if(_updatePending)return;
-  // Show the card whenever a subscription exists — even before the first
-  // metadata fetch — so the manual «Обновить» button is always reachable.
-  if(!state||!state.subscription_url){card.style.display='none';return}
-  card.style.display='block';
-  const m=meta||{};
+// Mask a subscription URL for display — keep the host + a short token tail,
+// hide the credential middle (the path token IS the panel credential).
+function maskUrl(u){
+  if(!u)return '';
+  const m=String(u).match(/^https?:\/\/([^/]+)(\/.*)?$/i);
+  if(!m)return u.length>30?u.slice(0,26)+'…':u;
+  const host=m[1], path=(m[2]||'').replace(/\/+$/,'');
+  const tail=path.slice(-6);
+  return host+(path?('/…'+tail):'');
+}
+// Compact one-line quota / expiry summary for a subscription row. "" if no meta.
+function subQuotaLine(m){
+  if(!m||!m.fetched_at)return '';
   const NOW=Math.floor(Date.now()/1000);
-  // Heuristic for "fake-infinite" total/expire that providers use for
-  // unlimited tariffs (1PB total, year-2055 expire, etc.).
   const total=+m.total||0, used=(+m.upload||0)+(+m.download||0);
-  const totalUnlimited = total > 1099511627776 * 100;  // > 100 TB → unlimited
+  const totalUnl=total>1099511627776*100;  // >100TB → unlimited tariff
+  const parts=[];
+  if(totalUnl){ if(used>0)parts.push(fmtBytes(used)+' · безлимит'); }
+  else if(total>0){ const pct=Math.min(100,Math.round(used/total*100)); parts.push(fmtBytes(used)+' / '+fmtBytes(total)+' ('+pct+'%)'); }
+  else if(used>0){ parts.push(fmtBytes(used)); }
   const expire=+m.expire||0;
-  const expireUnlimited = expire > NOW + 86400*3650; // > 10 years away → unlimited
-  const expireLeft = expire - NOW;
-  // Header: subscription title (left) + manual refresh button (right)
-  let html='<div class="flex" style="align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">'
-    +'<div style="font-size:14px;font-weight:600">'+esc(m.title||'Подписка добавлена')+'</div>'
-    +'<button class="btn btn-ghost btn-sm" id="updateBtn" onclick="doUpdate()">Обновить</button></div>';
-  if(!m.fetched_at){
-    html+='<div style="font-size:12px;color:var(--text-muted)">'+((state.servers&&state.servers.length)?('Серверов в списке: '+state.servers.length):'Список серверов ещё не загружен — нажмите «Обновить»')+'</div>';
-    card.innerHTML=html;return;
+  if(expire>0 && expire<NOW+86400*3650){           // skip "fake-infinite" expiries
+    const left=expire-NOW;
+    parts.push(left<0?'⚠ срок истёк':(Math.floor(left/86400)+' дн.'));
   }
-  // Quota line
-  if(totalUnlimited){
-    html+='<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Использовано: '+fmtBytes(used)+' · безлимит</div>';
-  }else if(total>0){
-    const pct=Math.min(100,Math.round(used/total*100));
-    const barColor=pct>90?'var(--red)':pct>70?'var(--warn,#f59e0b)':'var(--accent)';
-    html+='<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">'+fmtBytes(used)+' / '+fmtBytes(total)+' ('+pct+'%)</div>';
-    html+='<div style="height:4px;background:var(--card-hover);border-radius:2px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:'+pct+'%;background:'+barColor+';transition:width .3s"></div></div>';
-  }else if(used>0){
-    html+='<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Использовано: '+fmtBytes(used)+'</div>';
-  }
-  // Expire line
-  if(expireUnlimited){
-    html+='<div style="font-size:12px;color:var(--text-muted)">Срок действия: бессрочно</div>';
-  }else if(expire>0){
-    const d=new Date(expire*1000);
-    const dateStr=d.toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
-    if(expireLeft<0){
-      html+='<div style="font-size:12px;color:var(--red)">⚠ Срок истёк '+esc(dateStr)+'</div>';
-    }else{
-      const daysLeft=Math.floor(expireLeft/86400);
-      const color=daysLeft<7?'var(--red)':daysLeft<30?'var(--warn,#f59e0b)':'var(--text-muted)';
-      html+='<div style="font-size:12px;color:'+color+'">До '+esc(dateStr)+' ('+daysLeft+' дн.)</div>';
-    }
-  }
-  // Announce — provider message, often multi-line with emoji
-  if(meta.announce){
-    html+='<div style="font-size:12px;color:var(--text);margin-top:10px;padding:10px;background:var(--card-hover);border-radius:8px;white-space:pre-line;line-height:1.45">'+esc(meta.announce)+'</div>';
-  }
-  card.innerHTML=html;
+  return parts.join(' · ');
+}
+// Render the list of subscriptions (Settings ▸ Подписки). Per-sub server count
+// comes from the merged servers list (state.servers tagged with sub_id); quota/
+// expiry from state.subscription_meta (keyed by sub_id). The «Обновить» button
+// lives in the static card head now, so this innerHTML rebuild can't detach it.
+function renderSubscriptions(){
+  const el=document.getElementById('subList');
+  if(!el)return;
+  if(_subActionPending||_updatePending)return;   // don't clobber a row mid-action
+  const subs=(state&&state.subscriptions)||[];
+  const metaMap=(state&&state.subscription_meta)||{};
+  const counts={};
+  ((state&&state.servers)||[]).forEach(s=>{const k=s.sub_id||'';counts[k]=(counts[k]||0)+1});
+  if(!subs.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:6px 0">Пока нет подписок — добавьте первую ниже.</div>';return}
+  el.innerHTML=subs.map(sub=>{
+    const m=metaMap[sub.id]||{};
+    const cnt=counts[sub.id]||0;
+    const en=sub.enabled!==false;
+    const q=subQuotaLine(m);
+    // Only the hex id goes into the inline handlers — the (free-text) name is
+    // looked up from state in subRename/subRemove, sidestepping nested-quote
+    // escaping in the onclick="…('…')" attribute.
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--card-border,rgba(255,255,255,.07));border-radius:10px;margin-bottom:8px;'+(en?'':'opacity:.5;')+'">'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:8px">'+esc(sub.name||'Подписка')
+          +'<span style="font-size:11px;font-weight:500;color:var(--text-dim);background:var(--card-hover);padding:1px 7px;border-radius:10px;flex-shrink:0">'+cnt+' серв.</span></div>'
+        +'<div style="font-size:11.5px;color:var(--text-dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(maskUrl(sub.url))+'</div>'
+        +(q?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:2px">'+esc(q)+'</div>':'')
+        +(m.announce?'<div style="font-size:11.5px;color:var(--text);margin-top:8px;padding:8px;background:var(--card-hover);border-radius:8px;white-space:pre-line;line-height:1.4">'+esc(m.announce)+'</div>':'')
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:4px;flex-shrink:0">'
+        +'<label class="toggle toggle-sm" title="'+(en?'Выключить':'Включить')+' подписку"><input type="checkbox" '+(en?'checked':'')+' onchange="subToggle(\''+sub.id+'\',this.checked)"><div class="toggle-track"></div><div class="toggle-knob"></div></label>'
+        +'<button class="btn btn-ghost btn-sm" title="Переименовать" onclick="subRename(\''+sub.id+'\')">✎</button>'
+        +'<button class="btn btn-ghost btn-sm" title="Удалить" onclick="subRemove(\''+sub.id+'\')">✕</button>'
+      +'</div>'
+    +'</div>';
+  }).join('');
 }
 function fmtSpeed(bps){bps=+bps||0;if(bps<1024)return bps.toFixed(0)+' B/с';if(bps<1048576)return(bps/1024).toFixed(1)+' KB/с';return(bps/1048576).toFixed(2)+' MB/с'}
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
@@ -1886,10 +1917,41 @@ function isMeteredServer(name){
   return /МТС|мтс|MTS|mts|Т2|т2|Tele2|tele2|\bБи\b|Билайн|билайн|Beeline|beeline|Мегафон|мегафон|Megafon|megafon/.test(name||'');
 }
 
+// Collapsed provider groups, keyed by sub_id, persisted so the choice survives
+// reloads. Lets a big multi-subscription pool (e.g. a 162-server provider) be
+// folded away to its header.
+let _collapsedSubs = new Set((function(){try{return JSON.parse(localStorage.getItem('eclipvpn-collapsed-subs')||'[]')}catch(e){return[]}})());
+function toggleSubGroup(key){
+  if(_collapsedSubs.has(key)) _collapsedSubs.delete(key); else _collapsedSubs.add(key);
+  try{localStorage.setItem('eclipvpn-collapsed-subs',JSON.stringify([..._collapsedSubs]))}catch(e){}
+  if(state&&state.servers)renderServers(state.servers,state.selected);
+}
 function renderServers(servers,sel,switchingIdx){
   const el=document.getElementById('serverList');
   if(!servers||!servers.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Серверы не загружены</div>';return}
-  el.innerHTML=servers.map((s,i)=>{
+  // Group by provider when servers come from >1 subscription (single provider
+  // needs no header). Key on the stable sub_id; servers are contiguous per sub.
+  // A collapsed group renders only its header — its rows are dropped from the
+  // DOM (keeps a 100s-server pool light), with a dot if the active server hides
+  // inside it.
+  const gkey=s=>(s.sub_id||s.sub_name||'');
+  const provset={};servers.forEach(s=>{provset[gkey(s)]=1});
+  const showGroups=Object.keys(provset).length>1;
+  const counts={};servers.forEach(s=>{const k=gkey(s);counts[k]=(counts[k]||0)+1});
+  const activeKey=(sel!=null&&servers[sel])?gkey(servers[sel]):null;
+  let curKey=null, html='';
+  servers.forEach((s,i)=>{
+    const key=gkey(s);
+    if(showGroups&&key!==curKey){
+      curKey=key;
+      const collapsed=_collapsedSubs.has(key);
+      const dot=(collapsed&&key===activeKey)?'<span class="sgh-active" title="Активный сервер в этой свёрнутой группе"></span>':'';
+      html+='<div class="sub-group-head" onclick="toggleSubGroup(\''+key+'\')" role="button" tabindex="0" aria-expanded="'+(collapsed?'false':'true')+'" title="'+(collapsed?'Развернуть':'Свернуть')+'">'
+        +'<span class="sgh-chev">'+(collapsed?'▸':'▾')+'</span>'
+        +'<span>'+esc(s.sub_name||'Подписка')+'</span>'
+        +'<span class="sgh-count">'+(counts[key]||0)+'</span>'+dot+'</div>';
+    }
+    if(showGroups&&_collapsedSubs.has(key))return;   // collapsed group → skip rows
     const a=i===sel?' active':'';
     const sw=i===switchingIdx?' switching':'';
     const p=pings[i];
@@ -1901,24 +1963,34 @@ function renderServers(servers,sel,switchingIdx){
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     const metered=isMeteredServer(s.name);
     const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
+    const protoLabels={vless:'VLESS',vmess:'VMess',trojan:'Trojan',shadowsocks:'SS',hysteria2:'HY2'};
+    const proto=(s.protocol||'vless');
+    const protoTag=`<span class="server-proto" title="Протокол: ${esc(proto)}">${protoLabels[proto]||esc(proto)}</span>`;
     const inc=s.host?incidentStats[s.host]:null;
     const failTag=inc&&inc.count_24h>0
       ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Откройте «История сбоев» ниже.">⚠ ${inc.count_24h}</span>`
       :'';
-    return `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
+    html+=`<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
       ${flagBadge}
       <span class="server-name">${esc(name)}</span>
+      ${protoTag}
       ${meterTag}
       ${failTag}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>
     </div>`;
-  }).join('');
+  });
+  el.innerHTML=html;
 }
 
 const INCIDENT_LABEL={
   check_fail:'Сбой проверки',
   auto_switch:'Авто-переключение',
-  switch_failed:'Не удалось переключиться'
+  switch_failed:'Не удалось переключиться',
+  slow_degraded:'Низкая скорость — переключение',
+  slow_redial:'Низкая скорость — переподключение',
+  slow_noalt:'Низкая скорость везде',
+  wan_down:'Провайдер недоступен',
+  wan_recovered:'Интернет восстановлен'
 };
 function fmtIncidentTime(ts){
   const d=new Date(ts*1000);
@@ -1984,6 +2056,12 @@ async function fetchStatus(){
     if(_switchPending&&typeof state.selected==='number'){
       fresh.selected=state.selected;
     }
+    // pings{} is keyed by array index. When the server list changes (a
+    // subscription update / reorder), a stale pings[i] would render against a
+    // different server — clear it so stale numbers don't mislead.
+    const _oldHosts=(state.servers||[]).map(s=>s&&s.host).join(',');
+    const _newHosts=(fresh.servers||[]).map(s=>s&&s.host).join(',');
+    if(_oldHosts!==_newHosts)pings={};
     state=fresh;
     _uptimeBase = state.running ? {sec:(+state.uptime||0), at:Date.now()} : null;
     // Detect watchdog failover: if last_switch.time is newer than what we've
@@ -2019,7 +2097,7 @@ async function fetchStatus(){
     // still sees the old `running` and would visually bounce the toggle the
     // user just flipped (same guard as _autoModePending / _switchPending).
     if(!_vpnPending)document.getElementById('vpnToggle').checked=on;
-    renderSubscriptionMeta(state.subscription_meta);
+    renderSubscriptions();
     // Sync persistent auto_mode toggle from backend state, but stay out of
     // the way while a toggle/auto-select op is in flight — otherwise this
     // 5s poll can flip the visual back to OFF before the operation has
@@ -2092,6 +2170,10 @@ async function apiFetch(url,opts){
   // cached GET responses for endpoints whose state changes server-side
   // (auto-update, schedule, status, get-domains), making toggles "stick"
   // in their previous visual position after a successful action.
+  // Anti-CSRF is enforced server-side off the Referer/Origin header (uhttpd
+  // drops custom headers, so a marker header wouldn't survive). The browser
+  // sends a same-host Referer automatically on these same-origin calls, which
+  // the CGI checks against its Host for state-changing actions.
   const merged=Object.assign({cache:'no-store',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}},opts||{});
   if(opts&&opts.headers) merged.headers=Object.assign({},merged.headers,opts.headers);
   // Abort hung requests so a wedged router doesn't leave loading toasts
@@ -2144,6 +2226,10 @@ async function selectServer(i){
   // failed click silently kills auto-mode without the user knowing.
   const wasAuto=state.auto_mode;
   if(wasAuto){
+    // Hold _autoModePending across the whole switch so a status poll landing
+    // mid-operation doesn't re-read the not-yet-committed backend auto_mode=true
+    // and visually flip the toggle back on for a cycle. Cleared in finally.
+    _autoModePending=true;
     state.auto_mode=false;
     const am=document.getElementById('autoModeToggle');
     if(am)am.checked=false;
@@ -2210,6 +2296,7 @@ async function selectServer(i){
     loadIncidents();
   }finally{
     _switchPending=false;
+    _autoModePending=false;   // release the auto-mode sync lock taken above
     // Render first, then unlock — avoids a microsecond gap where stale DOM
     // is interactive after the lock is removed.
     renderServers(state.servers,state.selected);
@@ -2327,30 +2414,79 @@ async function setMode(m){
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
   scheduleStatus(3000);
 }
+let _subActionPending=false;
 async function addSubscription(){
   const inp=document.getElementById('subUrl');
+  const nameInp=document.getElementById('subName');
   const u=inp.value.trim();
+  const nm=nameInp?nameInp.value.trim():'';
   if(!u){_showInputError(inp,'Вставьте ссылку на подписку');inp.focus();return}
   if(!/^https?:\/\//i.test(u)){_showInputError(inp,'Ссылка должна начинаться с http:// или https://');inp.focus();return}
+  if(_subActionPending)return;   // a subscription op is already in flight — ignore double-click
+  _subActionPending=true;
   const tid=toast.loading('Добавляем подписку, загружаем серверы…');
   try{
-    await apiFetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(u));
-    const r=await apiFetch(API+'?action=update',{timeoutMs:90000});const d=await r.json();
-    if(d.error){updateToast(tid,'Не удалось загрузить серверы',{type:'error',desc:d.error});}
+    // op=add via POST so the URL+name (free text / credential token) never hit
+    // the query string or a process listing. cmd_sub add re-fetches all subs.
+    const r=await apiFetch(API+'?action=sub&op=add',{method:'POST',body:JSON.stringify({url:u,name:nm}),timeoutMs:90000});
+    const d=await r.json();
+    if(d.error){updateToast(tid,'Не удалось добавить подписку',{type:'error',desc:d.error});}
     else{
-      updateToast(tid,'Подписка добавлена',{type:'success',desc:'Серверов: '+d.servers});
-      inp.value='';  // clear the field — active subscription is shown below
+      updateToast(tid,'Подписка добавлена',{type:'success'});
+      inp.value='';if(nameInp)nameInp.value='';
       // Servers should refresh themselves — enable auto-update by default.
       apiFetch(API+'?action=auto-update&mode=enable').catch(()=>{});
     }
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
+  _subActionPending=false;
   scheduleStatus(800);
+}
+async function subToggle(id,on){
+  if(_subActionPending)return;
+  _subActionPending=true;
+  const tid=toast.loading(on?'Включаем подписку…':'Выключаем подписку…');
+  try{
+    const r=await apiFetch(API+'?action=sub&op='+(on?'enable':'disable')+'&id='+encodeURIComponent(id),{timeoutMs:90000});
+    const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
+    else updateToast(tid,on?'Подписка включена':'Подписка выключена',{type:'success'});
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
+  _subActionPending=false;scheduleStatus(800);
+}
+function _subName(id){const s=((state&&state.subscriptions)||[]).find(x=>x.id===id);return s?(s.name||''):''}
+async function subRemove(id){
+  if(_subActionPending)return;
+  if(!confirm('Удалить подписку «'+(_subName(id)||'')+'»?\nЕё серверы исчезнут из списка.'))return;
+  _subActionPending=true;
+  const tid=toast.loading('Удаляем подписку…');
+  try{
+    const r=await apiFetch(API+'?action=sub&op=remove&id='+encodeURIComponent(id),{timeoutMs:90000});
+    const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
+    else updateToast(tid,'Подписка удалена',{type:'success'});
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
+  _subActionPending=false;scheduleStatus(800);
+}
+async function subRename(id){
+  if(_subActionPending)return;
+  const name=prompt('Название подписки:',_subName(id)||'');
+  if(name===null)return;
+  const nm=name.trim();if(!nm)return;
+  _subActionPending=true;
+  const tid=toast.loading('Переименовываем…');
+  try{
+    const r=await apiFetch(API+'?action=sub&op=rename&id='+encodeURIComponent(id),{method:'POST',body:JSON.stringify({name:nm}),timeoutMs:90000});
+    const d=await r.json();
+    if(d.error)updateToast(tid,'Ошибка',{type:'error',desc:d.error});
+    else updateToast(tid,'Переименовано',{type:'success'});
+  }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
+  _subActionPending=false;scheduleStatus(800);
 }
 let _updatePending=false;
 async function doUpdate(){
-  // Manual refresh of the server list. Uses the stored subscription, not the
-  // (now empty) add-field, so it works any time a subscription exists.
-  if(!state||!state.subscription_url){toast.error('Сначала добавьте подписку');return}
+  // Manual refresh of the server list — re-fetches EVERY enabled subscription
+  // (not the add-field). Works any time at least one subscription exists.
+  if(!state||!(state.subscriptions&&state.subscriptions.length)){toast.error('Сначала добавьте подписку');return}
   if(_updatePending)return;
   _updatePending=true;
   const b=document.getElementById('updateBtn');if(b){b.disabled=true;b.textContent='Обновляем…';}
@@ -2366,17 +2502,6 @@ async function doUpdate(){
   const b2=document.getElementById('updateBtn');
   if(b2){b2.disabled=false;b2.textContent='Обновить';}
   scheduleStatus(2000);
-}
-// Disable Update button when subscription URL is empty so user sees
-// it's not actionable. Re-enabled by status sync when URL is filled.
-function _syncUpdateBtn(){
-  const b=document.getElementById('updateBtn');
-  const inp=document.getElementById('subUrl');
-  if(!b||!inp)return;
-  const empty=!inp.value.trim();
-  b.disabled=empty;
-  b.title=empty?'Заполните ссылку на подписку выше':'';
-  b.style.opacity=empty?'0.55':'';
 }
 async function doRestart(){
   const tid=toast.loading('Перезапускаем EclipVPN…');
@@ -2507,6 +2632,21 @@ document.addEventListener('change',e=>{
 document.addEventListener('click', e => {
   const btn = e.target.closest('.tag-remove[data-domain]');
   if (btn) removeDomain(btn.dataset.domain, btn.dataset.list);
+});
+
+// Delegated handler for device rows (data-dev-id + data-dev-route). data-*
+// keeps the mac/ip out of an HTML-attr→JS-string boundary (defense-in-depth,
+// parity with the domain tags). Click + keyboard (Enter/Space) activation —
+// the row is role="button" tabindex="0", which the old inline onclick never
+// wired for the keyboard.
+document.addEventListener('click', e => {
+  const d = e.target.closest('.device[data-dev-id]');
+  if (d) toggleDeviceRoute(d.dataset.devId, d.dataset.devRoute);
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const d = e.target.closest('.device[data-dev-id]');
+  if (d) { e.preventDefault(); toggleDeviceRoute(d.dataset.devId, d.dataset.devRoute); }
 });
 // Keyboard activation comes from the global role=button keydown handler
 // (it synthesizes a click, which lands in the delegate above). A dedicated
@@ -2663,7 +2803,7 @@ function renderDevices(){
     // Prefer MAC for the rule key — IP can change across DHCP renewals,
     // MAC is fixed to the device.
     const id=esc(dev.mac||dev.ip);
-    return `<div class="device" onclick="toggleDeviceRoute('${id}','${isVpn?'direct':'vpn'}')" tabindex="0" role="button" aria-label="${title.replace(/<[^>]+>/g,'')} — ${isVpn?'через VPN':'напрямую'}, нажмите чтобы переключить">
+    return `<div class="device" data-dev-id="${id}" data-dev-route="${isVpn?'direct':'vpn'}" tabindex="0" role="button" aria-label="${title.replace(/<[^>]+>/g,'')} — ${isVpn?'через VPN':'напрямую'}, нажмите чтобы переключить">
       <div class="device-avatar ${avatarCls}"><svg class="icon icon-lg"><use href="${t.icon}"/></svg></div>
       <div class="device-info">
         <div class="device-name">${title}${typeHint}</div>
@@ -3228,12 +3368,18 @@ async function restoreBackup(event){
   try{parsed=JSON.parse(t)}
   catch(e){toast.error('Неверный формат файла');event.target.value='';return}
   if(!parsed||typeof parsed.config!=='object'){toast.error('Не похоже на бэкап EclipVPN');event.target.value='';return}
-  if(!confirm('Восстановить настройки из бэкапа?\n\nТекущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. VPN перезапустится.')){
+  if(!confirm('Восстановить настройки из бэкапа?\n\nТекущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. Если VPN запущен, он перезапустится с новыми настройками.')){
     event.target.value='';return;
   }
   try{
-    await apiFetch(API+'?action=restore',{method:'POST',body:t});
-    toast.success('Настройки восстановлены');fetchStatus();
+    const r=await apiFetch(API+'?action=restore',{method:'POST',body:t,timeoutMs:90000});
+    const d=await r.json().catch(()=>({}));
+    if(d&&d.error){toast.error('Ошибка восстановления',d.error);}
+    // applied=true → the live tunnel was restarted with the restored config.
+    // applied=false → nothing was running (e.g. a fresh router): servers.json
+    // isn't part of a backup, so the user must Update+Start to pull servers.
+    else if(d&&d.applied){toast.success('Настройки восстановлены','VPN перезапущен');fetchStatus();}
+    else{toast.success('Настройки восстановлены','Нажмите «Обновить», затем «Включить» — серверы подписки подтянутся');fetchStatus();}
   }catch(e){toast.error('Ошибка восстановления')}
   event.target.value='';
 }

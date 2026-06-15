@@ -13,16 +13,23 @@ set -eu
 ROUTER="${ROUTER:-root@192.168.1.1}"
 cd "$(dirname "$0")"
 
-echo "→ git pull"
-# Capture instead of piping straight to tail: without pipefail (plain sh),
-# set -e only sees tail's exit code and a failed/conflicted pull would
-# silently deploy whatever half-state is on disk.
-PULL_OUT=$(git pull --rebase --autostash 2>&1) || {
-    printf '%s\n' "$PULL_OUT"
-    echo "ERROR: git pull failed — resolve before deploying" >&2
-    exit 1
-}
-printf '%s\n' "$PULL_OUT" | tail -3
+# SKIP_PULL=1 ships the current working tree as-is, without syncing git first.
+# Use it to deploy uncommitted local changes (e.g. to a test router) or when the
+# git remote is unreachable (GitHub is blocked from inside RU).
+if [ "${SKIP_PULL:-0}" = 1 ]; then
+    echo "→ skip git pull (SKIP_PULL=1) — shipping working tree as-is"
+else
+    echo "→ git pull"
+    # Capture instead of piping straight to tail: without pipefail (plain sh),
+    # set -e only sees tail's exit code and a failed/conflicted pull would
+    # silently deploy whatever half-state is on disk.
+    PULL_OUT=$(git pull --rebase --autostash 2>&1) || {
+        printf '%s\n' "$PULL_OUT"
+        echo "ERROR: git pull failed — resolve before deploying (or re-run with SKIP_PULL=1)" >&2
+        exit 1
+    }
+    printf '%s\n' "$PULL_OUT" | tail -3
+fi
 
 echo "→ ship scripts/cgi/init.d to $ROUTER"
 # COPYFILE_DISABLE=1 keeps macOS BSD tar from embedding `._*` AppleDouble
@@ -32,9 +39,17 @@ echo "→ ship scripts/cgi/init.d to $ROUTER"
 COPYFILE_DISABLE=1 tar c \
     usr/bin/eclipvpn \
     usr/lib/eclipvpn/parse.sh \
+    usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
     usr/lib/eclipvpn/network.sh \
+    usr/lib/eclipvpn/watchdog.sh \
+    usr/lib/eclipvpn/lifecycle.sh \
+    usr/lib/eclipvpn/servers.sh \
+    usr/lib/eclipvpn/domains.sh \
+    usr/lib/eclipvpn/traffic.sh \
+    usr/lib/eclipvpn/health.sh \
+    usr/lib/eclipvpn/config.sh \
     etc/init.d/eclipvpn \
     www/cgi-bin/eclipvpn \
 | ssh "$ROUTER" 'cd / && tar x'
@@ -108,8 +123,12 @@ fi
 chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn
 
 # Syntax check before touching live state — bail before stop if anything broke.
-for f in /usr/bin/eclipvpn /usr/lib/eclipvpn/parse.sh /usr/lib/eclipvpn/xray.sh \
-         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/network.sh /etc/init.d/eclipvpn; do
+for f in /usr/bin/eclipvpn /usr/lib/eclipvpn/parse.sh /usr/lib/eclipvpn/subscriptions.sh /usr/lib/eclipvpn/xray.sh \
+         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/network.sh \
+         /usr/lib/eclipvpn/watchdog.sh /usr/lib/eclipvpn/lifecycle.sh \
+         /usr/lib/eclipvpn/servers.sh /usr/lib/eclipvpn/domains.sh \
+         /usr/lib/eclipvpn/traffic.sh /usr/lib/eclipvpn/health.sh \
+         /usr/lib/eclipvpn/config.sh /etc/init.d/eclipvpn; do
     ash -n "$f" || { echo "SYNTAX FAIL: $f" >&2; exit 1; }
 done
 

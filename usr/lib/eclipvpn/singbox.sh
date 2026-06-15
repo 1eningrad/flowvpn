@@ -103,8 +103,14 @@ _fetch_one_srs() {
     # cmd_start and can blow past init.d/watchdog expectations.
     local i=0
     while [ "$i" -lt 3 ]; do
+        # Validate it's actually a sing-box rule-set, not a 200-status
+        # interception/CAPTCHA page >1KB: every .srs starts with the magic
+        # bytes "SRS" (0x53 0x52 0x53). Without this a garbage page gets mv'd
+        # into the PERSISTENT /etc cache, the cache-wins check then pins it,
+        # and sing-box fails rule-set load on every start until manual deletion.
         if curl -fsSL --max-time 10 -o "$tmp" "$url" 2>/dev/null \
-           && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ]; then
+           && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ] \
+           && [ "$(dd if="$tmp" bs=1 count=3 2>/dev/null)" = "SRS" ]; then
             mv "$tmp" "$dest"
             return 0
         fi
@@ -132,12 +138,40 @@ _ensure_srs_present() {
     done
 }
 _make_empty_srs() {
-    local dest="$1" src="${1}.src.json"
+    # Compile to a temp then atomic-mv: a crash mid-compile must not leave a
+    # partial .srs at the final path that the [ -s ] checks would accept.
+    local dest="$1" src="${1}.src.json" tmp="${1}.tmp.$$"
     printf '%s' '{"version":1,"rules":[]}' > "$src"
-    sing-box rule-set compile --output "$dest" "$src" 2>/dev/null
+    /usr/bin/sing-box rule-set compile --output "$tmp" "$src" 2>/dev/null
     local rc=$?
     rm -f "$src"
-    [ "$rc" -eq 0 ] && [ -s "$dest" ]
+    if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
+        mv "$tmp" "$dest"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# Validate $1 as an IPv4 address or IPv4/CIDR (octets 0-255, prefix 0-32).
+# Used to gate emission of IP-CIDR rules — an invalid one makes sing-box
+# refuse the whole config (LAN-wide fail-closed outage), and the custom-direct
+# list is reachable from any LAN client via the unauthenticated add-domain CGI.
+_is_ipv4_cidr() {
+    local ip="$1" pfx=""
+    case "$ip" in
+        */*) pfx="${ip##*/}"; ip="${ip%%/*}"
+             case "$pfx" in ''|*[!0-9]*) return 1 ;; esac
+             { [ "$pfx" -ge 0 ] && [ "$pfx" -le 32 ]; } 2>/dev/null || return 1 ;;
+    esac
+    case "$ip" in *[!0-9.]*|*..*|.*|*.) return 1 ;; esac
+    local IFS=. o n=0
+    for o in $ip; do
+        case "$o" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+        n=$((n + 1))
+    done
+    [ "$n" -eq 4 ]
 }
 
 _fetch_ru_domains() {
@@ -376,15 +410,29 @@ RUEOF
     # an IP directly (cached A record, hardcoded host) need an IP-based rule
     # to bypass VPN.
     if [ -f "$CUSTOM_DIRECT" ]; then
-        while IFS= read -r line; do
+        # tr -d '\r': a CRLF custom file (scp'd from Windows) would otherwise
+        # bake "domain\r" suffixes that silently never match.
+        tr -d '\r' < "$CUSTOM_DIRECT" | while IFS= read -r line; do
             case "$line" in "#"*|"") continue ;; esac
             case "$line" in
                 [0-9]*.[0-9]*.[0-9]*.[0-9]*)
-                    echo "IP-CIDR,$line" >> "$SR_RULES_DIR/ru_domains.list" ;;
+                    if _is_ipv4_cidr "$line"; then
+                        echo "IP-CIDR,$line"
+                    else
+                        # Looked like an IP but isn't valid. A slash means it was
+                        # meant as a CIDR (e.g. 10.0.0.1/99) → drop it rather than
+                        # feed sing-box a config it will reject. No slash means it's
+                        # a domain that happens to start with digit labels
+                        # (1.2.3.4.example.com) → keep as a domain suffix.
+                        case "$line" in
+                            */*) flog "WARN: skipping invalid CIDR direct entry: $line" ;;
+                            *)   echo "DOMAIN-SUFFIX,$line" ;;
+                        esac
+                    fi ;;
                 *)
-                    echo "DOMAIN-SUFFIX,$line" >> "$SR_RULES_DIR/ru_domains.list" ;;
+                    echo "DOMAIN-SUFFIX,$line" ;;
             esac
-        done < "$CUSTOM_DIRECT"
+        done >> "$SR_RULES_DIR/ru_domains.list"
     fi
 }
 
@@ -432,6 +480,17 @@ mistral.ai
 cohere.com
 cohere.ai
 meta.ai
+# YouTube — heavily throttled on RU networks (per-flow policer), so force it
+# through the VPN by default for every install. googlevideo.com is the video
+# CDN, youtubei.googleapis.com the app/API endpoint. (There is also a
+# toggleable `youtube` service preset; this built-in entry is the always-on
+# baseline so a fresh install gets working YouTube out of the box.)
+youtube.com
+youtu.be
+youtube-nocookie.com
+ytimg.com
+googlevideo.com
+youtubei.googleapis.com
 VPNEOF
     } > "$SR_RULES_DIR/vpn_domains.list"
 
@@ -442,19 +501,22 @@ VPNEOF
     local enabled
     enabled=$(jq -r '.enabled_presets // [] | .[]' "$ECLIPVPN_CONFIG" 2>/dev/null)
     for p in $enabled; do
-        if _preset_domains "$p" > /tmp/.preset.$$ 2>/dev/null; then
-            echo "# preset: $p" >> "$SR_RULES_DIR/vpn_domains.list"
-            cat /tmp/.preset.$$ >> "$SR_RULES_DIR/vpn_domains.list"
-        fi
-        rm -f /tmp/.preset.$$
-    done
+        # Capture in a var instead of a predictable /tmp/.preset.$$ temp file
+        # (world-readable path outside our /tmp/eclipvpn namespace).
+        local _pd
+        _pd=$(_preset_domains "$p" 2>/dev/null) && [ -n "$_pd" ] && {
+            echo "# preset: $p"
+            printf '%s\n' "$_pd"
+        }
+    done >> "$SR_RULES_DIR/vpn_domains.list"
 
     # Append user's custom VPN-forced domains (one per line, comments stripped).
+    # tr -d '\r' guards against CRLF custom files (Windows scp).
     if [ -f "$CUSTOM_VPN" ]; then
-        while IFS= read -r line; do
+        tr -d '\r' < "$CUSTOM_VPN" | while IFS= read -r line; do
             case "$line" in "#"*|"") continue ;; esac
-            echo "$line" >> "$SR_RULES_DIR/vpn_domains.list"
-        done < "$CUSTOM_VPN"
+            echo "$line"
+        done >> "$SR_RULES_DIR/vpn_domains.list"
     fi
 }
 
@@ -549,13 +611,25 @@ _fetch_blocklist_domains() {
     # These lists ship as plain domains, one per line (no DOMAIN-SUFFIX prefix
     # like Shadowrocket lists). Wrap each line in the SR format that
     # convert_sr_to_singbox_rule already understands.
-    curl -s --max-time 30 "$url" | \
+    # Fetch-then-swap. A failed/blocked fetch must NOT clobber a good live
+    # domains.list with an empty file: `> file` always creates it, and the
+    # cold-boot gate in cmd_start tests `-f` (not `-s`), so a 0-line file gets
+    # cached as a valid list and blocklist mode then runs rule-less (everything
+    # direct) until the next successful update. Stage into .new, sanity-check
+    # the line count, swap only on success. -fsS also drops HTTP error pages
+    # (>50-line CAPTCHA/block pages would otherwise pass the count gate).
+    local tmp_dl="$SR_RULES_DIR/domains.list.new"
+    curl -fsS --max-time 30 "$url" 2>/dev/null | \
         awk 'NF && !/^#/ && !/^!/ {gsub(/[[:space:]]+/, "", $0); if(length($0)) print "DOMAIN-SUFFIX," $0}' \
-        > "$SR_RULES_DIR/domains.list"
-
-    local cnt=$(wc -l < "$SR_RULES_DIR/domains.list" 2>/dev/null)
-    [ -z "$cnt" ] || [ "$cnt" -lt 50 ] && \
-        flog "WARNING: blocklist source $source returned only $cnt entries — check network"
+        > "$tmp_dl"
+    local cnt=$(wc -l < "$tmp_dl" 2>/dev/null)
+    [ -z "$cnt" ] && cnt=0
+    if [ "$cnt" -ge 50 ]; then
+        mv "$tmp_dl" "$SR_RULES_DIR/domains.list"
+    else
+        rm -f "$tmp_dl"
+        flog "WARNING: blocklist source $source returned only $cnt entries — keeping previous domains.list"
+    fi
 
     # Telegram + Discord lists supplement domain-based routing for these
     # specific apps (their domain routing alone is unreliable due to
@@ -612,11 +686,100 @@ convert_ip_list() {
 }
 
 # ============================================================
+# Native sing-box proxy outbounds (multi-protocol)
+# ============================================================
+# xray can't speak QUIC, so hysteria2 (and future tuic/wireguard) are dialed
+# by sing-box itself. These builders produce the "default" outbound and the
+# throwaway dialer configs the probe/failover paths use — mirroring the
+# throwaway-xray flow so the rest of the machinery stays engine-agnostic.
+
+# Build the NATIVE sing-box proxy outbound (tag "default") for server $2 of $1
+# (servers.json). Echoes the outbound JSON; returns 1 on bad index / proto with
+# no builder. routing_mark 32768 stamps the exit's QUIC packets with fwmark
+# 0x8000 so the eclipvpn nft chain's anti-loop rule lets them out the WAN (the
+# same exemption xray gets via sockopt mark; route.default_mark backstops it).
+_singbox_proxy_outbound() {
+    local servers_file="$1" idx="$2" server proto
+    server=$(jq -c --argjson i "$idx" '.[$i]' "$servers_file" 2>/dev/null)
+    [ -z "$server" ] || [ "$server" = "null" ] && { flog "ERROR: sing-box outbound: server index $idx not found"; return 1; }
+    proto=$(printf '%s' "$server" | jq -r '.protocol // "vless"')
+    case "$proto" in
+        hysteria2)
+            # server/server_port/password/tls required; obfs + insecure optional.
+            printf '%s' "$server" | jq '
+                {
+                    type: "hysteria2",
+                    tag: "default",
+                    server: .host,
+                    server_port: .port,
+                    password: .password,
+                    tls: ({ enabled: true,
+                            server_name: (if (.sni // "") != "" then .sni else .host end) }
+                          + (if ((.insecure // 0) == 1) or ((.insecure // false) == true)
+                             then { insecure: true } else {} end)),
+                    routing_mark: 32768
+                }
+                + (if (.obfs // "") != "" and (.obfs_pw // "") != ""
+                   then { obfs: { type: .obfs, password: .obfs_pw } } else {} end)
+            '
+            ;;
+        *)
+            flog "ERROR: sing-box engine has no outbound builder for protocol '$proto'"
+            return 1
+            ;;
+    esac
+}
+
+# Throwaway sing-box "dialer" config for probing candidate server $1 on a temp
+# SOCKS port $2, written to $3. Mirrors cmd_probe_server's throwaway-xray:
+# socks inbound → native proxy outbound, no routing rules (a clean measurement).
+# A tiny dns+direct pair resolves the server host when it's an FQDN (panel hy2
+# hosts are domains). Returns non-zero if the config couldn't be written.
+_gen_hysteria2_probe() {
+    local idx="$1" port="$2" out="$3" hy2
+    hy2=$(_singbox_proxy_outbound "$ECLIPVPN_TMP/servers.json" "$idx") || return 1
+    hy2=$(printf '%s' "$hy2" | jq '.tag = "proxy"')
+    jq -n --argjson port "$port" --argjson hy2 "$hy2" '{
+        log: { level: "error" },
+        dns: { servers: [ { tag: "d", type: "udp", server: "77.88.8.8", detour: "direct-out" } ] },
+        inbounds: [ { type: "socks", tag: "socks-in", listen: "127.0.0.1", listen_port: $port } ],
+        outbounds: [ $hy2, { type: "direct", tag: "direct-out", routing_mark: 32768 } ],
+        route: { default_domain_resolver: "d", default_mark: 32768, final: "proxy" }
+    }' > "$out" 2>/dev/null
+    [ -s "$out" ]
+}
+
+# Engine-agnostic probe-config generator. Picks the right engine for server $1,
+# writes a throwaway socks-on-$2 config to $3, and ECHOES the engine name
+# ("xray"|"singbox") so the caller spawns the matching binary (xray uses
+# `run -config FILE`; sing-box uses `run -c FILE`). Returns 1 on failure.
+_gen_probe_config() {
+    local idx="$1" port="$2" out="$3" proto eng
+    proto=$(_server_protocol "$idx")
+    eng=$(_engine_for_protocol "$proto")
+    if [ "$eng" = "singbox" ]; then
+        _gen_hysteria2_probe "$idx" "$port" "$out" || return 1
+    else
+        local base="${out}.base"
+        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$idx" "$base" || { rm -f "$base"; return 1; }
+        jq --argjson p "$port" \
+            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+            "$base" > "$out" 2>/dev/null || { rm -f "$base"; return 1; }
+        rm -f "$base"
+    fi
+    echo "$eng"
+}
+
+# ============================================================
 # Generate sing-box config
 # ============================================================
 
+# Args: OUTPUT MODE SERVERS_FILE SEL_IDX. SERVERS_FILE+SEL_IDX pick the proxy
+# engine for the selected server (see the engine helpers in usr/bin/eclipvpn);
+# omitting them defaults to the xray engine (socks→xray:1080), which is the
+# pre-multi-protocol behaviour.
 generate_singbox_config() {
-    local output="$1" xray_socks_port="$2" mode="$3"
+    local output="$1" mode="$2" servers_file="$3" sel_idx="$4"
 
     # Sing-box reads geosite-ru/geoip-ru as local files (see rule_set block
     # below). They MUST exist or sing-box refuses to start. Cached files from a
@@ -627,12 +790,42 @@ generate_singbox_config() {
     _fetch_rule_sets || flog "WARN: rule-set fetch failed; relying on cache or empty fallback"
     _ensure_srs_present
 
+    # Pick the proxy engine for the selected server. xray engine: "default"
+    # outbound is socks→xray:1080 (xray owns the SOCKS frontend), no socks
+    # inbound here. sing-box engine (hysteria2): sing-box dials the exit
+    # natively as "default" AND exposes its own SOCKS:1080, so xray is not run
+    # and every probe/health path that curls 127.0.0.1:1080 keeps working.
+    local proto engine proxy_outbound socks_inbound="null"
+    proto="vless"
+    if [ -n "$servers_file" ] && [ -f "$servers_file" ] && [ -n "$sel_idx" ]; then
+        proto=$(jq -r --argjson i "$sel_idx" '(.[$i].protocol // "vless")' "$servers_file" 2>/dev/null)
+        [ -z "$proto" ] && proto="vless"
+    fi
+    engine=$(_engine_for_protocol "$proto")
+    if [ "$engine" = "singbox" ]; then
+        proxy_outbound=$(_singbox_proxy_outbound "$servers_file" "$sel_idx") \
+            || { flog "ERROR: could not build native sing-box outbound for $proto"; return 1; }
+        socks_inbound='{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}'
+    else
+        proxy_outbound='{"type":"socks","tag":"default","server":"127.0.0.1","server_port":1080,"version":"5"}'
+    fi
+
     local rules dns_rules
 
     if [ "$mode" = "all_vpn" ]; then
         _build_allvpn_rules
     else
         _build_blocklist_rules
+    fi
+
+    # When sing-box owns SOCKS:1080 (hysteria2), pin that inbound to "default"
+    # so probes measure the tunnel REGARDLESS of mode — in blocklist mode a
+    # generic probe (api.ipify.org) would otherwise route direct and falsely
+    # "succeed" without exercising the tunnel. Scoped to the socks-in inbound,
+    # so LAN tproxy traffic still follows the mode rules. Inserted right after
+    # the sniff rule (index 0), before the mode/RU rules.
+    if [ "$engine" = "singbox" ]; then
+        rules=$(printf '%s' "$rules" | jq -c '.[0:1] + [{"inbound":["socks-in"],"outbound":"default"}] + .[1:]')
     fi
 
     local clash_secret
@@ -648,7 +841,8 @@ generate_singbox_config() {
     jq -n \
         --argjson rules "$rules" \
         --argjson dns_rules "$dns_rules" \
-        --argjson xray_port "$xray_socks_port" \
+        --argjson proxy_outbound "$proxy_outbound" \
+        --argjson socks_inbound "$socks_inbound" \
         --arg clash_secret "$clash_secret" \
         --arg final_outbound "$([ "$mode" = "all_vpn" ] && echo "default" || echo "direct")" \
         --arg final_dns "$([ "$mode" = "all_vpn" ] && echo "dns-proxy" || echo "dns-direct")" \
@@ -673,13 +867,13 @@ generate_singbox_config() {
             final: $final_dns,
             strategy: "ipv4_only"
         },
-        inbounds: [
+        inbounds: ([
             {type: "tproxy", tag: "tproxy-in", listen: "::", listen_port: 2154},
             {type: "direct", tag: "dns-in", listen: "127.0.0.1", listen_port: 5354}
-        ],
+        ] + (if $socks_inbound == null then [] else [$socks_inbound] end)),
         outbounds: [
             {type: "direct", tag: "direct", routing_mark: 32768},
-            {type: "socks", tag: "default", server: "127.0.0.1", server_port: $xray_port, version: "5"}
+            $proxy_outbound
         ],
         route: {
             default_domain_resolver: "dns-direct",
@@ -694,7 +888,10 @@ generate_singbox_config() {
             final: $final_outbound,
             auto_detect_interface: true
         }
-    }' > "$output"
+    }' > "$output" || { flog "ERROR: failed to generate sing-box config (jq)"; return 1; }
+    # A truncated/empty output here would otherwise be reported as success and
+    # sing-box would fail to start with a misleading message.
+    [ -s "$output" ] || { flog "ERROR: generated sing-box config is empty"; return 1; }
     # sing-box config holds the Clash API secret; tighten file mode.
     chmod 600 "$output" 2>/dev/null
 }
@@ -712,7 +909,7 @@ _build_allvpn_rules() {
     # JSON instead of breaking the rule string we hand to sing-box.
     local vpn_rule=""
     if [ -f "$SR_RULES_DIR/vpn_domains.list" ]; then
-        vpn_rule=$(grep -vE '^(#|$)' "$SR_RULES_DIR/vpn_domains.list" \
+        vpn_rule=$(tr -d '\r' < "$SR_RULES_DIR/vpn_domains.list" | grep -vE '^(#|$)' \
             | jq -R -s '[split("\n")[] | select(length > 0)]
                         | if length == 0 then null else {domain_suffix: .} end')
         [ "$vpn_rule" = "null" ] && vpn_rule=""
@@ -816,7 +1013,11 @@ _build_blocklist_rules() {
             + (if .domain_suffix then {domain_suffix: .domain_suffix} else {} end)
             + (if .domain_keyword then {domain_keyword: .domain_keyword} else {} end)
             + {action: "route", server: "dns-proxy"}')
-        [ "$dns_rule" = '{"action":"route","server":"dns-proxy"}' ] && continue
+        # Skip a rule that carries no domain condition — it would route ALL DNS
+        # to dns-proxy. The old string compare against a compact literal never
+        # matched jq's pretty-printed output, so the guard was dead; check for
+        # an actual domain key instead.
+        echo "$dns_rule" | jq -e 'has("domain") or has("domain_suffix") or has("domain_keyword")' >/dev/null 2>&1 || continue
         [ "$first" = "1" ] || dns_rules="$dns_rules,"
         dns_rules="$dns_rules$dns_rule"
         first=""
@@ -853,7 +1054,7 @@ start_singbox() {
     while [ "$tries" -lt 10 ]; do
         sleep 1; tries=$((tries + 1))
         kill -0 "$(cat /tmp/eclipvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/eclipvpn/singbox.pid; return 1; }
-        netstat -tlnp 2>/dev/null | grep -q ":2154" && return 0
+        netstat -tlnp 2>/dev/null | grep -q ":2154 " && return 0
     done
     # Process alive but tproxy port never bound. Caller (cmd_start) would
     # otherwise apply nftables rules redirecting LAN traffic to an unbound
