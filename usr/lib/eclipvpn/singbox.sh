@@ -686,11 +686,100 @@ convert_ip_list() {
 }
 
 # ============================================================
+# Native sing-box proxy outbounds (multi-protocol)
+# ============================================================
+# xray can't speak QUIC, so hysteria2 (and future tuic/wireguard) are dialed
+# by sing-box itself. These builders produce the "default" outbound and the
+# throwaway dialer configs the probe/failover paths use — mirroring the
+# throwaway-xray flow so the rest of the machinery stays engine-agnostic.
+
+# Build the NATIVE sing-box proxy outbound (tag "default") for server $2 of $1
+# (servers.json). Echoes the outbound JSON; returns 1 on bad index / proto with
+# no builder. routing_mark 32768 stamps the exit's QUIC packets with fwmark
+# 0x8000 so the eclipvpn nft chain's anti-loop rule lets them out the WAN (the
+# same exemption xray gets via sockopt mark; route.default_mark backstops it).
+_singbox_proxy_outbound() {
+    local servers_file="$1" idx="$2" server proto
+    server=$(jq -c --argjson i "$idx" '.[$i]' "$servers_file" 2>/dev/null)
+    [ -z "$server" ] || [ "$server" = "null" ] && { flog "ERROR: sing-box outbound: server index $idx not found"; return 1; }
+    proto=$(printf '%s' "$server" | jq -r '.protocol // "vless"')
+    case "$proto" in
+        hysteria2)
+            # server/server_port/password/tls required; obfs + insecure optional.
+            printf '%s' "$server" | jq '
+                {
+                    type: "hysteria2",
+                    tag: "default",
+                    server: .host,
+                    server_port: .port,
+                    password: .password,
+                    tls: ({ enabled: true,
+                            server_name: (if (.sni // "") != "" then .sni else .host end) }
+                          + (if ((.insecure // 0) == 1) or ((.insecure // false) == true)
+                             then { insecure: true } else {} end)),
+                    routing_mark: 32768
+                }
+                + (if (.obfs // "") != "" and (.obfs_pw // "") != ""
+                   then { obfs: { type: .obfs, password: .obfs_pw } } else {} end)
+            '
+            ;;
+        *)
+            flog "ERROR: sing-box engine has no outbound builder for protocol '$proto'"
+            return 1
+            ;;
+    esac
+}
+
+# Throwaway sing-box "dialer" config for probing candidate server $1 on a temp
+# SOCKS port $2, written to $3. Mirrors cmd_probe_server's throwaway-xray:
+# socks inbound → native proxy outbound, no routing rules (a clean measurement).
+# A tiny dns+direct pair resolves the server host when it's an FQDN (panel hy2
+# hosts are domains). Returns non-zero if the config couldn't be written.
+_gen_hysteria2_probe() {
+    local idx="$1" port="$2" out="$3" hy2
+    hy2=$(_singbox_proxy_outbound "$ECLIPVPN_TMP/servers.json" "$idx") || return 1
+    hy2=$(printf '%s' "$hy2" | jq '.tag = "proxy"')
+    jq -n --argjson port "$port" --argjson hy2 "$hy2" '{
+        log: { level: "error" },
+        dns: { servers: [ { tag: "d", type: "udp", server: "77.88.8.8", detour: "direct-out" } ] },
+        inbounds: [ { type: "socks", tag: "socks-in", listen: "127.0.0.1", listen_port: $port } ],
+        outbounds: [ $hy2, { type: "direct", tag: "direct-out", routing_mark: 32768 } ],
+        route: { default_domain_resolver: "d", default_mark: 32768, final: "proxy" }
+    }' > "$out" 2>/dev/null
+    [ -s "$out" ]
+}
+
+# Engine-agnostic probe-config generator. Picks the right engine for server $1,
+# writes a throwaway socks-on-$2 config to $3, and ECHOES the engine name
+# ("xray"|"singbox") so the caller spawns the matching binary (xray uses
+# `run -config FILE`; sing-box uses `run -c FILE`). Returns 1 on failure.
+_gen_probe_config() {
+    local idx="$1" port="$2" out="$3" proto eng
+    proto=$(_server_protocol "$idx")
+    eng=$(_engine_for_protocol "$proto")
+    if [ "$eng" = "singbox" ]; then
+        _gen_hysteria2_probe "$idx" "$port" "$out" || return 1
+    else
+        local base="${out}.base"
+        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$idx" "$base" || { rm -f "$base"; return 1; }
+        jq --argjson p "$port" \
+            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
+            "$base" > "$out" 2>/dev/null || { rm -f "$base"; return 1; }
+        rm -f "$base"
+    fi
+    echo "$eng"
+}
+
+# ============================================================
 # Generate sing-box config
 # ============================================================
 
+# Args: OUTPUT MODE SERVERS_FILE SEL_IDX. SERVERS_FILE+SEL_IDX pick the proxy
+# engine for the selected server (see the engine helpers in usr/bin/eclipvpn);
+# omitting them defaults to the xray engine (socks→xray:1080), which is the
+# pre-multi-protocol behaviour.
 generate_singbox_config() {
-    local output="$1" xray_socks_port="$2" mode="$3"
+    local output="$1" mode="$2" servers_file="$3" sel_idx="$4"
 
     # Sing-box reads geosite-ru/geoip-ru as local files (see rule_set block
     # below). They MUST exist or sing-box refuses to start. Cached files from a
@@ -701,12 +790,42 @@ generate_singbox_config() {
     _fetch_rule_sets || flog "WARN: rule-set fetch failed; relying on cache or empty fallback"
     _ensure_srs_present
 
+    # Pick the proxy engine for the selected server. xray engine: "default"
+    # outbound is socks→xray:1080 (xray owns the SOCKS frontend), no socks
+    # inbound here. sing-box engine (hysteria2): sing-box dials the exit
+    # natively as "default" AND exposes its own SOCKS:1080, so xray is not run
+    # and every probe/health path that curls 127.0.0.1:1080 keeps working.
+    local proto engine proxy_outbound socks_inbound="null"
+    proto="vless"
+    if [ -n "$servers_file" ] && [ -f "$servers_file" ] && [ -n "$sel_idx" ]; then
+        proto=$(jq -r --argjson i "$sel_idx" '(.[$i].protocol // "vless")' "$servers_file" 2>/dev/null)
+        [ -z "$proto" ] && proto="vless"
+    fi
+    engine=$(_engine_for_protocol "$proto")
+    if [ "$engine" = "singbox" ]; then
+        proxy_outbound=$(_singbox_proxy_outbound "$servers_file" "$sel_idx") \
+            || { flog "ERROR: could not build native sing-box outbound for $proto"; return 1; }
+        socks_inbound='{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}'
+    else
+        proxy_outbound='{"type":"socks","tag":"default","server":"127.0.0.1","server_port":1080,"version":"5"}'
+    fi
+
     local rules dns_rules
 
     if [ "$mode" = "all_vpn" ]; then
         _build_allvpn_rules
     else
         _build_blocklist_rules
+    fi
+
+    # When sing-box owns SOCKS:1080 (hysteria2), pin that inbound to "default"
+    # so probes measure the tunnel REGARDLESS of mode — in blocklist mode a
+    # generic probe (api.ipify.org) would otherwise route direct and falsely
+    # "succeed" without exercising the tunnel. Scoped to the socks-in inbound,
+    # so LAN tproxy traffic still follows the mode rules. Inserted right after
+    # the sniff rule (index 0), before the mode/RU rules.
+    if [ "$engine" = "singbox" ]; then
+        rules=$(printf '%s' "$rules" | jq -c '.[0:1] + [{"inbound":["socks-in"],"outbound":"default"}] + .[1:]')
     fi
 
     local clash_secret
@@ -722,7 +841,8 @@ generate_singbox_config() {
     jq -n \
         --argjson rules "$rules" \
         --argjson dns_rules "$dns_rules" \
-        --argjson xray_port "$xray_socks_port" \
+        --argjson proxy_outbound "$proxy_outbound" \
+        --argjson socks_inbound "$socks_inbound" \
         --arg clash_secret "$clash_secret" \
         --arg final_outbound "$([ "$mode" = "all_vpn" ] && echo "default" || echo "direct")" \
         --arg final_dns "$([ "$mode" = "all_vpn" ] && echo "dns-proxy" || echo "dns-direct")" \
@@ -747,13 +867,13 @@ generate_singbox_config() {
             final: $final_dns,
             strategy: "ipv4_only"
         },
-        inbounds: [
+        inbounds: ([
             {type: "tproxy", tag: "tproxy-in", listen: "::", listen_port: 2154},
             {type: "direct", tag: "dns-in", listen: "127.0.0.1", listen_port: 5354}
-        ],
+        ] + (if $socks_inbound == null then [] else [$socks_inbound] end)),
         outbounds: [
             {type: "direct", tag: "direct", routing_mark: 32768},
-            {type: "socks", tag: "default", server: "127.0.0.1", server_port: $xray_port, version: "5"}
+            $proxy_outbound
         ],
         route: {
             default_domain_resolver: "dns-direct",

@@ -17,6 +17,10 @@ cmd_set_config() {
     # in place; sing-box restarts with the wrong list (e.g. blocklist mode
     # without domains.list → all traffic goes direct).
     [ "$key" = "mode" ] && { cmd_set_mode "$value"; return $?; }
+    # subscription_url is legacy (single sub). Route it through the multi-sub
+    # manager so it becomes/updates the primary subscriptions[] entry (and
+    # triggers a refresh) instead of writing a dangling key the merge ignores.
+    [ "$key" = "subscription_url" ] && { cmd_sub add "$value"; return $?; }
     # blocklist_source: validate value at the boundary (CGI lets any
     # `[a-zA-Z0-9_-]` through, so a malformed value would silently fall
     # through to the default branch in _fetch_blocklist_domains).
@@ -54,6 +58,7 @@ cmd_set_config() {
     save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
     jq -n --arg k "$key" '{status:"saved",key:$k}'
 }
+
 cmd_schedule() {
     local action="$1" on_time="$2" off_time="$3"
     case "$action" in
@@ -224,7 +229,7 @@ cmd_restore() {
     # presses Start (cmd_start fetches the subscription then) — `applied`
     # tells the UI which case happened so it can prompt honestly.
     local applied=false
-    if is_xray_running && cmd_restart >/dev/null 2>&1; then
+    if _vpn_running && cmd_restart >/dev/null 2>&1; then
         applied=true
     fi
     jq -n --argjson a "$applied" '{status:"restored", applied:$a}'

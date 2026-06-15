@@ -22,7 +22,7 @@ cmd_set_mode() {
     # refresh, both modes start with empty lists (RU heredoc / blocklist /
     # force-VPN all missing) and routing collapses to the remote rule_sets.
     refresh_rules "$new_mode" || flog "WARN: rule refresh failed for mode=$new_mode — routing degraded until next update"
-    if is_xray_running; then
+    if _vpn_running; then
         cmd_restart
     else
         jq -n --arg m "$new_mode" '{status:"mode set",mode:$m}'
@@ -49,7 +49,7 @@ cmd_add_domain() {
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
     local applied=false
-    if is_xray_running && cmd_restart >/dev/null 2>&1; then
+    if _vpn_running && cmd_restart >/dev/null 2>&1; then
         applied=true
     fi
     jq -n --arg d "$domain" --arg l "$list" --argjson a "$applied" \
@@ -69,7 +69,7 @@ cmd_remove_domain() {
     [ "$list" = "direct" ] && _fetch_ru_domains 2>/dev/null
     [ "$list" = "vpn" ] && _fetch_vpn_domains 2>/dev/null
     local applied=false
-    if is_xray_running && cmd_restart >/dev/null 2>&1; then
+    if _vpn_running && cmd_restart >/dev/null 2>&1; then
         applied=true
     fi
     jq -n --arg d "$domain" --arg l "$list" --argjson a "$applied" \
@@ -178,7 +178,7 @@ cmd_preset() {
             # stayed inert until some unrelated restart.
             _fetch_vpn_domains 2>/dev/null
             local applied=false
-            if is_xray_running && cmd_restart >/dev/null 2>&1; then
+            if _vpn_running && cmd_restart >/dev/null 2>&1; then
                 applied=true
             fi
             jq -n --arg s "$op" --arg p "$name" --argjson a "$applied" \

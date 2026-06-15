@@ -80,7 +80,8 @@ _watchdog_throughput_kbps() {
     [ "$best" -gt 0 ] && echo "$best"
 }
 
-# Spawn a throwaway xray for server index $1 on SOCKS port $2 and measure it.
+# Spawn a throwaway proxy engine (xray, or a sing-box dialer for hysteria2) for
+# server index $1 on SOCKS port $2 and measure it.
 # $3 metric: latency (default) → ms; throughput → KB/s (0 = answered the
 # reachability probe but moved no data). Echoes "ok <value>" on success or
 # "fail <http-code>" if the server never answered — callers run this via
@@ -97,20 +98,19 @@ _watchdog_throughput_kbps() {
 # the common case faster, not slower.
 _watchdog_probe_candidate() {
     local idx="$1" pp="$2" metric="${3:-latency}"
-    local servers_json="$ECLIPVPN_TMP/servers.json"
-    # xray requires .json suffix; mktemp+rename to get it.
-    local _wt _wp wd_test wd_probe
-    _wt=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX")
-    _wp=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX")
-    wd_test="${_wt}.json"; wd_probe="${_wp}.json"
-    mv "$_wt" "$wd_test"; mv "$_wp" "$wd_probe"
-    generate_xray_config "$servers_json" "$idx" "$wd_test"
-    jq --argjson p "$pp" \
-        '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
-        "$wd_test" > "$wd_probe"
+    # Single throwaway config; engine-aware (hysteria2 → sing-box dialer, else
+    # xray). .json suffix needed for xray's format sniff; mktemp+rename.
+    local _wp wd_probe eng
+    _wp=$(mktemp "$ECLIPVPN_TMP/wd_probe.XXXXXX")
+    wd_probe="${_wp}.json"; mv "$_wp" "$wd_probe"
+    eng=$(_gen_probe_config "$idx" "$pp" "$wd_probe") || { rm -f "$wd_probe" "${wd_probe}.base"; echo "fail none"; return; }
     local out="" code="" t="" probe_pid="" attempt
     for attempt in 1 2; do
-        /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
+        if [ "$eng" = "singbox" ]; then
+            /usr/bin/sing-box run -c "$wd_probe" -D "$ECLIPVPN_TMP" >/dev/null 2>&1 &
+        else
+            /usr/bin/xray run -config "$wd_probe" >/dev/null 2>&1 &
+        fi
         probe_pid=$!
         local ready=0 wait_i=0
         while [ "$wait_i" -lt 5 ]; do
@@ -143,7 +143,7 @@ _watchdog_probe_candidate() {
         fi
     fi
     [ -n "$probe_pid" ] && { kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null; }
-    rm -f "$wd_test" "$wd_probe"
+    rm -f "$wd_probe" "${wd_probe}.base"
     if [ -n "$value" ]; then echo "ok $value"; else echo "fail ${code:-none}"; fi
 }
 
@@ -278,7 +278,7 @@ cmd_watchdog() {
         # restart loops if cmd_start itself keeps failing (e.g. provider
         # blocked, server keys rotated): if we already tried recently and
         # still no xray, wait — don't pile up zombie children.
-        if ! is_xray_running || ! is_singbox_running; then
+        if ! _vpn_running; then
             # Defer revival if a user-initiated lifecycle command is in
             # flight. cmd_restart's brief stop_xray window otherwise tricks
             # us into revival, which then races the rest of cmd_restart and
@@ -321,7 +321,7 @@ cmd_watchdog() {
         fi
 
         # Skip if not running (intent=false — user wanted VPN off)
-        is_xray_running || continue
+        _vpn_running || continue
 
         # Re-assert the WAN MTU cap (idempotent, ~one sysfs read when already
         # applied). A soft cmd_restart preserves it, but a DHCP renew / netifd

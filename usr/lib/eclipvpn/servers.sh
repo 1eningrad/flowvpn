@@ -3,6 +3,27 @@
 # Sourced into /usr/bin/eclipvpn; shares its globals and helpers, all
 # resolved at call time, so source order among the libs does not matter.
 
+# Cheap reachability RTT in ms (stdout), or -1 when unreachable. Single attempt
+# — the auto paths probe the real tunnel on the winner anyway. xray protocols
+# are TCP, so a TLS connect to :443 measures handshake RTT. hysteria2 is QUIC
+# (UDP) with NO TCP listener on :443, so a TCP connect always fails; fall back
+# to ICMP for those. An ICMP-blocked hysteria2 host returns -1 and is skipped by
+# the cheap pre-filter (auto-select/auto-eval) — it can still be chosen manually
+# (which probes the real tunnel), and the watchdog failover scan probes every
+# candidate directly (not via this filter), so failover still reaches it.
+_reach_ms() {
+    local host="$1" proto="$2" t icmp
+    if [ "$proto" != "hysteria2" ]; then
+        t=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+        if [ -n "$t" ] && [ "$t" != "0.000000" ]; then
+            echo "$t" | awk '{printf "%d", $1 * 1000}'
+            return
+        fi
+    fi
+    icmp=$(ping -c 1 -W 2 "$host" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," "); print int(a[1]+0.5); exit}')
+    if [ -n "$icmp" ] && [ "$icmp" -gt 0 ] 2>/dev/null; then echo "$icmp"; else echo -1; fi
+}
+
 # ============================================================
 # Server management
 # ============================================================
@@ -16,7 +37,7 @@ cmd_set_server() {
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
     local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
     save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
-    if is_xray_running; then
+    if _vpn_running; then
         cmd_restart
     else
         local name=$(jq -r ".[$idx].name" "$ECLIPVPN_TMP/servers.json")
@@ -35,7 +56,15 @@ cmd_probe_server() {
     local total
     total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
-    [ -x /usr/bin/xray ] || { echo '{"error":"xray binary missing"}'; return 1; }
+    # Engine-aware: hysteria2 probes spawn a throwaway sing-box dialer, the rest
+    # a throwaway xray — require the matching binary before spending time.
+    local p_eng
+    p_eng=$(_engine_for_protocol "$(_server_protocol "$idx")")
+    if [ "$p_eng" = "singbox" ]; then
+        [ -x /usr/bin/sing-box ] || { echo '{"error":"sing-box binary missing"}'; return 1; }
+    else
+        [ -x /usr/bin/xray ] || { echo '{"error":"xray binary missing"}'; return 1; }
+    fi
     mkdir -p "$ECLIPVPN_TMP"
 
     # Run the actual probe in a subshell. In ash `trap EXIT` is process-wide,
@@ -43,25 +72,21 @@ cmd_probe_server() {
     # watchdog process would clobber the watchdog's own EXIT trap (which
     # cleans up watchdog.lock). Subshell isolates the trap to the probe.
     (
-        # Unique filenames so a probe and a concurrent watchdog failover
-        # don't overwrite each other's xray configs. Need a .json suffix
-        # because xray sniffs format from filename (refuses files without).
-        # busybox mktemp doesn't accept a suffix in the template, so:
-        # mktemp → rename.
-        local _t _p test_cfg probe_cfg
-        _t=$(mktemp "$ECLIPVPN_TMP/xray_test.XXXXXX") || exit 1
-        _p=$(mktemp "$ECLIPVPN_TMP/xray_probe.XXXXXX") || { rm -f "$_t"; exit 1; }
-        test_cfg="${_t}.json"; probe_cfg="${_p}.json"
-        mv "$_t" "$test_cfg"; mv "$_p" "$probe_cfg"
+        # Unique filename so a probe and a concurrent watchdog failover don't
+        # overwrite each other's configs. Need a .json suffix because xray
+        # sniffs format from filename; busybox mktemp can't add a suffix, so
+        # mktemp → rename. _gen_probe_config builds the right engine's config.
+        local _p probe_cfg
+        _p=$(mktemp "$ECLIPVPN_TMP/probe.XXXXXX") || exit 1
+        probe_cfg="${_p}.json"; mv "$_p" "$probe_cfg"
         local probe_pid=""
-        trap 'kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null; rm -f "$test_cfg" "$probe_cfg"' EXIT INT TERM
+        trap 'kill $probe_pid 2>/dev/null; wait $probe_pid 2>/dev/null; rm -f "$probe_cfg" "${probe_cfg}.base"' EXIT INT TERM
 
         local probe_port=$((1082 + $$ % 100))
-        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$idx" "$test_cfg"
-        [ -s "$test_cfg" ] || { echo '{"error":"failed to generate xray config"}'; exit 1; }
-        jq --argjson p "$probe_port" \
-            '.inbounds=[{tag:"t",port:$p,listen:"127.0.0.1",protocol:"socks",settings:{auth:"noauth"}}]' \
-            "$test_cfg" > "$probe_cfg"
+        # Build the throwaway probe config; eng tells us which binary to spawn.
+        local eng
+        eng=$(_gen_probe_config "$idx" "$probe_port" "$probe_cfg") || { echo '{"error":"failed to generate probe config"}'; exit 1; }
+        [ -s "$probe_cfg" ] || { echo '{"error":"failed to generate probe config"}'; exit 1; }
 
         # Up to 4 spawn-and-test attempts. A freshly-spawned xray's very
         # first request through VLESS+XHTTP+Reality occasionally hangs to
@@ -82,14 +107,18 @@ cmd_probe_server() {
         local t0 t1 elapsed test_ip="" attempt
         t0=$(date +%s%3N 2>/dev/null)
         for attempt in 1 2 3 4; do
-            # Spawn a fresh xray for each attempt — reusing a hung instance
+            # Spawn a fresh engine for each attempt — reusing a hung instance
             # doesn't help (its outbound state is broken).
             [ -n "$probe_pid" ] && {
                 kill "$probe_pid" 2>/dev/null
                 wait "$probe_pid" 2>/dev/null
                 probe_pid=""
             }
-            /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
+            if [ "$eng" = "singbox" ]; then
+                /usr/bin/sing-box run -c "$probe_cfg" -D "$ECLIPVPN_TMP" >/dev/null 2>&1 &
+            else
+                /usr/bin/xray run -config "$probe_cfg" >/dev/null 2>&1 &
+            fi
             probe_pid=$!
 
             # Wait for the SOCKS inbound to actually listen before curl-ing.
@@ -156,7 +185,7 @@ cmd_update() {
             '{time:$t, count:$c, prev_count:$p}' > "$ECLIPVPN_TMP/last_update.json"
         echo "{\"status\":\"updated\",\"servers\":$count,\"prev\":$prev}"
         _sync_zapret_exclude
-        is_xray_running && cmd_restart >/dev/null
+        _vpn_running && cmd_restart >/dev/null
     else
         echo '{"error":"update failed"}'
         return 1
@@ -179,16 +208,21 @@ cmd_ping() {
     local i=0
     while [ "$i" -lt "$total" ]; do
         local host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
+        local proto=$(jq -r ".[$i].protocol // \"vless\"" "$ECLIPVPN_TMP/servers.json")
         local out="$tmpdir/$i"
         (
             best=-1
-            for attempt in 1 2 3; do
-                t=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
-                if [ -n "$t" ] && [ "$t" != "0.000000" ]; then
-                    ms=$(echo "$t" | awk '{printf "%d", $1 * 1000}')
-                    if [ "$best" -lt 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
-                fi
-            done
+            # hysteria2 is QUIC (UDP) — a TCP connect to :443 always fails, so
+            # skip straight to ICMP for it (saves 3×3s of dead TCP probing).
+            if [ "$proto" != "hysteria2" ]; then
+                for attempt in 1 2 3; do
+                    t=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
+                    if [ -n "$t" ] && [ "$t" != "0.000000" ]; then
+                        ms=$(echo "$t" | awk '{printf "%d", $1 * 1000}')
+                        if [ "$best" -lt 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
+                    fi
+                done
+            fi
             if [ "$best" -lt 0 ]; then
                 # ICMP fallback — single packet, 2s deadline.
                 icmp=$(ping -c 1 -W 2 "$host" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," "); print int(a[1]+0.5); exit}')
@@ -248,8 +282,7 @@ cmd_auto_select() {
         if _is_metered_server "$name"; then
             attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "skipped_metered")
         else
-            ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
-            [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+            ms=$(_reach_ms "$host" "$(_server_protocol "$i")")
             if [ "$ms" -gt 0 ] 2>/dev/null; then
                 candidates="$candidates$ms $i\n"
             else
@@ -272,7 +305,7 @@ cmd_auto_select() {
     while IFS=' ' read -r ms idx; do
         [ -z "$idx" ] && continue
         name=$(jq -r --argjson i "$idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
-        if [ "$idx" = "$cur" ] && is_xray_running && [ -n "$(test_xray)" ]; then
+        if [ "$idx" = "$cur" ] && _vpn_running && [ -n "$(test_xray)" ]; then
             attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "already_active")
             jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" \
                 '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
@@ -315,7 +348,7 @@ EOF
         local tmp
         tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
         save_config "$tmp"
-        if is_xray_running; then
+        if _vpn_running; then
             if ! cmd_restart >/dev/null 2>&1; then
                 tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
                 save_config "$tmp"
@@ -355,7 +388,7 @@ EOF
 # current tunnel is actually broken — then any working candidate is fine).
 cmd_auto_eval() {
     [ -f "$ECLIPVPN_TMP/servers.json" ] || return 1
-    is_xray_running || return 0   # not running → not our job, watchdog handles
+    _vpn_running || return 0   # not running → not our job, watchdog handles
 
     mkdir -p "$ECLIPVPN_TMP"
     local sf="$ECLIPVPN_TMP/auto_state.json"
@@ -406,8 +439,7 @@ cmd_auto_eval() {
             name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
             host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
             if ! _is_metered_server "$name"; then
-                ms=$(curl -s -o /dev/null --max-time 3 --connect-timeout 3 -w '%{time_connect}' "https://$host:443" 2>/dev/null)
-                [ -n "$ms" ] && [ "$ms" != "0.000000" ] && ms=$(echo "$ms" | awk '{printf "%d", $1 * 1000}') || ms=-1
+                ms=$(_reach_ms "$host" "$(_server_protocol "$i")")
                 if [ "$ms" -gt 0 ] 2>/dev/null; then
                     candidates="$candidates$ms $i\n"
                     [ "$i" = "$current_idx" ] && current_rtt="$ms"
