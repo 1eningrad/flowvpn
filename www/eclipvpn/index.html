@@ -453,6 +453,12 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   background:rgba(251,191,36,0.12);color:var(--yellow);
   border:1px solid rgba(251,191,36,0.25)
 }
+.server-proto{
+  font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;
+  padding:2px 6px;border-radius:6px;flex-shrink:0;
+  background:rgba(255,255,255,0.06);color:var(--text-dim);
+  border:1px solid rgba(255,255,255,0.10)
+}
 .server-fail{
   font-size:10px;font-weight:700;letter-spacing:0.02em;
   padding:2px 6px;border-radius:6px;flex-shrink:0;
@@ -1901,6 +1907,9 @@ function renderServers(servers,sel,switchingIdx){
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     const metered=isMeteredServer(s.name);
     const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
+    const protoLabels={vless:'VLESS',vmess:'VMess',trojan:'Trojan',shadowsocks:'SS',hysteria2:'HY2'};
+    const proto=(s.protocol||'vless');
+    const protoTag=`<span class="server-proto" title="Протокол: ${esc(proto)}">${protoLabels[proto]||esc(proto)}</span>`;
     const inc=s.host?incidentStats[s.host]:null;
     const failTag=inc&&inc.count_24h>0
       ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Откройте «История сбоев» ниже.">⚠ ${inc.count_24h}</span>`
@@ -1908,6 +1917,7 @@ function renderServers(servers,sel,switchingIdx){
     return `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
       ${flagBadge}
       <span class="server-name">${esc(name)}</span>
+      ${protoTag}
       ${meterTag}
       ${failTag}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>

@@ -307,7 +307,7 @@ cmd_status() {
           server: (if $running then ($srv[$sel].name // "") else "" end),
           uptime:$uptime,
           selected: $sel,
-          servers: ($srv | map({name, host, port})),
+          servers: ($srv | map({name, host, port, protocol:(.protocol // "vless")})),
           subscription_url: ($c.subscription_url // ""),
           vpn_ip:$vpn_ip,
           mode: ($c.mode // "all_vpn"),
