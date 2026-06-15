@@ -46,7 +46,22 @@ static class Launcher
                             continue;
                         }
                         Directory.CreateDirectory(Path.GetDirectoryName(dest));
-                        entry.ExtractToFile(dest, true);
+                        try
+                        {
+                            entry.ExtractToFile(dest, true);
+                        }
+                        catch (Exception ex)
+                        {
+                            // A still-running previous instance can hold a file open
+                            // (notably Renci.SshNet.dll, loaded via Add-Type for the
+                            // lifetime of its powershell.exe), making the overwrite
+                            // fail with a sharing violation. Bundled files are immutable
+                            // per build, so reuse an already-extracted copy instead of
+                            // crashing the whole launch.
+                            if ((ex is IOException || ex is UnauthorizedAccessException)
+                                && File.Exists(dest)) { /* reuse existing */ }
+                            else { throw; }
+                        }
                     }
                 }
             }
