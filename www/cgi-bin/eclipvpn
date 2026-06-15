@@ -19,7 +19,7 @@ _urldec() {
 
 # Parse query string
 action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
-on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force=""
+on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force="" sub_id=""
 IFS='&'
 for pair in $QUERY_STRING; do
     k="${pair%%=*}"; v="${pair#*=}"
@@ -31,7 +31,7 @@ for pair in $QUERY_STRING; do
         on) on_time="$v" ;; off) off_time="$v" ;;
         ip) ip_addr="$v" ;; route) route="$v" ;;
         op) op="$v" ;; name) preset_name="$v" ;;
-        force) force="$v" ;;
+        force) force="$v" ;; id) sub_id="$v" ;;
     esac
 done
 unset IFS
@@ -46,8 +46,9 @@ unset IFS
 [ -n "$filter" ]   && case "$filter"   in *[!a-zA-Z]*)                 _bad filter;; esac
 [ -n "$key" ]      && case "$key"      in *[!a-zA-Z0-9_]*)             _bad key;;    esac
 [ -n "$domain" ]   && case "$domain"   in .*|*..*|*/*/*|*[!a-zA-Z0-9.*/_-]*) _bad domain;; esac
-[ -n "$op" ]       && case "$op"       in list|enable|disable) ;; *)   _bad op;;     esac
+[ -n "$op" ]       && case "$op"       in list|enable|disable|add|remove|rename) ;; *) _bad op;; esac
 [ -n "$preset_name" ] && case "$preset_name" in *[!a-z]*)              _bad name;;   esac
+[ -n "$sub_id" ]   && case "$sub_id"   in *[!a-f0-9]*)                 _bad id;;     esac
 [ -n "$force" ]    && case "$force"    in 0|1) ;; *)                   _bad force;;  esac
 [ -n "$on_time" ]  && case "$on_time"  in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) _bad on;;  esac
 [ -n "$off_time" ] && case "$off_time" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) _bad off;; esac
@@ -57,6 +58,50 @@ unset IFS
     # MAC address — six pairs of hex separated by colons
     [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
     *) _bad ip ;;
+esac
+
+# --- Anti-CSRF / anti-DNS-rebinding -----------------------------------
+# The threat model trusts the LAN, but NOT a malicious web page the user
+# opens while on the LAN (drive-by CSRF) nor a DNS-rebound origin that maps
+# its own hostname onto the router IP. Without this, a single cross-site GET
+# like ?action=set-config&key=subscription_url&value=//evil silently repoints
+# the subscription at attacker-controlled servers — full traffic MITM.
+#
+# 1. Host allow-list — a rebound attacker.com carries its own Host header.
+#    Accept only IP literals / loopback / bare-hostname / *.lan; reject any
+#    dotted name containing letters (i.e. a real public domain).
+_host_np="$HTTP_HOST"
+case "$_host_np" in
+    \[*\]*) ;;                                  # IPv6 literal — leave as-is
+    *:*) _host_np="${_host_np%:*}" ;;           # strip :port for IPv4/hostname
+esac
+case "$_host_np" in
+    \[*\]) ;;                                    # IPv6 literal
+    localhost|*.lan) ;;                          # loopback / mDNS LAN name
+    *.*)                                         # dotted: IPv4 ok, domain reject
+        case "$_host_np" in
+            *[!0-9.]*) echo '{"error":"forbidden: host not allowed"}'; exit 0 ;;
+        esac ;;
+    *) ;;                                        # bare hostname (no dot) — ok
+esac
+# 2. State-changing actions must prove they came from our own page. uhttpd
+#    only exposes a fixed header allow-list to CGI (Accept/Host/Origin/Referer/
+#    User-Agent — custom headers like X-Requested-With are dropped), so the
+#    check rides on Origin/Referer: a mutating request MUST carry one and its
+#    host must equal our Host. Our UI's same-origin fetch always sends a
+#    same-host Referer (no `no-referrer` policy is set); a cross-site fetch
+#    sends a foreign Origin; a cross-site <img>/<form> sends a foreign Referer
+#    or, under a no-referrer policy, none at all — all rejected. Read-only
+#    actions are exempt so plain curl/monitoring still works (their responses
+#    aren't readable cross-site, so reading them via CSRF gains nothing).
+case "$action" in
+    status|ping|real-ping|healthcheck|diagnose|system-info|backup|traffic-poll|get-*) ;;
+    *)
+        _src="${HTTP_ORIGIN:-$HTTP_REFERER}"
+        [ -z "$_src" ] && { echo '{"error":"forbidden: missing Origin/Referer"}'; exit 0; }
+        _src="${_src#*://}"; _src="${_src%%/*}"
+        [ "$_src" = "$HTTP_HOST" ] || { echo '{"error":"forbidden: cross-site request blocked"}'; exit 0; }
+        ;;
 esac
 
 # Read POST body, capped at 64KB to prevent OOM via huge requests
@@ -71,6 +116,30 @@ case "$action" in
     update)         /usr/bin/eclipvpn update ;;
     set-server)     /usr/bin/eclipvpn set-server "$index" ;;
     probe-server)   /usr/bin/eclipvpn probe-server "$index" ;;
+    sub)
+        # Multi-subscription manager. Free-text url/name come via the POST body
+        # (JSON) — not argv/query — so a subscription token can't leak through a
+        # process listing or be mangled by argv parsing. id is query (hex-gated).
+        case "$op" in
+            list)             /usr/bin/eclipvpn sub list ;;
+            enable|disable)   /usr/bin/eclipvpn sub "$op" "$sub_id" ;;
+            remove)           /usr/bin/eclipvpn sub remove "$sub_id" ;;
+            add)
+                if [ -n "$body" ]; then
+                    b_url=$(printf '%s' "$body" | jq -r '.url // empty' 2>/dev/null)
+                    b_name=$(printf '%s' "$body" | jq -r '.name // empty' 2>/dev/null)
+                    /usr/bin/eclipvpn sub add "$b_url" "$b_name"
+                else echo '{"error":"no data"}'; fi
+                ;;
+            rename)
+                if [ -n "$body" ]; then
+                    b_name=$(printf '%s' "$body" | jq -r '.name // empty' 2>/dev/null)
+                    /usr/bin/eclipvpn sub rename "$sub_id" "$b_name"
+                else echo '{"error":"no data"}'; fi
+                ;;
+            *) echo '{"error":"unknown sub op"}' ;;
+        esac
+        ;;
     ping)           /usr/bin/eclipvpn ping ;;
     auto-select)    /usr/bin/eclipvpn auto-select ;;
     set-mode)       /usr/bin/eclipvpn set-mode "$mode" ;;
