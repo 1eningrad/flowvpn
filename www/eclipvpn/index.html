@@ -2304,10 +2304,22 @@ async function selectServer(i){
     scheduleStatus(2000);
   }
 }
+// Shared lock for the two server-wide probe sweeps (doPing + doAutoSelect).
+// Both hammer the router (many xrays/sing-boxes + curl bursts); a single flag
+// gating BOTH, and disabling BOTH the ping button and the Auto toggle, stops a
+// second sweep from being launched on top of the first.
+let _probePending=false;
 async function doPing(){
-  const b=document.getElementById('pingBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';
+  if(_probePending)return;
+  _probePending=true;
+  const b=document.getElementById('pingBtn');
+  const am=document.getElementById('autoModeToggle');
+  if(b){b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';}
+  if(am)am.disabled=true;
   try{const r=await apiFetch(API+'?action=ping',{timeoutMs:90000});const d=await r.json();if(Array.isArray(d))d.forEach(s=>{pings[s.index]=s.ping});renderServers(state.servers,state.selected)}catch(e){}
-  b.disabled=false;b.textContent='Проверить пинг'
+  _probePending=false;
+  if(b){b.disabled=false;b.textContent='Проверить пинг';}
+  if(am)am.disabled=false;
 }
 // Maps backend status code to a short Russian phrase for the toast log.
 const _AUTO_STATUS_RU={
@@ -2373,9 +2385,11 @@ async function toggleAutoMode(enabled){
   }
 }
 async function doAutoSelect(){
-  // Both doPing and doAutoSelect probe servers — running them in parallel
-  // hammers the router (multiple xrays + curl bursts on weak hardware).
-  // Lock pingBtn for the duration so the user can't fire a second probe loop.
+  // Shares the _probePending lock with doPing — running both in parallel hammers
+  // the router. The Auto toggle is also disabled by its caller (toggleAutoMode)
+  // and by doPing, so the two sweeps can't overlap.
+  if(_probePending)return;
+  _probePending=true;
   const pingBtn=document.getElementById('pingBtn');
   if(pingBtn)pingBtn.disabled=true;
   let tid=toast.loading('Измеряем все серверы и выбираем лучший…');
@@ -2396,6 +2410,7 @@ async function doAutoSelect(){
     const desc=log?(reason+'\n\n'+log):reason;
     tid=updateToast(tid,'Не удалось подобрать',{type:'error',desc,duration:7000});
   }finally{
+    _probePending=false;
     if(pingBtn)pingBtn.disabled=false;
   }
 }
@@ -3533,16 +3548,25 @@ async function onboardNext1(){
   if(!/^https?:\/\//.test(url)){toast.error('Ссылка должна начинаться с http:// или https://');return}
   setOnboardStep(2);
   try{
-    await apiFetch(API+'?action=set-config&key=subscription_url&value='+encodeURIComponent(url));
-    const r=await apiFetch(API+'?action=update',{timeoutMs:90000});const d=await r.json();
+    // POST sub add — the panel token travels in the body, not the query string
+    // (so it doesn't land in the uhttpd access-log / process listing). cmd_sub
+    // add fetches + merges the subscription server-side.
+    const r=await apiFetch(API+'?action=sub&op=add',{method:'POST',body:JSON.stringify({url}),timeoutMs:90000});const d=await r.json();
     if(d.error){
       document.getElementById('onboardStep2Desc').textContent='Ошибка: '+(d.error||'не удалось загрузить');
       document.getElementById('onboardStep2Desc').style.color='var(--red)';
       setTimeout(()=>setOnboardStep(1),2500);
       return;
     }
-    document.getElementById('onboardStep2Desc').textContent='Найдено серверов: '+d.servers;
     await fetchStatus();
+    const cnt=(state&&state.servers)?state.servers.length:0;
+    if(cnt===0){
+      document.getElementById('onboardStep2Desc').textContent='Не удалось загрузить серверы — проверьте ссылку';
+      document.getElementById('onboardStep2Desc').style.color='var(--red)';
+      setTimeout(()=>setOnboardStep(1),2500);
+      return;
+    }
+    document.getElementById('onboardStep2Desc').textContent='Найдено серверов: '+cnt;
     setTimeout(()=>setOnboardStep(3),1000);
   }catch(e){
     document.getElementById('onboardStep2Desc').textContent='Ошибка связи';

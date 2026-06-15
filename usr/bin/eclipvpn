@@ -275,6 +275,18 @@ _vpn_running() {
     fi
 }
 
+# Is ANY tunnel daemon currently up, regardless of which engine the *selected*
+# server would use? Use this — NOT _vpn_running — to decide "should I restart to
+# apply a change" right AFTER selected_server may have changed (cmd_set_server,
+# cmd_auto_select). _vpn_running keys off the just-saved server's engine, so
+# switching off a live Hysteria2 server (sing-box only) to an xray server makes
+# it evaluate is_xray_running (false) and the switch silently no-ops / collides.
+# sing-box runs in both engines and xray only in the xray engine, so the OR
+# covers a live tunnel of either kind.
+_vpn_live() {
+    is_singbox_running || is_xray_running
+}
+
 # A server is "metered" (RU-safe, mobile-carrier) when its name contains
 # carrier markers. Such servers give a Russian IP, so watchdog must NEVER
 # auto-switch to them — doing so defeats the purpose of a VPN.

@@ -31,13 +31,20 @@ _reach_ms() {
 cmd_set_server() {
     local idx="$1"
     [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    # Numeric, non-negative only: the >= total check below is upper-bound only,
+    # so "-1" would pass it and jq .[-1] resolves to the LAST server.
+    case "$idx" in *[!0-9]*) echo '{"error":"invalid index"}'; return 1 ;; esac
     flog "Setting server to index $idx"
     [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
     local tmp=$(jq --argjson idx "$idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
     save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
-    if _vpn_running; then
+    # _vpn_live, not _vpn_running: selected_server was JUST changed above, so an
+    # engine-aware check would read the NEW server's engine (e.g. xray) while the
+    # OLD tunnel's daemons (e.g. Hysteria2 sing-box) are what's actually live —
+    # that false-negative would silently skip the switch.
+    if _vpn_live; then
         cmd_restart
     else
         local name=$(jq -r ".[$idx].name" "$ECLIPVPN_TMP/servers.json")
@@ -52,6 +59,9 @@ cmd_set_server() {
 cmd_probe_server() {
     local idx="$1"
     [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    # Numeric, non-negative only — the >= total check is upper-bound only and
+    # jq .[-1] would resolve a negative index to the last server.
+    case "$idx" in *[!0-9]*) echo '{"error":"invalid index"}'; return 1 ;; esac
     [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
     local total
     total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
@@ -355,11 +365,17 @@ EOF
         local tmp
         tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
         save_config "$tmp"
-        if _vpn_running; then
-            if ! cmd_restart >/dev/null 2>&1; then
+        # _vpn_live, not _vpn_running — see cmd_set_server: selected_server was
+        # just changed, so an engine-aware check could miss a live other-engine
+        # tunnel and skip the switch.
+        if _vpn_live; then
+            if ! ( cmd_restart ) >/dev/null 2>&1; then
                 tmp=$(jq --argjson idx "$cur" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
                 save_config "$tmp"
-                cmd_restart >/dev/null 2>&1
+                # Subshell: the first cmd_restart's op-lock is only released when
+                # ITS subshell exits (trap EXIT), so the rollback restart must run
+                # in its own subshell or it self-deadlocks on op.lockdir.
+                ( cmd_restart ) >/dev/null 2>&1
                 exit 2
             fi
         fi
@@ -494,11 +510,13 @@ cmd_auto_eval() {
             exit 0
         fi
 
-        # Commit + restart, with rollback on failure
+        # Commit + restart, with rollback on failure. Each cmd_restart runs in
+        # its OWN subshell so the op-lock (released only on the restart's subshell
+        # EXIT trap) doesn't make the rollback restart self-deadlock.
         local tmp
         tmp=$(jq --argjson idx "$best_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
         save_config "$tmp"
-        if cmd_restart >/dev/null 2>&1; then
+        if ( cmd_restart ) >/dev/null 2>&1; then
             _record_switch "$current_idx" "$best_idx" "auto"
             jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
             local bn
@@ -507,7 +525,7 @@ cmd_auto_eval() {
         else
             tmp=$(jq --argjson idx "$current_idx" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
             save_config "$tmp"
-            cmd_restart >/dev/null 2>&1
+            ( cmd_restart ) >/dev/null 2>&1
             flog "Auto-mode: restart failed, rolled back"
         fi
     ) 200>"$oplock"
