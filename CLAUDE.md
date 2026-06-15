@@ -14,9 +14,9 @@ Two things deliberately **stay `flowvpn`** — do not rename them:
 
 ## What this is
 
-A VPN manager for OpenWrt routers. Written almost entirely in **busybox ash** (`#!/bin/ash`, not bash) with a single-file HTML/JS web UI. Two binaries do the actual work: **xray** (SOCKS outbound, VLESS+XHTTP+Reality) and **sing-box** (tproxy inbound, DNS, routing). Everything else is glue.
+A VPN manager for OpenWrt routers. Written almost entirely in **busybox ash** (`#!/bin/ash`, not bash) with a single-file HTML/JS web UI. Two binaries do the actual work: **xray** (SOCKS outbound, VLESS+XHTTP over either **Reality** *or* plain **TLS**) and **sing-box** (tproxy inbound, DNS, routing). Everything else is glue. The TLS variant is what powers **CDN fronting** — `xray.sh` switches on the subscription entry's `security` field (`reality` → `realitySettings`, `tls` → `tlsSettings`), so a server can front through a CDN (`sni=*.selcdn.net`) to dodge the per-flow policer (see "CDN fronting" below).
 
-There is no build step, no test suite, no package manager, no CI. Code is shipped to a live router via `deploy.sh`.
+There is no build step, no test suite, no package manager, no CI for the router code. Code is shipped to a live router via `deploy.sh`. (The Windows installer under `windows-installer/` is the one piece with a build step — see its section below.)
 
 ## Common commands
 
@@ -25,8 +25,10 @@ There is no build step, no test suite, no package manager, no CI. Code is shippe
 | `./deploy.sh` | Push current tree to `root@192.168.1.1`. tar-pipes the scripts/CGI/UI, syntax-checks with `ash -n`, force-cleans stale watchdog/rules state, restarts via init.d, prints verification. |
 | `ROUTER=root@10.0.0.1 ./deploy.sh` | Same, against a different router. |
 | `./install.sh` | One-shot installer (run *on the router*) — installs deps, fetches xray 26.4.17 binary, writes files to canonical paths. |
+| `sh install-from-mac.sh` | Bootstrap a *fresh* router from the local tree over SSH (default `root@192.168.2.1`), bypassing the GitHub repo — pushes the same files as `install.sh` but from the working tree. Use for first-time provisioning / after a factory reset; `deploy.sh` is for updating an already-installed router. `WITH_REMOTE=0` skips the Tailscale step. |
 | `ash -n <file>` | Syntax-check a script before deploy. `deploy.sh` already runs this on every shell file. |
 | `cd docs && tectonic eclipvpn_manual.tex` | Rebuild the user manual PDF. |
+| `cd windows-installer && powershell -ExecutionPolicy Bypass -File build-exe.ps1` | Rebuild `EclipVPN-Installer.exe` (offline Windows installer). Stages the live `usr/`/`www/`/`etc/` tree — rebuild after any router-code change. See its own section below. |
 
 There are no unit/integration tests — the `test-results/` dir is for old screenshots, not a runner. Verify changes by running `./deploy.sh` and exercising the UI.
 
@@ -112,7 +114,14 @@ LAN client → nftables tproxy:2154 → sing-box → xray SOCKS:1080 → VLESS+R
 - `all_vpn` — everything → VPN, *except* domains/IPs in `geosite-ru`, `geoip-ru`, and the manual RU list in `singbox.sh::_fetch_ru_domains()` (Yandex/VK/Sber/etc).
 - `blocklist` — only blocked domains → VPN; everything else direct. Source is `itdoginfo/allow-domains` (curated, ~1.2k) or `1andrevich/Re-filter-lists` (~80k) when `blocklist_source=full`.
 
-A **force-VPN list** (`vpn_domains.list`, built-in AI services + user's `custom_vpn`) overrides the RU rules in `all_vpn` mode — gemini.google.com etc. would otherwise hit `geosite-ru` (which contains `google.com`).
+A **force-VPN list** (`vpn_domains.list`, built-in AI services **+ YouTube** + user's `custom_vpn`) overrides the RU rules in `all_vpn` mode — gemini.google.com / youtube.com etc. would otherwise hit `geosite-ru` (which contains `google.com`). YouTube is in the built-in heredoc (`singbox.sh::_fetch_vpn_domains`) so every fresh install routes it through the VPN by default (it's throttled on RU networks); there is also a toggleable `youtube` service preset, but the built-in entry is the always-on baseline.
+
+## CDN fronting & subscription formats
+
+- **The throttle is a per-flow policer.** The RU-side TSPU pins flows to foreign *hosting* prefixes to ~60-90 KB/s in the evenings, per-TCP-connection (some flows escape), protocol-agnostic (raw TLS shaped the same as VLESS). The watchdog throughput guard (re-dial / switch) only buys minutes against it. The **real** mitigation is **CDN fronting**: the panel serves Selectel-CDN-fronted servers (UI label `🌐 Обход…`, `security=tls`, `sni=*.selcdn.net`) as ordinary subscription entries. They ride a clean CDN prefix the policer doesn't shape. `xray.sh` builds `security=tls` xhttp+tls outbounds for them (not just Reality), so they parse *and* connect like any other server.
+- **`_is_metered_server`** (in `usr/bin/eclipvpn`) skips the `Обход` CDN servers so auto-select / failover prefer them.
+- **`parse.sh` auto-detects the subscription format.** The same URL may return base64-of-proxy-URL-lines (most panels), URL-safe base64, plaintext, *or* a JSON array/object. Detection runs `jq -e 'type=="array" or type=="object"'` on the raw body *before* the base64 cascade — a JSON body must not be fed through `base64 -d` (which would silently corrupt it). **Busybox `tr` gotcha:** the router's busybox does **not** implement the POSIX `[:space:]` class, so `tr -d '[:space:]'` deletes the *literal* characters `[ : s p a c e ]` and corrupts any base64 containing them (it ate the `c` from a Shadowsocks userinfo, 2026-06-15). Strip whitespace by feeding `tr` the actual bytes: `tr -d "$(printf '\n\r\t ')"` (see `_b64_pad`). Do not "simplify" it back to the class form.
+- **Multiple proxy protocols.** `parse.sh` parses `vless://` / `vmess://` (base64-JSON) / `trojan://` / `ss://` (SIP002 + legacy) via a `parse_proxy_url` dispatcher into a uniform server object with a `protocol` discriminator (absent ⇒ `vless`) plus per-protocol credential fields. `xray.sh::generate_xray_config` branches on `protocol` (vless/vmess/trojan/shadowsocks) — the **vless branch is kept byte-identical** to the pre-multi-protocol generator so an existing servers.json regenerates the same `xray.json` (the `cmd_restart` unchanged-config fast path depends on it; verify with a `cmp` of old vs new xray.json for the selected server). The UI shows a small protocol badge (`/status` exposes `protocol`, never credentials). Hysteria2/TUIC/WireGuard are **not** xray protocols — they need a sing-box outbound (planned Phase 2).
 
 ## Files and persistence
 
@@ -162,9 +171,19 @@ These are documented in inline comments at the relevant call sites — read them
 4. Add fetch + render in `www/eclipvpn/index.html` (`API='/cgi-bin/eclipvpn'`, polled actions in `loadStatus`/`loadDomains`/etc).
 5. Run `./deploy.sh` to ship.
 
+## Windows installer (`windows-installer/`)
+
+A self-contained, **fully offline** Windows `.exe` that installs EclipVPN onto a router over SSH — for end users who can't run `install.sh` on the router (GitHub is blocked in RU; dropbear has no sftp). This is the one part of the repo with a real build step. See `windows-installer/README.md` for the full picture; the load-bearing facts:
+
+- **Layered design**: `eclip-core.ps1` (install engine over SSH.NET, mirrors `install-from-mac.sh`) ← `install-eclipvpn-gui.ps1` (WPF GUI: dark card, EN/RU, router auto-detect, colored log) / `install-eclipvpn.ps1` (headless CLI) ← `launcher.cs` (C# self-extract stub carrying `bundle.zip`, compiled by `build-exe.ps1` with the framework `csc.exe`, **not** ps2exe).
+- **What's committed vs. generated**: sources (`.ps1`, `.cs`, `lang.ru.txt`, `README.md`) are tracked. The `.exe`, `bundle.zip`, `eclip.ico`, `payload/bin/<arch>/*` static binaries (xray/sing-box/jq/curl/ca, currently **aarch64 only**), and `lib/Renci.SshNet.dll` are gitignored — regenerate per the README before a build.
+- **`build-exe.ps1` stages the router source straight from the working tree** (`usr/`/`www/`/`etc/`), so a rebuild always ships current code — rebuild after any change under those dirs.
+- **Gotchas that bite**: keep every `.ps1` **pure ASCII** (PS 5.1 reads a BOM-less script as the ANSI codepage; localized text lives in `lang.ru.txt`, read as UTF-8 data). dropbear aborts an SSH exec >~10-16 KB, so files are pushed in ~7.5 KB base64 chunks. The C# stub detects zip dir entries by empty `entry.Name` (.NET writes `\` separators, so `EndsWith("/")` fails). `ECLIP_GUI_SMOKE=1` builds the window and auto-closes for a headless check.
+
 ## Other
 
 - `docs/ROADMAP.md` is a wish-list of features inspired by competitor tools (ZeroBlock, Passwall, OpenClash, etc.). Not a binding plan; consult before suggesting big new directions.
 - `docs/eclipvpn_manual.pdf` is the user-facing manual (RU). Source: `docs/eclipvpn_manual.tex`, build with `tectonic`.
+- `docs/throttling-root-cause-2026-06-11.md` is the field write-up behind the "CDN fronting & subscription formats" section — the per-flow-policer diagnosis (raw-TLS vs VLESS, per-TCP lottery, CDN-prefix cleanness). Read it before touching the watchdog throughput guard or the throttling story.
 - The `/eclipvpn/` rebrand keeps a meta-refresh redirect at `/eclipvpn/index.html` — don't break it.
 - README.md (root) is the single source of truth for user-facing docs and has additional operational notes (datacenter-IP blocks at OpenAI/Anthropic, NTP requirement for Reality handshake, troubleshooting flow). Worth a skim when a question is operational rather than architectural.
