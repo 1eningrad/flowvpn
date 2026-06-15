@@ -347,8 +347,12 @@ update_subscription() {
             fi
             local c; c=$(parse_subscription_file "$body" "$newc")
             if [ "$c" -gt 0 ] 2>/dev/null; then
+                # Atomic write (.tmp + mv) — a truncated cache (e.g. power loss
+                # mid-write) would otherwise pass the [ -s ] check in the merge
+                # loop and abort jq there, collapsing the whole merged pool.
                 ( umask 077; jq --arg sid "$sid" --arg sname "$sname" \
-                    'map(. + {sub_id:$sid, sub_name:$sname})' "$newc" > "$cache" )
+                    'map(. + {sub_id:$sid, sub_name:$sname})' "$newc" > "$cache.tmp" ) \
+                    && mv "$cache.tmp" "$cache" || rm -f "$cache.tmp"
                 chmod 600 "$cache" 2>/dev/null
             else
                 logger -t eclipvpn "Subscription[$sname]: parsed 0 servers — keeping previous cache"
@@ -367,7 +371,13 @@ update_subscription() {
         local sid; sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id'); i=$((i + 1))
         { [ -z "$sid" ] || [ "$sid" = "null" ]; } && continue
         local cache="/tmp/eclipvpn/sub.$sid.servers.json"
-        [ -s "$cache" ] && merged=$(printf '%s' "$merged" | jq --slurpfile add "$cache" '. + $add[0]')
+        # Skip a missing/corrupt cache rather than let jq abort and collapse the
+        # whole merge: validate it's a JSON array, merge into a temp, and adopt
+        # only if jq produced output (else keep the prior merged value).
+        if [ -s "$cache" ] && jq -e 'type=="array"' "$cache" >/dev/null 2>&1; then
+            local _m; _m=$(printf '%s' "$merged" | jq -c --slurpfile add "$cache" '. + $add[0]' 2>/dev/null)
+            [ -n "$_m" ] && merged="$_m"
+        fi
     done
     local count; count=$(printf '%s' "$merged" | jq 'length' 2>/dev/null)
     case "$count" in ''|*[!0-9]*) count=0 ;; esac
@@ -435,7 +445,11 @@ cmd_sub() {
                 '.subscriptions = ((.subscriptions // []) | map(select(.id != $id)))
                  | .subscription_url = ((.subscriptions[0].url) // "")' "$ECLIPVPN_CONFIG")
             save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
-            rm -f "$ECLIPVPN_TMP/sub.$id.servers.json" "$ECLIPVPN_TMP/sub.$id.body" "$ECLIPVPN_TMP/sub.$id.servers.new"
+            rm -f "$ECLIPVPN_TMP/sub.$id.servers.json" "$ECLIPVPN_TMP/sub.$id.servers.json.tmp" "$ECLIPVPN_TMP/sub.$id.body" "$ECLIPVPN_TMP/sub.$id.servers.new"
+            # Prune the provider's keyed metadata too, so removed subs don't leak
+            # dead entries in subscription_meta.json (atomic write).
+            local mf="$ECLIPVPN_TMP/subscription_meta.json"
+            [ -f "$mf" ] && { jq --arg id "$id" 'del(.[$id])' "$mf" > "$mf.tmp" 2>/dev/null && mv "$mf.tmp" "$mf" || rm -f "$mf.tmp"; }
             cmd_update >/dev/null 2>&1
             jq -n --arg id "$id" '{status:"removed", id:$id}'
             ;;

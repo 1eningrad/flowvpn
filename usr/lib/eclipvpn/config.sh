@@ -100,8 +100,11 @@ _setup_cron() {
     # writes .schedule from a backup blob — a crafted backup could put
     # "07:00; rm -rf /" in here and that string would otherwise land
     # straight into a crontab line, executed by root.
-    case "$on_time"  in [0-2][0-9]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.on '$on_time' — cron not installed"; return 1 ;; esac
-    case "$off_time" in [0-2][0-9]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.off '$off_time' — cron not installed"; return 1 ;; esac
+    # Strict 00-23 hour (NOT [0-2][0-9], which accepts 24-29) — a restored backup
+    # with "25:00" would otherwise write a cron line crond never fires while the
+    # UI still shows the schedule active.
+    case "$on_time"  in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.on '$on_time' — cron not installed"; return 1 ;; esac
+    case "$off_time" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) flog "ERROR: invalid schedule.off '$off_time' — cron not installed"; return 1 ;; esac
     local on_h=${on_time%%:*} on_m=${on_time##*:}
     local off_h=${off_time%%:*} off_m=${off_time##*:}
     (crontab -l 2>/dev/null; echo "$on_m $on_h * * * /usr/bin/eclipvpn start >/dev/null 2>&1 #eclipvpn") | crontab -
@@ -275,7 +278,11 @@ cmd_set_device_route() {
     # Rebuild nftables if running
     if is_singbox_running; then
         local iface=$(get_config_val interface "br-lan")
-        setup_network 2154 32768 "$iface"
+        # Serialize the nft delete+rebuild against a watchdog failover (cmd_start
+        # also rebuilds the table) — two concurrent rebuilds leave a half-built
+        # table. The rule is already saved; if the op-lock is held, skip the
+        # in-place rebuild (it applies on the next (re)start) rather than race.
+        if _op_begin; then setup_network 2154 32768 "$iface"; _op_end; fi
     fi
     echo "{\"status\":\"device route set\",\"id\":\"$id\",\"route\":\"$route\"}"
 }
@@ -292,7 +299,11 @@ cmd_remove_device_route() {
     save_config "$tmp"
     if is_singbox_running; then
         local iface=$(get_config_val interface "br-lan")
-        setup_network 2154 32768 "$iface"
+        # Serialize the nft delete+rebuild against a watchdog failover (cmd_start
+        # also rebuilds the table) — two concurrent rebuilds leave a half-built
+        # table. The rule is already saved; if the op-lock is held, skip the
+        # in-place rebuild (it applies on the next (re)start) rather than race.
+        if _op_begin; then setup_network 2154 32768 "$iface"; _op_end; fi
     fi
     echo "{\"status\":\"device route removed\",\"id\":\"$id\"}"
 }
