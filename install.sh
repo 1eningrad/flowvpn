@@ -203,6 +203,17 @@ if [ "$OLD_ENABLED" = "1" ]; then
     echo "  autostart re-enabled (migrated from flowvpn)"
 fi
 
+# Raise uhttpd's idle timeout. With a large multi-subscription server pool
+# `eclipvpn ping` probes every server and can take 30-50s; the default
+# network_timeout=30 kills the CGI mid-sweep, so the UI shows no pings. 90s
+# fits and matches the UI fetch timeout. Idempotent: only restart if changed.
+if [ "$(uci -q get uhttpd.main.network_timeout)" != "90" ]; then
+    uci set uhttpd.main.network_timeout=90
+    uci commit uhttpd
+    /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+    echo "  uhttpd network_timeout → 90s (for large server pools)"
+fi
+
 echo "[5/6] Optional: RemoteRouteRich (always-on remote access via vendor Tailscale)..."
 # Vendor-hosted Headscale at rc.routerich.ru — works under CGNAT, no white IP, free.
 # Opt-in: WITH_REMOTE=1 sh install.sh. Only works on RouteRich firmware (their opkg
