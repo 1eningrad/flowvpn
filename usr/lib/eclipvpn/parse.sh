@@ -13,8 +13,16 @@ _b64_pad() {
     # BEFORE measuring length — otherwise the modulo is computed over the wrong
     # count and the padding is wrong. printf %s, not echo, so a leading -n/-e
     # in the body isn't eaten as an option.
-    local s
-    s=$(printf '%s' "$1" | tr -d '[:space:]')
+    #
+    # CRITICAL: this busybox `tr` does NOT implement the POSIX [:space:] class,
+    # so `tr -d '[:space:]'` deletes the LITERAL characters [ : s p a c e ] and
+    # corrupts any base64 that contains them (verified 2026-06-15: it ate the
+    # 'c' from a Shadowsocks userinfo, garbling the decode). Feed tr the actual
+    # whitespace BYTES via printf instead. $(...) strips only trailing newlines,
+    # and the string ends in a space, so all four bytes survive.
+    local s ws
+    ws=$(printf '\n\r\t ')
+    s=$(printf '%s' "$1" | tr -d "$ws")
     local n=${#s}
     local rem=$((n % 4))
     case "$rem" in
@@ -317,9 +325,194 @@ parse_vless_url() {
         --arg mode "$mode" \
         --arg flow "$flow" \
         --arg extra "$extra" \
-        '{name:$name, host:$host, port:($port|tonumber), uuid:$uuid,
+        '{protocol:"vless", name:$name, host:$host, port:($port|tonumber), uuid:$uuid,
+          password:"", method:"", alterId:0, scy:"",
           security:$security, sni:$sni, fp:$fp, pbk:$pbk, sid:$sid,
-          transport:$transport, path:$path, mode:$mode, flow:$flow, extra:$extra}'
+          transport:$transport, path:$path, mode:$mode, flow:$flow, extra:$extra,
+          obfs:"", obfs_pw:"", insecure:0}'
+}
+
+# ---------------------------------------------------------------------------
+# Other proxy schemes. Each parser emits the SAME uniform server object as
+# parse_vless_url (a "protocol" discriminator + per-protocol credential fields,
+# unused ones empty/0) so servers.json stays one shape and xray.sh can branch on
+# .protocol. Reality/pbk/sid/flow stay VLESS-only.
+# ---------------------------------------------------------------------------
+
+# trojan://password@host:port?security&sni&type&path#name — same shape as vless
+# with the password in the userinfo slot (no reality, no flow).
+parse_trojan_url() {
+    local url="$1"
+    local stripped="${url#trojan://}"
+    local fragment
+    case "$stripped" in
+        *'#'*) fragment="${stripped##*#}" ;;
+        *)     fragment="" ;;
+    esac
+    stripped="${stripped%%#*}"
+    local params="${stripped#*\?}"
+    stripped="${stripped%%\?*}"
+    local password="${stripped%%@*}"
+    local hostport="${stripped#*@}"
+    local host="${hostport%%:*}"
+    local port="${hostport##*:}"
+
+    [ -z "$password" ] && return 1
+    [ -z "$host" ] && return 1
+    case "$host" in 0.0.0.0|127.0.0.1|localhost) return 1 ;; esac
+    case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$port" -le 0 ] 2>/dev/null && return 1
+    [ "$port" -gt 65535 ] 2>/dev/null && return 1
+
+    password=$(url_decode "$password")
+    local name; name=$(url_decode "$fragment")
+    local security="" sni="" fp="" transport="" path="" mode="" extra=""
+    local IFS='&'
+    for pair in $params; do
+        local key="${pair%%=*}"
+        local val="${pair#*=}"
+        val=$(url_decode "$val")
+        case "$key" in
+            security) security="$val" ;;
+            sni) sni="$val" ;;
+            fp) fp="$val" ;;
+            type) transport="$val" ;;
+            path) path="$val" ;;
+            mode) mode="$val" ;;
+            extra)
+                if printf '%s' "$val" | jq -e -s 'length == 1 and (.[0] | type) == "object"' >/dev/null 2>&1; then
+                    extra="$val"
+                else
+                    extra="{}"
+                fi
+                ;;
+        esac
+    done
+    unset IFS
+    [ -z "$security" ] && security="tls"
+
+    jq -n \
+        --arg name "$name" --arg host "$host" --arg port "$port" \
+        --arg password "$password" --arg security "$security" \
+        --arg sni "$sni" --arg fp "$fp" \
+        --arg transport "$transport" --arg path "$path" --arg mode "$mode" --arg extra "$extra" \
+        '{protocol:"trojan", name:$name, host:$host, port:($port|tonumber), uuid:"",
+          password:$password, method:"", alterId:0, scy:"",
+          security:$security, sni:$sni, fp:$fp, pbk:"", sid:"",
+          transport:$transport, path:$path, mode:$mode, flow:"", extra:$extra,
+          obfs:"", obfs_pw:"", insecure:0}'
+}
+
+# vmess://<base64 JSON> (v2rayN format). Body is base64 of a JSON object with
+# keys add/port/id/aid/net/path/tls/sni/scy/fp/ps. Decode then map via jq.
+parse_vmess_url() {
+    local url="$1"
+    local b="${url#vmess://}"
+    b="${b%%#*}"
+    local json
+    json=$(_b64_pad "$b" | base64 -d 2>/dev/null)
+    [ -z "$json" ] && json=$(_b64_pad "$(printf '%s' "$b" | tr '_-' '/+')" | base64 -d 2>/dev/null)
+    printf '%s' "$json" | jq -e 'type=="object"' >/dev/null 2>&1 || return 1
+    # Validate host/uuid/port before mapping; reject placeholder entries.
+    printf '%s' "$json" | jq -e '
+        (.add // "") as $h
+        | (.id // "") as $id
+        | ((.port // 443) | if type=="string" then (tonumber? // 0) else . end) as $p
+        | ($h != "" and $id != "" and $p > 0 and $p <= 65535
+           and $h != "0.0.0.0" and $h != "127.0.0.1")
+    ' >/dev/null 2>&1 || return 1
+    printf '%s' "$json" | jq '
+        {protocol:"vmess",
+         name:(.ps // ""),
+         host:(.add // ""),
+         port:((.port // 443) | if type=="string" then (tonumber? // 0) else . end),
+         uuid:(.id // ""),
+         password:"", method:"",
+         alterId:((.aid // 0) | if type=="string" then (tonumber? // 0) else . end),
+         scy:(if (.scy // "") != "" then .scy else "auto" end),
+         security:(if (.tls // "") == "tls" then "tls" else "" end),
+         sni:(if (.sni // "") != "" then .sni elif (.host // "") != "" then .host else (.add // "") end),
+         fp:(.fp // ""),
+         pbk:"", sid:"",
+         transport:(.net // ""), path:(.path // ""), mode:"", flow:"",
+         extra:"",
+         obfs:"", obfs_pw:"", insecure:0}'
+}
+
+# ss://<base64 method:password>@host:port#name  (SIP002), or
+# ss://<base64 method:password@host:port>#name  (legacy). plugin= rejected.
+parse_ss_url() {
+    local url="$1"
+    local b="${url#ss://}"
+    local fragment
+    case "$b" in
+        *'#'*) fragment="${b##*#}" ;;
+        *)     fragment="" ;;
+    esac
+    b="${b%%#*}"
+    case "$b" in
+        *'?'*)
+            local q="${b#*\?}"
+            case "$q" in *plugin=*) return 1 ;; esac   # obfs / v2ray-plugin out of scope
+            b="${b%%\?*}"
+            ;;
+    esac
+    local name; name=$(url_decode "$fragment")
+    local method="" password="" host="" port="" dec=""
+    case "$b" in
+        *@*)
+            local userinfo="${b%%@*}"
+            local hostport="${b#*@}"
+            host="${hostport%%:*}"
+            port="${hostport##*:}"
+            dec=$(_b64_pad "$userinfo" | base64 -d 2>/dev/null)
+            [ -z "$dec" ] && dec=$(_b64_pad "$(printf '%s' "$userinfo" | tr '_-' '/+')" | base64 -d 2>/dev/null)
+            case "$dec" in
+                *:*) method="${dec%%:*}"; password="${dec#*:}" ;;
+                *)   case "$userinfo" in *:*) method="${userinfo%%:*}"; password="${userinfo#*:}" ;; *) return 1 ;; esac ;;
+            esac
+            ;;
+        *)
+            dec=$(_b64_pad "$b" | base64 -d 2>/dev/null)
+            [ -z "$dec" ] && dec=$(_b64_pad "$(printf '%s' "$b" | tr '_-' '/+')" | base64 -d 2>/dev/null)
+            case "$dec" in *@*) ;; *) return 1 ;; esac
+            local cred="${dec%%@*}"
+            local hostport="${dec##*@}"
+            method="${cred%%:*}"
+            password="${cred#*:}"
+            host="${hostport%%:*}"
+            port="${hostport##*:}"
+            ;;
+    esac
+
+    [ -z "$method" ] && return 1
+    [ -z "$password" ] && return 1
+    [ -z "$host" ] && return 1
+    case "$host" in 0.0.0.0|127.0.0.1|localhost) return 1 ;; esac
+    case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$port" -le 0 ] 2>/dev/null && return 1
+    [ "$port" -gt 65535 ] 2>/dev/null && return 1
+
+    jq -n \
+        --arg name "$name" --arg host "$host" --arg port "$port" \
+        --arg method "$method" --arg password "$password" \
+        '{protocol:"shadowsocks", name:$name, host:$host, port:($port|tonumber), uuid:"",
+          password:$password, method:$method, alterId:0, scy:"",
+          security:"", sni:"", fp:"", pbk:"", sid:"",
+          transport:"", path:"", mode:"", flow:"", extra:"",
+          obfs:"", obfs_pw:"", insecure:0}'
+}
+
+# Scheme dispatcher — route a proxy URL to the right parser. Unknown -> 1.
+parse_proxy_url() {
+    local url="$1"
+    case "$url" in
+        vless://*)  parse_vless_url  "$url" ;;
+        vmess://*)  parse_vmess_url  "$url" ;;
+        trojan://*) parse_trojan_url "$url" ;;
+        ss://*)     parse_ss_url     "$url" ;;
+        *) return 1 ;;
+    esac
 }
 
 # Parse a JSON subscription body into servers.json. Accepts a bare array or a
@@ -364,7 +557,7 @@ _parse_json_subscription() {
         local vline srv
         for vline in $vlines; do
             [ -z "$vline" ] && continue
-            if srv=$(parse_vless_url "$vline"); then
+            if srv=$(parse_proxy_url "$vline"); then
                 out=$(printf '%s' "$out" | jq -c --argjson s "$srv" '. + [$s]')
             fi
         done
@@ -406,19 +599,18 @@ parse_subscription_file() {
         line="${line%$'\r'}"
         [ -z "$line" ] && continue
         case "$line" in
-            vless://*)
+            vless://*|vmess://*|trojan://*|ss://*)
                 total=$((total + 1))
                 local srv
-                if srv=$(parse_vless_url "$line"); then
+                if srv=$(parse_proxy_url "$line"); then
                     servers=$(echo "$servers" | jq --argjson s "$srv" '. + [$s]')
                 else
                     rejected=$((rejected + 1))
                 fi
                 ;;
             *://*)
-                # Other proxy schemes (vmess://, ss://, trojan://) — count
-                # so we can warn the user that their subscription contains
-                # types EclipVPN doesn't speak.
+                # Schemes EclipVPN doesn't speak yet (hysteria2://, tuic://,
+                # wireguard://) — count so we can warn the user.
                 unknown=$((unknown + 1))
                 ;;
         esac
@@ -433,15 +625,15 @@ parse_subscription_file() {
 
     if [ "$count" -eq 0 ]; then
         if [ "$total" -eq 0 ] && [ "$unknown" -eq 0 ]; then
-            logger -t eclipvpn "Subscription: 0 servers parsed — expected base64-encoded list of vless:// URLs (one per line)"
+            logger -t eclipvpn "Subscription: 0 servers parsed — expected base64-encoded list of proxy URLs (one per line)"
         elif [ "$unknown" -gt 0 ] && [ "$total" -eq 0 ]; then
-            logger -t eclipvpn "Subscription: 0 vless:// servers, found $unknown other-protocol entries — EclipVPN supports only VLESS"
+            logger -t eclipvpn "Subscription: 0 supported servers, found $unknown unsupported entries (hysteria2/tuic/wireguard not yet supported)"
         else
             logger -t eclipvpn "Subscription: 0 valid servers ($rejected rejected as malformed)"
         fi
     else
-        [ "$rejected" -gt 0 ] && logger -t eclipvpn "Subscription: $rejected of $total VLESS entries rejected (empty host / bogus port)"
-        [ "$unknown" -gt 0 ] && logger -t eclipvpn "Subscription: skipped $unknown non-VLESS entries"
+        [ "$rejected" -gt 0 ] && logger -t eclipvpn "Subscription: $rejected of $total entries rejected (empty host / bogus port / bad credential)"
+        [ "$unknown" -gt 0 ] && logger -t eclipvpn "Subscription: skipped $unknown unsupported-protocol entries"
     fi
 
     echo "$count"
