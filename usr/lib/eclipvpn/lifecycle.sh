@@ -3,8 +3,56 @@
 # Sourced into /usr/bin/eclipvpn; shares its globals and helpers, all
 # resolved at call time, so source order among the libs does not matter.
 
+# Bring up the proxy engine(s) for server index $1 in mode $2, assuming any
+# previous daemons are already stopped. Engine-aware (see usr/bin/eclipvpn):
+#   - xray protocols (vless/vmess/trojan/shadowsocks): start xray (SOCKS:1080),
+#     verify the tunnel, then sing-box (tproxy/routing, "default" = socks→xray).
+#   - hysteria2: start ONLY sing-box — it dials the exit natively and serves its
+#     own SOCKS:1080; xray is never launched.
+# Echoes the VPN exit IP on success (rc 0). On failure leaves daemons stopped
+# and returns: 1 engine config/start failed, 2 tunnel test returned no IP,
+# 3 sing-box failed to start. The shared test_xray (curls 127.0.0.1:1080)
+# verifies the live tunnel for BOTH engines.
+_tunnel_bringup() {
+    local sel="$1" mode="$2" engine ip
+    engine=$(_engine_for_protocol "$(_server_protocol "$sel")")
+
+    if [ "$engine" = "singbox" ]; then
+        # hysteria2 is QUIC — pre-flight the binary's build tags. A sing-box
+        # without with_quic silently lacks the hysteria2 outbound and would
+        # fail config load; surface a clear reason instead of a cryptic crash.
+        if ! /usr/bin/sing-box version 2>/dev/null | grep -q 'with_quic'; then
+            flog "ERROR: installed sing-box lacks QUIC (with_quic) — Hysteria2 not supported on this build"
+            return 1
+        fi
+        flog "Starting sing-box (Hysteria2 native, server index=$sel, mode=$mode)"
+        generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$sel" \
+            || { flog "ERROR: sing-box config generation failed"; return 3; }
+        start_singbox "$ECLIPVPN_TMP/singbox.json" || return 3
+        ip=$(test_xray)   # curls SOCKS:1080 — served by sing-box in this mode
+        [ -z "$ip" ] && { stop_singbox; return 2; }
+        flog "Hysteria2 tunnel up, VPN IP: $ip"
+        printf '%s' "$ip"
+        return 0
+    fi
+
+    # xray engine (vless / vmess / trojan / shadowsocks)
+    flog "Starting xray (server index=$sel)"
+    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$sel" "$ECLIPVPN_TMP/xray.json" \
+        || { flog "ERROR: xray config generation failed"; return 1; }
+    start_xray "$ECLIPVPN_TMP/xray.json" || return 1
+    ip=$(test_xray)
+    [ -z "$ip" ] && { stop_xray; return 2; }
+    flog "xray connected, VPN IP: $ip"
+    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$sel" \
+        || { flog "ERROR: sing-box config generation failed"; stop_xray; return 3; }
+    start_singbox "$ECLIPVPN_TMP/singbox.json" || { stop_xray; return 3; }
+    printf '%s' "$ip"
+    return 0
+}
+
 cmd_start() {
-    if is_xray_running && is_singbox_running; then
+    if _vpn_running; then
         echo '{"error":"already running"}'
         return 1
     fi
@@ -70,36 +118,25 @@ cmd_start() {
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$selected" -ge "$total" ] && selected=0
 
-    # Step 3: Start xray
-    flog "Starting xray (server index=$selected)"
-    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$ECLIPVPN_TMP/xray.json"
-    start_xray "$ECLIPVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
-
-    # Step 4: Verify xray
-    local vpn_ip
-    vpn_ip=$(test_xray)
-    if [ -z "$vpn_ip" ]; then
-        flog "ERROR: VPN connection test failed"
+    # Steps 3-5: bring up the proxy engine(s) for the selected server.
+    # Engine-aware — hysteria2 runs sing-box only; xray protocols run xray +
+    # sing-box. _tunnel_bringup leaves daemons stopped on any failure.
+    local vpn_ip rc
+    vpn_ip=$(_tunnel_bringup "$selected" "$mode"); rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$vpn_ip" ]; then
+        flog "ERROR: VPN bring-up failed (rc=$rc)"
         local _fail_name=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
         local _fail_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "test_xray не прошёл при запуске"
-        stop_xray
-        echo '{"error":"VPN connection failed"}'
+        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "не удалось поднять туннель при запуске (rc=$rc)"
+        case "$rc" in
+            1) echo '{"error":"proxy engine failed to start"}' ;;
+            2) echo '{"error":"VPN connection failed"}' ;;
+            3) echo '{"error":"sing-box failed"}' ;;
+            *) echo '{"error":"VPN start failed"}' ;;
+        esac
         return 1
     fi
-    flog "xray connected, VPN IP: $vpn_ip"
-
-    # Step 5: Start sing-box
-    flog "Starting sing-box (mode=$mode)"
-    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" 1080 "$mode"
-    start_singbox "$ECLIPVPN_TMP/singbox.json"
-    if [ $? -ne 0 ]; then
-        flog "ERROR: sing-box failed to start"
-        stop_xray
-        echo '{"error":"sing-box failed"}'
-        return 1
-    fi
-    flog "sing-box started"
+    flog "Tunnel up, VPN IP: $vpn_ip"
 
     # Step 6: nftables + DNS (LAST)
     flog "Setting up nftables and DNS redirect"
@@ -160,7 +197,7 @@ cmd_restart() {
     # Used by mode change, server switch, watchdog failover, and the UI's
     # "Restart" button. cmd_stop still does the full teardown when the user
     # genuinely wants VPN off.
-    if ! is_xray_running && ! is_singbox_running; then
+    if ! _vpn_running; then
         # cmd_start has its own _op_begin — clear ours first to avoid
         # the trap clearing the sentinel mid-operation.
         _op_end
@@ -169,25 +206,31 @@ cmd_restart() {
         return $?
     fi
 
-    local selected mode
+    local selected mode engine
     selected=$(get_config_val selected_server 0)
     mode=$(get_config_val mode "all_vpn")
     local total
     total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
     [ -n "$total" ] && [ "$selected" -ge "$total" ] && selected=0
+    engine=$(_engine_for_protocol "$(_server_protocol "$selected")")
 
     # No-op fast path: if the freshly-generated configs are identical to what's
     # already running, don't tear processes down. Saves the 5s gap when the UI
     # fires restart for a setting that doesn't actually affect xray/sing-box.
     # Skipped when force=1 (manual UI Restart button) — the user explicitly
     # wants the daemons kicked even if configs match.
+    # Engine-aware: a hysteria2 server has no xray.json, so only sing-box is
+    # compared in that mode (xray_match stays 1 = "nothing to mismatch").
     local new_xray="$ECLIPVPN_TMP/xray.new.json"
     local new_singbox="$ECLIPVPN_TMP/singbox.new.json"
-    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$new_xray" 2>/dev/null
-    generate_singbox_config "$new_singbox" 1080 "$mode" 2>/dev/null
-    if [ "$force" != "1" ] && \
-       [ -s "$new_xray" ] && [ -s "$new_singbox" ] && \
-       cmp -s "$new_xray" "$ECLIPVPN_TMP/xray.json" && \
+    generate_singbox_config "$new_singbox" "$mode" "$ECLIPVPN_TMP/servers.json" "$selected" 2>/dev/null
+    local xray_match=1
+    if [ "$engine" = "xray" ]; then
+        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$new_xray" 2>/dev/null
+        { [ -s "$new_xray" ] && cmp -s "$new_xray" "$ECLIPVPN_TMP/xray.json"; } || xray_match=0
+    fi
+    if [ "$force" != "1" ] && [ "$xray_match" -eq 1 ] && \
+       [ -s "$new_singbox" ] && \
        cmp -s "$new_singbox" "$ECLIPVPN_TMP/singbox.json"; then
         rm -f "$new_xray" "$new_singbox"
         # Configs are identical, but is the tunnel actually carrying traffic?
@@ -220,26 +263,24 @@ cmd_restart() {
     stop_xray
     sleep 1
 
-    flog "Starting xray (server index=$selected)"
-    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$ECLIPVPN_TMP/xray.json"
-    start_xray "$ECLIPVPN_TMP/xray.json" || { flog "ERROR: xray failed to start"; echo '{"error":"xray failed"}'; return 1; }
-
-    local vpn_ip
-    vpn_ip=$(test_xray)
-    if [ -z "$vpn_ip" ]; then
-        flog "ERROR: VPN connection test failed after restart"
+    # Engine-aware bring-up — same path cmd_start uses (hysteria2 = sing-box
+    # only; xray protocols = xray + sing-box). Leaves daemons stopped on failure.
+    local vpn_ip rc
+    vpn_ip=$(_tunnel_bringup "$selected" "$mode"); rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$vpn_ip" ]; then
+        flog "ERROR: VPN bring-up failed after restart (rc=$rc)"
         local _fail_name=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
         local _fail_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "test_xray не прошёл при переключении"
-        stop_xray
-        echo '{"error":"VPN connection failed"}'
+        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "не удалось поднять туннель при переключении (rc=$rc)"
+        case "$rc" in
+            1) echo '{"error":"proxy engine failed to start"}' ;;
+            2) echo '{"error":"VPN connection failed"}' ;;
+            3) echo '{"error":"sing-box failed"}' ;;
+            *) echo '{"error":"VPN restart failed"}' ;;
+        esac
         return 1
     fi
-    flog "xray reconnected, VPN IP: $vpn_ip"
-
-    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" 1080 "$mode"
-    start_singbox "$ECLIPVPN_TMP/singbox.json" || { flog "ERROR: sing-box failed"; stop_xray; echo '{"error":"sing-box failed"}'; return 1; }
-    flog "sing-box restarted"
+    flog "Tunnel reconnected, VPN IP: $vpn_ip"
 
     date +%s > "$ECLIPVPN_TMP/start_time"
     echo "$vpn_ip" > "$ECLIPVPN_TMP/vpn_ip"
@@ -263,7 +304,7 @@ cmd_status() {
     # Single jq pass: --slurpfile reads config + servers.json once each,
     # everything else (running, vpn_ip, uptime, etc.) comes via --argjson/--arg.
     local running="false" uptime=0 vpn_ip=""
-    if is_xray_running && is_singbox_running; then
+    if _vpn_running; then
         running="true"
         [ -f "$ECLIPVPN_TMP/start_time" ] && {
             local st=$(cat "$ECLIPVPN_TMP/start_time")
@@ -307,8 +348,10 @@ cmd_status() {
           server: (if $running then ($srv[$sel].name // "") else "" end),
           uptime:$uptime,
           selected: $sel,
-          servers: ($srv | map({name, host, port, protocol:(.protocol // "vless")})),
+          servers: ($srv | map({name, host, port, protocol:(.protocol // "vless"),
+                                sub_id:(.sub_id // ""), sub_name:(.sub_name // "")})),
           subscription_url: ($c.subscription_url // ""),
+          subscriptions: ($c.subscriptions // []),
           vpn_ip:$vpn_ip,
           mode: ($c.mode // "all_vpn"),
           devices:$devices,

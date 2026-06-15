@@ -19,7 +19,7 @@ _urldec() {
 
 # Parse query string
 action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
-on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force=""
+on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force="" sub_id=""
 IFS='&'
 for pair in $QUERY_STRING; do
     k="${pair%%=*}"; v="${pair#*=}"
@@ -31,7 +31,7 @@ for pair in $QUERY_STRING; do
         on) on_time="$v" ;; off) off_time="$v" ;;
         ip) ip_addr="$v" ;; route) route="$v" ;;
         op) op="$v" ;; name) preset_name="$v" ;;
-        force) force="$v" ;;
+        force) force="$v" ;; id) sub_id="$v" ;;
     esac
 done
 unset IFS
@@ -46,8 +46,9 @@ unset IFS
 [ -n "$filter" ]   && case "$filter"   in *[!a-zA-Z]*)                 _bad filter;; esac
 [ -n "$key" ]      && case "$key"      in *[!a-zA-Z0-9_]*)             _bad key;;    esac
 [ -n "$domain" ]   && case "$domain"   in .*|*..*|*/*/*|*[!a-zA-Z0-9.*/_-]*) _bad domain;; esac
-[ -n "$op" ]       && case "$op"       in list|enable|disable) ;; *)   _bad op;;     esac
+[ -n "$op" ]       && case "$op"       in list|enable|disable|add|remove|rename) ;; *) _bad op;; esac
 [ -n "$preset_name" ] && case "$preset_name" in *[!a-z]*)              _bad name;;   esac
+[ -n "$sub_id" ]   && case "$sub_id"   in *[!a-f0-9]*)                 _bad id;;     esac
 [ -n "$force" ]    && case "$force"    in 0|1) ;; *)                   _bad force;;  esac
 [ -n "$on_time" ]  && case "$on_time"  in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) _bad on;;  esac
 [ -n "$off_time" ] && case "$off_time" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) _bad off;; esac
@@ -115,6 +116,30 @@ case "$action" in
     update)         /usr/bin/eclipvpn update ;;
     set-server)     /usr/bin/eclipvpn set-server "$index" ;;
     probe-server)   /usr/bin/eclipvpn probe-server "$index" ;;
+    sub)
+        # Multi-subscription manager. Free-text url/name come via the POST body
+        # (JSON) — not argv/query — so a subscription token can't leak through a
+        # process listing or be mangled by argv parsing. id is query (hex-gated).
+        case "$op" in
+            list)             /usr/bin/eclipvpn sub list ;;
+            enable|disable)   /usr/bin/eclipvpn sub "$op" "$sub_id" ;;
+            remove)           /usr/bin/eclipvpn sub remove "$sub_id" ;;
+            add)
+                if [ -n "$body" ]; then
+                    b_url=$(printf '%s' "$body" | jq -r '.url // empty' 2>/dev/null)
+                    b_name=$(printf '%s' "$body" | jq -r '.name // empty' 2>/dev/null)
+                    /usr/bin/eclipvpn sub add "$b_url" "$b_name"
+                else echo '{"error":"no data"}'; fi
+                ;;
+            rename)
+                if [ -n "$body" ]; then
+                    b_name=$(printf '%s' "$body" | jq -r '.name // empty' 2>/dev/null)
+                    /usr/bin/eclipvpn sub rename "$sub_id" "$b_name"
+                else echo '{"error":"no data"}'; fi
+                ;;
+            *) echo '{"error":"unknown sub op"}' ;;
+        esac
+        ;;
     ping)           /usr/bin/eclipvpn ping ;;
     auto-select)    /usr/bin/eclipvpn auto-select ;;
     set-mode)       /usr/bin/eclipvpn set-mode "$mode" ;;

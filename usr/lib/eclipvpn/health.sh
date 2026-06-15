@@ -210,7 +210,9 @@ cmd_diagnose() {
     _add() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$rows"; }
 
     # Kick off network probes in parallel — they dominate total runtime.
-    if is_xray_running; then
+    # _vpn_running, not is_xray_running: on a hysteria2 server sing-box owns
+    # SOCKS:1080 (xray isn't running) and these probes still measure the tunnel.
+    if _vpn_running; then
         ( curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 https://ifconfig.me 2>/dev/null > "$diag_dir/vpn_ip" ) &
         ( curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://youtube.com 2>/dev/null > "$diag_dir/yt_code" ) &
     fi
@@ -218,8 +220,14 @@ cmd_diagnose() {
 
     # Local checks while probes are in flight.
 
-    # 1. xray
-    if is_xray_running; then
+    # 1. proxy engine — xray, or sing-box-native for hysteria2 (no xray then).
+    if [ "$(_selected_engine)" = "singbox" ]; then
+        if is_singbox_running; then
+            _add "движок" "ok" "Hysteria2 (нативный sing-box outbound, порт 1080)"
+        else
+            _add "движок" "error" "Не запущен"
+        fi
+    elif is_xray_running; then
         _add "xray-core" "ok" "PID $(cat /tmp/eclipvpn/xray.pid 2>/dev/null), порт 1080"
     else
         _add "xray-core" "error" "Не запущен"
@@ -271,8 +279,8 @@ cmd_diagnose() {
     [ -f "$diag_dir/ya_code" ] && ya_code=$(cat "$diag_dir/ya_code" 2>/dev/null)
 
     # 7. VPN connection
-    if ! is_xray_running; then
-        _add "vpn-connection" "error" "xray не запущен"
+    if ! _vpn_running; then
+        _add "vpn-connection" "error" "VPN не запущен"
     elif [ -n "$vpn_ip" ]; then
         _add "vpn-connection" "ok" "VPN IP: $vpn_ip"
     else
@@ -280,8 +288,8 @@ cmd_diagnose() {
     fi
 
     # 8. Blocked site through VPN
-    if ! is_xray_running; then
-        _add "test-blocked" "error" "xray не запущен"
+    if ! _vpn_running; then
+        _add "test-blocked" "error" "VPN не запущен"
     elif [ "$yt_code" = "301" ] || [ "$yt_code" = "200" ]; then
         _add "test-blocked" "ok" "youtube.com: HTTP $yt_code через VPN"
     else
@@ -374,6 +382,10 @@ cmd_system_info() {
     [ -f /etc/openwrt_release ] && fw_ver=$(awk -F"'" '/DISTRIB_DESCRIPTION/{print $2}' /etc/openwrt_release)
     xray_ver=$(/usr/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')
     sb_ver=$(/usr/bin/sing-box version 2>/dev/null | head -1 | awk '{print $3}')
+    # Hysteria2 needs a sing-box compiled with the QUIC tag — surface it so the
+    # UI/diagnostics can flag hysteria2 servers as unusable on a stripped build.
+    local sb_quic="false"
+    /usr/bin/sing-box version 2>/dev/null | grep -q 'with_quic' && sb_quic="true"
     local sys_uptime=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
     local mem_total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)
     local mem_avail=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)
@@ -388,6 +400,7 @@ cmd_system_info() {
         --arg eclipvpn "$ECLIPVPN_VERSION" \
         --arg xray "$xray_ver" \
         --arg singbox "$sb_ver" \
+        --argjson singbox_quic "$sb_quic" \
         --arg openwrt "$fw_ver" \
         --arg arch "$arch" \
         --arg cpu "$cpu_model" \
@@ -412,14 +425,19 @@ cmd_healthcheck() {
             '. + [{name:$n, status:$s, detail:$d}]')
     }
 
-    # 1. Processes
-    is_xray_running && _hc "xray" "ok" "PID $(cat /tmp/eclipvpn/xray.pid)" \
-        || _hc "xray" "error" "Не запущен"
+    # 1. Processes — engine-aware: hysteria2 has no xray (sing-box dials it).
+    if [ "$(_selected_engine)" = "singbox" ]; then
+        is_singbox_running && _hc "Hysteria2" "ok" "Нативный sing-box outbound, SOCKS :1080" \
+            || _hc "Hysteria2" "error" "Не запущен"
+    else
+        is_xray_running && _hc "xray" "ok" "PID $(cat /tmp/eclipvpn/xray.pid)" \
+            || _hc "xray" "error" "Не запущен"
+    fi
     is_singbox_running && _hc "sing-box" "ok" "PID $(cat /tmp/eclipvpn/singbox.pid)" \
         || _hc "sing-box" "error" "Не запущен"
 
     # 2. Ports
-    netstat -tlnp 2>/dev/null | grep -q ":1080 " && _hc "SOCKS :1080" "ok" "xray слушает" \
+    netstat -tlnp 2>/dev/null | grep -q ":1080 " && _hc "SOCKS :1080" "ok" "движок слушает" \
         || _hc "SOCKS :1080" "error" "Порт не открыт"
     netstat -tlnp 2>/dev/null | grep -q ":2154 " && _hc "tproxy :2154" "ok" "sing-box слушает" \
         || _hc "tproxy :2154" "error" "Порт не открыт"
@@ -446,7 +464,7 @@ cmd_healthcheck() {
         || _hc "DNS youtube.com" "error" "Не резолвится"
 
     # 6. VPN connection
-    if is_xray_running; then
+    if _vpn_running; then
         # -4 forces IPv4 — sing-box's strategy is ipv4_only but ifconfig.me
         # serves IPv6 too via Happy Eyeballs, which produced confusing
         # AAAA records in the "VPN туннель" check.
@@ -488,7 +506,7 @@ cmd_healthcheck() {
     # endpoint reports our exit IP — it must match the current VPN IP.
     # Doing this from the router directly would always see the WAN IP
     # (router itself isn't tproxied — that would cause a routing loop).
-    if is_xray_running; then
+    if _vpn_running; then
         local cur_vpn_ip trace seen_ip
         cur_vpn_ip=$(cat "$ECLIPVPN_TMP/vpn_ip" 2>/dev/null)
         trace=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://1.1.1.1/cdn-cgi/trace 2>/dev/null)

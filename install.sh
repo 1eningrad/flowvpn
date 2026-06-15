@@ -163,6 +163,7 @@ mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/eclipvpn
 for file in \
     usr/bin/eclipvpn \
     usr/lib/eclipvpn/parse.sh \
+    usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
     usr/lib/eclipvpn/network.sh \

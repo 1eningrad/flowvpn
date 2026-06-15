@@ -15,6 +15,7 @@ ECLIPVPN_TMP="/tmp/eclipvpn"
 ulimit -n 8192 2>/dev/null
 
 . "$ECLIPVPN_LIB/parse.sh"
+. "$ECLIPVPN_LIB/subscriptions.sh"
 . "$ECLIPVPN_LIB/xray.sh"
 . "$ECLIPVPN_LIB/singbox.sh"
 . "$ECLIPVPN_LIB/network.sh"
@@ -224,6 +225,56 @@ _rotate_log() {
 # Watchdog — auto-failover
 # ============================================================
 
+# ============================================================
+# Proxy-engine abstraction (multi-protocol)
+# ============================================================
+# A server's protocol decides which binary actually dials the exit:
+#   - vless / vmess / trojan / shadowsocks → xray (shared SOCKS:1080 frontend;
+#     sing-box's "default" outbound is socks→xray).
+#   - hysteria2 → xray CAN'T speak it (QUIC). sing-box dials it NATIVELY as its
+#     "default" outbound and ALSO exposes SOCKS:1080 itself, so xray is not run
+#     at all and every probe/health path that curls 127.0.0.1:1080 keeps working
+#     unchanged (sing-box owns 1080 in that mode; xray owns it otherwise).
+# These four helpers are the single source of truth for that decision — used by
+# lifecycle (start/restart/status), servers (probe/auto), watchdog, domains,
+# config and health. Resolved at call time, so they may reference is_*_running
+# (xray.sh/singbox.sh) freely.
+
+# Which engine runs $1. Echoes "xray" or "singbox". Empty/unknown ⇒ xray.
+_engine_for_protocol() {
+    case "$1" in
+        hysteria2) echo "singbox" ;;
+        *)         echo "xray" ;;
+    esac
+}
+
+# Protocol of server index $1 in servers.json (default "vless" when absent —
+# an out-of-range index or missing field both fall through // "vless").
+_server_protocol() {
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo "vless"; return; }
+    jq -r --argjson i "$1" '(.[$i].protocol // "vless")' "$ECLIPVPN_TMP/servers.json" 2>/dev/null || echo "vless"
+}
+
+# Engine for the currently-selected server.
+_selected_engine() {
+    _engine_for_protocol "$(_server_protocol "$(get_config_val selected_server 0)")"
+}
+
+# Is the VPN tunnel up? Engine-aware. For a hysteria2 server the single sing-box
+# process IS the entire tunnel (no xray); for xray-engine protocols both xray
+# (SOCKS:1080) and sing-box (tproxy/routing) must be alive. This REPLACES the
+# old bare `is_xray_running && is_singbox_running` everywhere — using
+# is_xray_running directly on a hysteria2 server reports "down" forever (xray
+# never runs), which would make the watchdog revive in a loop and the UI show
+# the VPN as stopped.
+_vpn_running() {
+    if [ "$(_selected_engine)" = "singbox" ]; then
+        is_singbox_running
+    else
+        is_xray_running && is_singbox_running
+    fi
+}
+
 # A server is "metered" (RU-safe, mobile-carrier) when its name contains
 # carrier markers. Such servers give a Russian IP, so watchdog must NEVER
 # auto-switch to them — doing so defeats the purpose of a VPN.
@@ -339,11 +390,13 @@ _log_incident() {
 
 if [ ! -f "$ECLIPVPN_CONFIG" ]; then
     mkdir -p /etc/eclipvpn
-    echo '{"subscription_url":"","selected_server":0,"interface":"br-lan","auto_start":true,"mode":"all_vpn"}' | jq '.' > "$ECLIPVPN_CONFIG"
+    echo '{"subscription_url":"","subscriptions":[],"selected_server":0,"interface":"br-lan","auto_start":true,"mode":"all_vpn"}' | jq '.' > "$ECLIPVPN_CONFIG"
     chmod 600 "$ECLIPVPN_CONFIG" 2>/dev/null
 fi
 # Defense in depth: tighten if a previous version left it world-readable.
 [ -f "$ECLIPVPN_CONFIG" ] && chmod 600 "$ECLIPVPN_CONFIG" 2>/dev/null
+# Migrate a legacy single subscription_url into subscriptions[] (idempotent).
+_migrate_subscriptions
 
 case "$1" in
     start)          cmd_start ;;
@@ -352,6 +405,7 @@ case "$1" in
     status)         cmd_status ;;
     set-server)     cmd_set_server "$2" ;;
     probe-server)   cmd_probe_server "$2" ;;
+    sub)            cmd_sub "$2" "$3" "$4" ;;
     update)         cmd_update ;;
     ping)           cmd_ping ;;
     auto-select)    cmd_auto_select ;;
