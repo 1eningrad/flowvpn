@@ -78,6 +78,15 @@ cmd_remove_domain() {
 
 cmd_get_domains() {
     local direct_domains="[]" vpn_domains="[]" ru_builtin="[]" vpn_builtin="[]"
+    # Materialize the built-in lists on demand. The RU-direct (195) and force-VPN
+    # (36) lists are pure offline heredocs, but they normally only get written at
+    # tunnel start (which needs a subscription + network). Without this a fresh /
+    # never-started / post-reboot router (/tmp is wiped) shows 0 exceptions
+    # instead of the defaults a running router shows. No internet needed here;
+    # the next real start still regenerates the full set (incl. downloaded .srs).
+    mkdir -p "$SR_RULES_DIR" 2>/dev/null
+    [ -f "$SR_RULES_DIR/ru_domains.list" ]  || _fetch_ru_domains  2>/dev/null
+    [ -f "$SR_RULES_DIR/vpn_domains.list" ] || _fetch_vpn_domains 2>/dev/null
     [ -f "$CUSTOM_DIRECT" ] && direct_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_DIRECT")
     [ -f "$CUSTOM_VPN" ] && vpn_domains=$(jq -R -s 'split("\n") | map(select(length > 0 and (startswith("#") | not)))' "$CUSTOM_VPN")
 

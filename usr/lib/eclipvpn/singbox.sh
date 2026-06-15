@@ -480,6 +480,17 @@ mistral.ai
 cohere.com
 cohere.ai
 meta.ai
+# YouTube — heavily throttled on RU networks (per-flow policer), so force it
+# through the VPN by default for every install. googlevideo.com is the video
+# CDN, youtubei.googleapis.com the app/API endpoint. (There is also a
+# toggleable `youtube` service preset; this built-in entry is the always-on
+# baseline so a fresh install gets working YouTube out of the box.)
+youtube.com
+youtu.be
+youtube-nocookie.com
+ytimg.com
+googlevideo.com
+youtubei.googleapis.com
 VPNEOF
     } > "$SR_RULES_DIR/vpn_domains.list"
 
