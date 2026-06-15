@@ -31,7 +31,7 @@ _migrate_subscriptions() {
     local tmp
     if [ -n "$url" ] && [ "$url" != "null" ]; then
         tmp=$(jq --arg id "$(_sub_id_for_url "$url")" --arg url "$url" \
-            '.subscriptions = [{id:$id, name:"Подписка 1", url:$url, enabled:true}]' "$ECLIPVPN_CONFIG")
+            '.subscriptions = [{id:$id, name:"Подписка 1", url:$url, enabled:true, name_auto:true}]' "$ECLIPVPN_CONFIG")
     else
         tmp=$(jq '.subscriptions = []' "$ECLIPVPN_CONFIG")
     fi
@@ -314,10 +314,16 @@ update_subscription() {
 
     local i=0
     while [ "$i" -lt "$n" ]; do
-        local sid surl sname
+        local sid surl sname nauto
         sid=$(printf '%s' "$subs"  | jq -r --argjson i "$i" '.[$i].id')
         surl=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].url')
         sname=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].name // ""')
+        # name_auto: true (default for legacy/migrated subs) ⇒ adopt the panel's
+        # Profile-Title as the name; false ⇒ the user named it, never override.
+        # NB: `.name_auto // true` is WRONG — jq's // treats the boolean false as
+        # empty, so false//true → true and a user name would get clobbered. Read
+        # it with an explicit `== false` test (same gotcha as auto_start).
+        nauto=$(printf '%s' "$subs" | jq -r --argjson i "$i" 'if (.[$i].name_auto) == false then "false" else "true" end')
         i=$((i + 1))
         { [ -z "$sid" ] || [ "$sid" = "null" ] || [ -z "$surl" ] || [ "$surl" = "null" ]; } && continue
         surl=$(printf '%s' "$surl" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -325,6 +331,20 @@ update_subscription() {
         local cache="/tmp/eclipvpn/sub.$sid.servers.json"
         local newc="/tmp/eclipvpn/sub.$sid.servers.new"
         if fetch_subscription "$surl" "$body" "$sid"; then
+            # Take the name from the subscription itself (Profile-Title) unless
+            # the user set one. _parse_subscription_headers already decoded any
+            # `base64:`-prefixed title into subscription_meta[sub_id].title.
+            if [ "$nauto" = "true" ]; then
+                local title
+                title=$(jq -r --arg id "$sid" '.[$id].title // ""' /tmp/eclipvpn/subscription_meta.json 2>/dev/null)
+                if [ -n "$title" ] && [ "$title" != "null" ] && [ "$title" != "$sname" ]; then
+                    sname="$title"
+                    local cfg; cfg=$(jq --arg id "$sid" --arg n "$title" \
+                        '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .name=$n else . end))' "$config")
+                    [ -n "$cfg" ] && save_config "$cfg"
+                    logger -t eclipvpn "Subscription[$sid]: name taken from panel title"
+                fi
+            fi
             local c; c=$(parse_subscription_file "$body" "$newc")
             if [ "$c" -gt 0 ] 2>/dev/null; then
                 ( umask 077; jq --arg sid "$sid" --arg sname "$sname" \
@@ -390,18 +410,19 @@ cmd_sub() {
             url=$(printf '%s' "$url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
             local id; id=$(_sub_id_for_url "$url")
             [ -z "$id" ] && { echo '{"error":"could not derive id"}'; return 1; }
-            # Idempotent by id: existing ⇒ refresh url + re-enable (+ rename only
-            # if a name was given); new ⇒ append with given or auto name.
+            # Idempotent by id. A user-supplied name pins name_auto=false (never
+            # overridden by the panel title); no name ⇒ a placeholder + name_auto
+            # =true, so update_subscription adopts the Profile-Title on fetch.
             local tmp; tmp=$(jq --arg id "$id" --arg url "$url" --arg name "$name" '
                 .subscriptions = ((.subscriptions // []) as $s
                     | if ($s | map(.id) | index($id)) then
                         ($s | map(if .id==$id
-                                  then (.url=$url | .enabled=true | (if $name!="" then .name=$name else . end))
+                                  then (.url=$url | .enabled=true | (if $name!="" then (.name=$name | .name_auto=false) else . end))
                                   else . end))
                       else
                         ($s + [{id:$id,
                                 name:(if $name!="" then $name else "Подписка \(($s|length)+1)" end),
-                                url:$url, enabled:true}])
+                                url:$url, enabled:true, name_auto:($name=="")}])
                       end)
                 | .subscription_url = ((.subscriptions[0].url) // "")' "$ECLIPVPN_CONFIG")
             save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
@@ -432,8 +453,10 @@ cmd_sub() {
         rename)
             local id="$arg2" name="$arg3"
             { [ -z "$id" ] || [ -z "$name" ]; } && { echo '{"error":"id and name required"}'; return 1; }
+            # name_auto=false pins this name so a later update won't replace it
+            # with the panel's Profile-Title.
             local tmp; tmp=$(jq --arg id "$id" --arg name "$name" \
-                '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .name=$name else . end))' "$ECLIPVPN_CONFIG")
+                '.subscriptions = ((.subscriptions // []) | map(if .id==$id then (.name=$name | .name_auto=false) else . end))' "$ECLIPVPN_CONFIG")
             save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
             # Rename is purely cosmetic (sub_name tag) — re-tag the per-sub cache
             # and the merged servers.json IN PLACE instead of re-fetching every
