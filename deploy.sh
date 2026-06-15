@@ -13,16 +13,23 @@ set -eu
 ROUTER="${ROUTER:-root@192.168.1.1}"
 cd "$(dirname "$0")"
 
-echo "→ git pull"
-# Capture instead of piping straight to tail: without pipefail (plain sh),
-# set -e only sees tail's exit code and a failed/conflicted pull would
-# silently deploy whatever half-state is on disk.
-PULL_OUT=$(git pull --rebase --autostash 2>&1) || {
-    printf '%s\n' "$PULL_OUT"
-    echo "ERROR: git pull failed — resolve before deploying" >&2
-    exit 1
-}
-printf '%s\n' "$PULL_OUT" | tail -3
+# SKIP_PULL=1 ships the current working tree as-is, without syncing git first.
+# Use it to deploy uncommitted local changes (e.g. to a test router) or when the
+# git remote is unreachable (GitHub is blocked from inside RU).
+if [ "${SKIP_PULL:-0}" = 1 ]; then
+    echo "→ skip git pull (SKIP_PULL=1) — shipping working tree as-is"
+else
+    echo "→ git pull"
+    # Capture instead of piping straight to tail: without pipefail (plain sh),
+    # set -e only sees tail's exit code and a failed/conflicted pull would
+    # silently deploy whatever half-state is on disk.
+    PULL_OUT=$(git pull --rebase --autostash 2>&1) || {
+        printf '%s\n' "$PULL_OUT"
+        echo "ERROR: git pull failed — resolve before deploying (or re-run with SKIP_PULL=1)" >&2
+        exit 1
+    }
+    printf '%s\n' "$PULL_OUT" | tail -3
+fi
 
 echo "→ ship scripts/cgi/init.d to $ROUTER"
 # COPYFILE_DISABLE=1 keeps macOS BSD tar from embedding `._*` AppleDouble
