@@ -1,6 +1,6 @@
 # EclipVPN
 
-Лёгкий VPN-менеджер для роутеров на OpenWrt. Заворачивает весь трафик через VPN (VLESS+XHTTP+Reality), российские сайты идут напрямую.
+Лёгкий VPN-менеджер для роутеров на OpenWrt. Заворачивает весь трафик через VPN, российские сайты идут напрямую. Поддерживает **VLESS / VMess / Trojan / Shadowsocks** (через xray) и **Hysteria2** (нативно через sing-box), несколько подписок одновременно.
 
 [English](#english) | **Русский**
 
@@ -11,11 +11,12 @@
 ## Возможности
 
 - **Два режима маршрутизации**: «Всё через VPN кроме РФ» / «Только заблокированные»
-- **VLESS + XHTTP + Reality** через xray-core 26.4.17+
+- **Несколько протоколов**: VLESS (Reality/TLS; транспорты XHTTP / TCP+Vision / WS / gRPC), VMess, Trojan, Shadowsocks — через xray-core 26.4.17+; **Hysteria2** — нативным outbound'ом sing-box (QUIC, нужен `with_quic`)
 - **sing-box tproxy** маршрутизация с geosite-ru / geoip-ru
 - **Защита DNS**: перехват DNS, блокировка DoT и QUIC от подмены провайдером
 - **Веб-интерфейс**: тёмная тема, glassmorphism, русский язык, mobile-friendly
-- **Серверы**: импорт подписки (Remnawave / любая base64-vless), параллельный пинг с retry+ICMP fallback
+- **Несколько подписок сразу**: серверы со всех включённых провайдеров сливаются в один список (с меткой провайдера); формат подписки — base64 или JSON, авто-определение; имя подписки берётся из самой подписки (заголовок `Profile-Title`)
+- **Серверы**: параллельный пинг с retry+ICMP fallback; список группируется по провайдеру, группы можно сворачивать, длинный список крутится в рамке
 - **Маршрутизация по устройствам**: VPN или Direct для каждого устройства в LAN
 - **Скорость в реальном времени**: через Clash API WebSocket
 - **Авто-переключение**: watchdog меняет сервер при сбое (тарифицируемые операторы исключаются)
@@ -73,9 +74,8 @@ opkg install jq coreutils-base64 kmod-nft-tproxy sing-box unzip
 chmod +x /usr/bin/eclipvpn /www/cgi-bin/eclipvpn /etc/init.d/eclipvpn /usr/lib/eclipvpn/*.sh
 
 # 5. Настройка
-eclipvpn set-config subscription_url "https://your-subscription-url"
-eclipvpn update
-eclipvpn start
+eclipvpn sub add "https://your-subscription-url"   # имя возьмётся из подписки; повтори для нескольких провайдеров
+eclipvpn start                                     # (sub add сам скачивает серверы)
 
 # 6. Автозапуск
 /etc/init.d/eclipvpn enable
@@ -93,17 +93,22 @@ eclipvpn start
 | **Устройства** | LAN-клиенты, переключение VPN/Direct по MAC |
 | **Журнал** | Соединения в реальном времени. Фильтры: Все · VPN · Direct · Ошибки · Сбои · DNS · EclipVPN. Под фильтрами видна короткая подсказка что значит каждый. |
 | **Диагностика** | Быстрые метрики (статус, IP, сервер, время) + healthcheck (статус процессов, DNS, утечки, ресурсы, ошибки) |
-| **Настройки** | Подписка, расписание, авто-обновление, бэкап |
+| **Настройки** | Подписки (несколько: добавить / вкл-выкл / переименовать / удалить, у каждой видно имя из панели и квоту), расписание, авто-обновление, бэкап |
 
 ## Команды CLI
 
 ```bash
 eclipvpn start | stop | restart | status
-eclipvpn set-server N                # Выбрать сервер по индексу
+eclipvpn set-server N                # Выбрать сервер по индексу (в общем списке всех подписок)
 eclipvpn set-mode all_vpn|blocklist  # Режим маршрутизации
-eclipvpn update                      # Обновить подписку и правила
+eclipvpn sub list                    # Список подписок
+eclipvpn sub add URL [ИМЯ]           # Добавить подписку (имя возьмётся из Profile-Title, если не задано)
+eclipvpn sub remove ID               # Удалить подписку (ID — из `sub list`)
+eclipvpn sub enable ID | disable ID  # Включить / выключить подписку
+eclipvpn sub rename ID ИМЯ           # Переименовать подписку
+eclipvpn update                      # Обновить ВСЕ включённые подписки и правила
 eclipvpn ping                        # Пинг всех серверов (TCP, retry, ICMP fallback)
-eclipvpn real-ping                   # Реальная задержка через VLESS+Reality (для отладки)
+eclipvpn real-ping                   # Реальная задержка через активный туннель, любой протокол (для отладки)
 eclipvpn diagnose                    # Быстрая диагностика
 eclipvpn healthcheck                 # Полная проверка (статус, DNS, утечки)
 eclipvpn add-domain DOMAIN vpn       # Принудительно через VPN
@@ -119,9 +124,11 @@ eclipvpn backup                      # Экспорт настроек
 
 ```
 Клиент → dnsmasq(:53) → sing-box DNS(:5354) → dns-proxy(VPN) / dns-direct
-       → nftables tproxy → sing-box(:2154) → xray SOCKS(:1080) → VPN-сервер (VLESS+Reality)
+       → nftables tproxy → sing-box(:2154) → xray SOCKS(:1080) → VPN-сервер (VLESS/VMess/Trojan/SS)
                                             → direct (RU-сайты)
 ```
+
+**Движок зависит от протокола сервера.** Для VLESS / VMess / Trojan / Shadowsocks набирает **xray** (он держит SOCKS на :1080, sing-box отдаёт ему трафик через `default`-outbound). Hysteria2 — это QUIC, xray его не умеет, поэтому **sing-box набирает его сам** нативным outbound'ом (и сам держит :1080); xray в этом случае не запускается. Переключение прозрачно: выбираешь сервер любого протокола из общего списка — нужный движок поднимается автоматически.
 
 ### Как работает маршрутизация
 
@@ -139,6 +146,7 @@ eclipvpn backup                      # Экспорт настроек
 ## Важные нюансы
 
 - **xray ≥ 26.4.17** — версия из opkg (25.1.30) ломает XHTTP+Reality
+- **Hysteria2 требует sing-box с тегом `with_quic`** — это QUIC-протокол, набирается нативно через sing-box (не xray). В OpenWrt 25.12 пакетный sing-box собран с QUIC; проверить: `sing-box version | grep with_quic`. Если тега нет — hysteria2-серверы распарсятся, но не подключатся (в лог пишется явная причина).
 - **mark 0x8000** — обязателен для обхода правил fw4
 - **geosite-ru включает google.com** — Gemini / AI Studio добавляйте в «Принудительно через VPN» (часть AI-сервисов уже встроена в дефолтный список)
 - **QUIC (UDP 443) блокируется** во всех режимах — приложения откатываются на TCP. Reject-правило стоит **до** force-VPN match'а, поэтому Gemini / ChatGPT по UDP не идут через VPN, а просто переходят на TCP. Это намеренно: QUIC поверх Reality+XHTTP нестабилен.
@@ -291,7 +299,7 @@ ssh root@<new-router-ip> '/etc/init.d/eclipvpn enable'
 <a name="english"></a>
 ## English
 
-Lightweight VPN manager for OpenWrt routers. Routes traffic through VLESS+XHTTP+Reality, Russian sites bypass the tunnel.
+Lightweight VPN manager for OpenWrt routers. Russian sites bypass the tunnel. Supports VLESS / VMess / Trojan / Shadowsocks (via xray) and Hysteria2 (native sing-box outbound), with several provider subscriptions merged into one server list.
 
 ### Quick install
 
