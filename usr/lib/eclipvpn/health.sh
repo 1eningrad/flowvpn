@@ -59,7 +59,7 @@ cmd_get_log() {
     # Source 2: xray log — only errors
     if [ "$filter" = "all" ] || [ "$filter" = "error" ]; then
         grep -iE "error|fail|warning" "$ECLIPVPN_TMP/xray.log" 2>/dev/null | \
-            grep -v "accepted\|started\|Reading config" | \
+            grep -v "accepted\|started\|Reading config\|feature Shadowsocks" | \
             tail -50 | awk '{print "XRAY|"$0}' >> "$tmplog"
     fi
 
@@ -555,7 +555,9 @@ cmd_healthcheck() {
         sb_noise="${sb_counts##* }"
     fi
     if [ -n "$cutoff_str" ] && [ -f /tmp/eclipvpn/xray.log ]; then
-        xr_err=$(grep -iE "error|fail" /tmp/eclipvpn/xray.log 2>/dev/null | awk -v c="$cutoff_str" '
+        # Drop xray's benign Shadowsocks-deprecation warning — it matches "errors"
+        # (common/errors) but is harmless nagging when an SS server is in the pool.
+        xr_err=$(grep -iE "error|fail" /tmp/eclipvpn/xray.log 2>/dev/null | grep -v "feature Shadowsocks" | awk -v c="$cutoff_str" '
             { if ($1 ~ /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}$/) { gsub("/","-",$1); ts=$1" "$2; if (ts >= c) cnt++ } }
             END { print cnt+0 }')
     fi
