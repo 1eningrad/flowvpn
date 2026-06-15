@@ -382,6 +382,24 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .speed-up .speed-value{color:var(--accent-warm)}
 
 /* Servers list */
+/* Bounded, internally-scrolled list so a big multi-subscription pool (100s of
+   servers) doesn't become one giant page-length strip. */
+.server-list{max-height:min(58vh,520px);overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
+.server-list::-webkit-scrollbar{width:8px}
+.server-list::-webkit-scrollbar-thumb{background:var(--card-hover);border-radius:4px}
+/* Collapsible provider group header (sticky so you keep context while scrolling). */
+.sub-group-head{
+  position:sticky;top:0;z-index:2;
+  display:flex;align-items:center;gap:7px;
+  padding:8px 6px 5px;margin-top:2px;cursor:pointer;user-select:none;
+  font-size:11px;font-weight:600;color:var(--text-dim);
+  text-transform:uppercase;letter-spacing:.04em;
+  background:var(--card);
+}
+.sub-group-head:hover{color:var(--text-muted)}
+.sub-group-head .sgh-chev{font-size:10px;width:10px;text-align:center;transition:transform .12s}
+.sub-group-head .sgh-count{font-weight:500;color:var(--text-dim);background:var(--card-hover);padding:0 7px;border-radius:9px;text-transform:none;letter-spacing:0}
+.sub-group-head .sgh-active{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
 .server{
   display:flex;align-items:center;gap:10px;
   padding:8px 12px;border-radius:6px;cursor:pointer;
@@ -1899,20 +1917,41 @@ function isMeteredServer(name){
   return /МТС|мтс|MTS|mts|Т2|т2|Tele2|tele2|\bБи\b|Билайн|билайн|Beeline|beeline|Мегафон|мегафон|Megafon|megafon/.test(name||'');
 }
 
+// Collapsed provider groups, keyed by sub_id, persisted so the choice survives
+// reloads. Lets a big multi-subscription pool (e.g. a 162-server provider) be
+// folded away to its header.
+let _collapsedSubs = new Set((function(){try{return JSON.parse(localStorage.getItem('eclipvpn-collapsed-subs')||'[]')}catch(e){return[]}})());
+function toggleSubGroup(key){
+  if(_collapsedSubs.has(key)) _collapsedSubs.delete(key); else _collapsedSubs.add(key);
+  try{localStorage.setItem('eclipvpn-collapsed-subs',JSON.stringify([..._collapsedSubs]))}catch(e){}
+  if(state&&state.servers)renderServers(state.servers,state.selected);
+}
 function renderServers(servers,sel,switchingIdx){
   const el=document.getElementById('serverList');
   if(!servers||!servers.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Серверы не загружены</div>';return}
-  // Group by provider only when servers come from >1 subscription — a single
-  // provider needs no header. Servers are contiguous per sub (merge order).
-  const provset={};servers.forEach(s=>{provset[s.sub_name||'']=1});
+  // Group by provider when servers come from >1 subscription (single provider
+  // needs no header). Key on the stable sub_id; servers are contiguous per sub.
+  // A collapsed group renders only its header — its rows are dropped from the
+  // DOM (keeps a 100s-server pool light), with a dot if the active server hides
+  // inside it.
+  const gkey=s=>(s.sub_id||s.sub_name||'');
+  const provset={};servers.forEach(s=>{provset[gkey(s)]=1});
   const showGroups=Object.keys(provset).length>1;
-  let _lastSub=null;
-  el.innerHTML=servers.map((s,i)=>{
-    let groupHead='';
-    if(showGroups&&(s.sub_name||'')!==_lastSub){
-      _lastSub=s.sub_name||'';
-      groupHead='<div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;padding:12px 4px 4px">'+esc(_lastSub||'Подписка')+'</div>';
+  const counts={};servers.forEach(s=>{const k=gkey(s);counts[k]=(counts[k]||0)+1});
+  const activeKey=(sel!=null&&servers[sel])?gkey(servers[sel]):null;
+  let curKey=null, html='';
+  servers.forEach((s,i)=>{
+    const key=gkey(s);
+    if(showGroups&&key!==curKey){
+      curKey=key;
+      const collapsed=_collapsedSubs.has(key);
+      const dot=(collapsed&&key===activeKey)?'<span class="sgh-active" title="Активный сервер в этой свёрнутой группе"></span>':'';
+      html+='<div class="sub-group-head" onclick="toggleSubGroup(\''+key+'\')" role="button" tabindex="0" aria-expanded="'+(collapsed?'false':'true')+'" title="'+(collapsed?'Развернуть':'Свернуть')+'">'
+        +'<span class="sgh-chev">'+(collapsed?'▸':'▾')+'</span>'
+        +'<span>'+esc(s.sub_name||'Подписка')+'</span>'
+        +'<span class="sgh-count">'+(counts[key]||0)+'</span>'+dot+'</div>';
     }
+    if(showGroups&&_collapsedSubs.has(key))return;   // collapsed group → skip rows
     const a=i===sel?' active':'';
     const sw=i===switchingIdx?' switching':'';
     const p=pings[i];
@@ -1931,7 +1970,7 @@ function renderServers(servers,sel,switchingIdx){
     const failTag=inc&&inc.count_24h>0
       ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Откройте «История сбоев» ниже.">⚠ ${inc.count_24h}</span>`
       :'';
-    return groupHead + `<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
+    html+=`<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
       ${flagBadge}
       <span class="server-name">${esc(name)}</span>
       ${protoTag}
@@ -1939,7 +1978,8 @@ function renderServers(servers,sel,switchingIdx){
       ${failTag}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>
     </div>`;
-  }).join('');
+  });
+  el.innerHTML=html;
 }
 
 const INCIDENT_LABEL={
