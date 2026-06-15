@@ -77,13 +77,39 @@ generate_xray_config() {
             extra=$(echo "$server" | jq -r '.extra // ""')
             flow=$(echo "$server" | jq -r '.flow // ""')
 
-            local xhttp_obj
-            xhttp_obj=$(jq -n --arg path "$path" --arg mode "$mode" '{path:$path, mode:$mode}')
-            if [ -n "$extra" ] && [ "$extra" != "" ]; then
-                xhttp_obj=$(echo "$xhttp_obj" "$extra" | jq -s '.[0] * .[1]')
-            fi
-            local stream
-            stream=$(jq -n --argjson xhttp "$xhttp_obj" '{network:"xhttp", xhttpSettings:$xhttp, sockopt:{mark:32768}}')
+            # streamSettings by transport. eclip-sub vless is xhttp (and an
+            # ABSENT type also defaults to xhttp), so the xhttp branch below is
+            # kept BYTE-IDENTICAL to the pre-transport generator — an existing
+            # servers.json regenerates the same xray.json and the cmd_restart
+            # unchanged-config fast path holds (verified by cmp). tcp/ws/grpc are
+            # for general multi-protocol subscriptions, e.g. VLESS-Reality-Vision
+            # over raw TCP (flow=xtls-rprx-vision + type=tcp), which the old
+            # xhttp-only generator silently mis-emitted.
+            local stream net="$transport"
+            [ -z "$net" ] && net="xhttp"
+            case "$net" in
+                xhttp)
+                    local xhttp_obj
+                    xhttp_obj=$(jq -n --arg path "$path" --arg mode "$mode" '{path:$path, mode:$mode}')
+                    if [ -n "$extra" ] && [ "$extra" != "" ]; then
+                        xhttp_obj=$(echo "$xhttp_obj" "$extra" | jq -s '.[0] * .[1]')
+                    fi
+                    stream=$(jq -n --argjson xhttp "$xhttp_obj" '{network:"xhttp", xhttpSettings:$xhttp, sockopt:{mark:32768}}')
+                    ;;
+                ws)
+                    stream=$(jq -n --arg path "$path" --arg host "$sni" \
+                        'if $host == "" then {network:"ws", wsSettings:{path:$path}, sockopt:{mark:32768}}
+                         else {network:"ws", wsSettings:{path:$path, headers:{Host:$host}}, sockopt:{mark:32768}} end')
+                    ;;
+                grpc)
+                    stream=$(jq -n --arg sn "$path" '{network:"grpc", grpcSettings:{serviceName:$sn}, sockopt:{mark:32768}}')
+                    ;;
+                *)
+                    # tcp (and any unknown) → raw TCP; flow=xtls-rprx-vision set on
+                    # the user object below requires this network.
+                    stream=$(jq -n '{network:"tcp", sockopt:{mark:32768}}')
+                    ;;
+            esac
             case "$security" in
                 reality)
                     stream=$(echo "$stream" | jq \
