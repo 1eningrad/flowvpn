@@ -135,6 +135,15 @@ cat > /www/flowvpn/index.html <<'HTML'
 <p>Адрес изменился. Открываю <a href="/eclipvpn/">/eclipvpn/</a>…</p>
 HTML
 
+# Raise uhttpd idle timeout — a large multi-subscription pool makes `eclipvpn
+# ping` take 30-50s and the default network_timeout=30 kills the CGI mid-sweep
+# (UI shows no pings). 90s fits, matches the UI fetch timeout. Idempotent.
+if [ "$(uci -q get uhttpd.main.network_timeout)" != "90" ]; then
+    uci set uhttpd.main.network_timeout=90
+    uci commit uhttpd
+    /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+fi
+
 echo "[4/5] RemoteRouteRich (Tailscale)"
 if [ "${WITH_REMOTE:-0}" = "1" ] && grep -q "DISTRIB_ID='RouteRich'" /etc/openwrt_release 2>/dev/null; then
     if ! opkg list-installed 2>/dev/null | grep -q '^tailscale-lite'; then
