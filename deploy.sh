@@ -58,24 +58,9 @@ if [ -n "$DIRTY" ]; then
     fi
 fi
 
-# One file list, used by both ship paths below. A new lib must be added here AND
-# to the remote `ash -n` loop further down.
-SHIP_FILES="usr/bin/eclipvpn \
-    usr/lib/eclipvpn/parse.sh \
-    usr/lib/eclipvpn/subscriptions.sh \
-    usr/lib/eclipvpn/xray.sh \
-    usr/lib/eclipvpn/singbox.sh \
-    usr/lib/eclipvpn/rules.sh \
-    usr/lib/eclipvpn/network.sh \
-    usr/lib/eclipvpn/watchdog.sh \
-    usr/lib/eclipvpn/lifecycle.sh \
-    usr/lib/eclipvpn/servers.sh \
-    usr/lib/eclipvpn/domains.sh \
-    usr/lib/eclipvpn/traffic.sh \
-    usr/lib/eclipvpn/health.sh \
-    usr/lib/eclipvpn/config.sh \
-    etc/init.d/eclipvpn \
-    www/cgi-bin/eclipvpn"
+# Router shell files to ship — single source of truth (packaging/ship-files).
+# A new lib goes in the manifest ONLY; every installer + the CI guard read it.
+SHIP_FILES=$(grep -v '^#' packaging/ship-files | grep -v '^$')
 
 echo "→ ship scripts/cgi/init.d to $ROUTER ($SHIP)"
 # Buffer the archive to a temp file and check its exit code BEFORE shipping.
@@ -182,12 +167,9 @@ fi
 chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn
 
 # Syntax check before touching live state — bail before stop if anything broke.
-for f in /usr/bin/eclipvpn /usr/lib/eclipvpn/parse.sh /usr/lib/eclipvpn/subscriptions.sh /usr/lib/eclipvpn/xray.sh \
-         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/rules.sh /usr/lib/eclipvpn/network.sh \
-         /usr/lib/eclipvpn/watchdog.sh /usr/lib/eclipvpn/lifecycle.sh \
-         /usr/lib/eclipvpn/servers.sh /usr/lib/eclipvpn/domains.sh \
-         /usr/lib/eclipvpn/traffic.sh /usr/lib/eclipvpn/health.sh \
-         /usr/lib/eclipvpn/config.sh /etc/init.d/eclipvpn; do
+# Glob the just-unpacked files — no second hardcoded list to drift from the
+# manifest (the tar wrote exactly the manifest set; this checks exactly that).
+for f in /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn /usr/lib/eclipvpn/*.sh; do
     ash -n "$f" || { echo "SYNTAX FAIL: $f" >&2; exit 1; }
 done
 

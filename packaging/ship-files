@@ -1,0 +1,23 @@
+# packaging/ship-files - router SHELL files shipped by every installer.
+# One repo-relative path per line; blank lines and #-comments are ignored.
+# Read by deploy.sh, install.sh (fetched from GitHub raw first),
+# install-from-mac.sh, windows-installer/eclip-core.ps1, and the CI guard.
+# The UI (www/eclipvpn/index.html) ships SEPARATELY (special dest, not
+# ash-checkable) and is intentionally NOT listed here.
+# This file is dev-only - it is NOT shipped to the router.
+usr/bin/eclipvpn
+usr/lib/eclipvpn/parse.sh
+usr/lib/eclipvpn/subscriptions.sh
+usr/lib/eclipvpn/xray.sh
+usr/lib/eclipvpn/singbox.sh
+usr/lib/eclipvpn/rules.sh
+usr/lib/eclipvpn/network.sh
+usr/lib/eclipvpn/watchdog.sh
+usr/lib/eclipvpn/lifecycle.sh
+usr/lib/eclipvpn/servers.sh
+usr/lib/eclipvpn/domains.sh
+usr/lib/eclipvpn/traffic.sh
+usr/lib/eclipvpn/health.sh
+usr/lib/eclipvpn/config.sh
+etc/init.d/eclipvpn
+www/cgi-bin/eclipvpn
