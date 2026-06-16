@@ -79,21 +79,32 @@ cmd_start() {
     iface=$(get_config_val interface "br-lan")
     mode=$(get_config_val mode "all_vpn")
 
-    # Fail fast and clearly on bad subscription URL — don't burn time on
-    # update_subscription's curl timeout to discover an obvious config error.
-    if [ -z "$sub_url" ] || [ "$sub_url" = "null" ]; then
-        flog "ERROR: subscription_url not configured"
-        echo '{"error":"subscription_url not configured — set it in Settings"}'
+    # A subscription source is EITHER the legacy single subscription_url OR the
+    # multi-provider subscriptions[] list (the normal case now). Only abort if we
+    # have NEITHER and no already-cached servers.json to fall back on. The old
+    # check required subscription_url and broke multi-sub-only configs: an empty
+    # legacy field made any cold start die here with "subscription_url not
+    # configured" — exactly what a Hysteria2 -> VLESS switch hit.
+    local n_subs
+    n_subs=$(jq '[(.subscriptions // [])[] | select(.enabled != false)] | length' "$ECLIPVPN_CONFIG" 2>/dev/null)
+    [ -n "$n_subs" ] || n_subs=0
+    if [ ! -f "$ECLIPVPN_TMP/servers.json" ] && [ "$n_subs" -eq 0 ] \
+       && { [ -z "$sub_url" ] || [ "$sub_url" = "null" ]; }; then
+        flog "ERROR: no subscription configured (no subscriptions[], no subscription_url, no cached servers)"
+        echo '{"error":"no subscription configured — add one in Settings"}'
         return 1
     fi
-    case "$sub_url" in
-        https://*|http://*) ;;
-        *)
-            flog "ERROR: subscription_url must start with http:// or https:// (got: ${sub_url%%:*}://...)"
-            echo '{"error":"subscription_url must start with http:// or https://"}'
-            return 1
-            ;;
-    esac
+    # Validate the legacy URL format only when it is actually set.
+    if [ -n "$sub_url" ] && [ "$sub_url" != "null" ]; then
+        case "$sub_url" in
+            https://*|http://*) ;;
+            *)
+                flog "ERROR: subscription_url must start with http:// or https:// (got: ${sub_url%%:*}://...)"
+                echo '{"error":"subscription_url must start with http:// or https://"}'
+                return 1
+                ;;
+        esac
+    fi
     flog "Starting EclipVPN (mode=$mode)"
 
     # Step 1: Fetch servers
@@ -201,7 +212,14 @@ cmd_restart() {
     # Used by mode change, server switch, watchdog failover, and the UI's
     # "Restart" button. cmd_stop still does the full teardown when the user
     # genuinely wants VPN off.
-    if ! _vpn_running; then
+    # _vpn_live, NOT _vpn_running: a server switch may have just changed
+    # selected_server to a DIFFERENT engine (e.g. Hysteria2 -> VLESS). _vpn_running
+    # keys off the NEW server's engine (xray) and reports "down" because xray isn't
+    # up yet — even though the old tunnel's sing-box is very much alive — so it
+    # would wrongly cold-start via cmd_start, which then aborts on the legacy
+    # subscription_url guard. _vpn_live ("is ANY daemon up") keeps a live switch on
+    # the soft-restart path. (Same reason cmd_set_server uses _vpn_live.)
+    if ! _vpn_live; then
         # cmd_start has its own _op_begin — clear ours first to avoid
         # the trap clearing the sentinel mid-operation.
         _op_end
