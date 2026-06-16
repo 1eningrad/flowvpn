@@ -159,27 +159,16 @@ echo "[3/6] Downloading EclipVPN..."
 # /www/flowvpn/index.html stays as a meta-refresh redirect for old bookmarks.
 mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /etc/eclipvpn /tmp/eclipvpn
 
-# Files where source path == destination path
-for file in \
-    usr/bin/eclipvpn \
-    usr/lib/eclipvpn/parse.sh \
-    usr/lib/eclipvpn/subscriptions.sh \
-    usr/lib/eclipvpn/xray.sh \
-    usr/lib/eclipvpn/singbox.sh \
-    usr/lib/eclipvpn/rules.sh \
-    usr/lib/eclipvpn/network.sh \
-    usr/lib/eclipvpn/watchdog.sh \
-    usr/lib/eclipvpn/lifecycle.sh \
-    usr/lib/eclipvpn/servers.sh \
-    usr/lib/eclipvpn/domains.sh \
-    usr/lib/eclipvpn/traffic.sh \
-    usr/lib/eclipvpn/health.sh \
-    usr/lib/eclipvpn/config.sh \
-    www/cgi-bin/eclipvpn \
-    etc/init.d/eclipvpn; do
+# Files where source path == destination path. The list is the single ship
+# manifest (packaging/ship-files) — fetch it from GitHub raw first, then loop,
+# so this list can never drift from deploy.sh / install-from-mac.sh.
+fetch "$REPO/packaging/ship-files" /tmp/eclip-ship-files \
+    || { echo "ERROR: Failed to download file manifest"; exit 1; }
+for file in $(grep -v '^#' /tmp/eclip-ship-files | grep -v '^$'); do
     fetch "$REPO/$file" "/$file" || { echo "ERROR: Failed to download $file"; exit 1; }
     chmod +x "/$file"
 done
+rm -f /tmp/eclip-ship-files
 
 # UI: source www/eclipvpn/index.html → install to /www/eclipvpn/index.html
 fetch "$REPO/www/eclipvpn/index.html" /www/eclipvpn/index.html \
