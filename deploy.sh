@@ -148,9 +148,13 @@ for p in /proc/[0-9]*; do
     esac
 done
 
-# Wipe runtime state so rules + configs regenerate from new code.
+# Wipe runtime state so rules + configs regenerate from new code. Includes the
+# lock artifacts (incl. the now-retired op.lockdir from pre-symlink builds) so a
+# stale lock from old code cannot wedge the new lock primitives after the swap.
 rm -rf /tmp/eclipvpn/rules \
-       /tmp/eclipvpn/watchdog.lock /tmp/eclipvpn/watchdog.pid /tmp/eclipvpn/watchdog.lockdir
+       /tmp/eclipvpn/watchdog.lock /tmp/eclipvpn/watchdog.pid /tmp/eclipvpn/watchdog.lockdir \
+       /tmp/eclipvpn/op.lock /tmp/eclipvpn/op.lockdir /tmp/eclipvpn/op.in_progress /tmp/eclipvpn/op.reclaim.lockdir \
+       /tmp/eclipvpn/config.lock /tmp/eclipvpn/config.reclaim.lockdir
 
 # Preserve autostart if the old flowvpn install had it enabled.
 [ "${OLD_ENABLED:-0}" = 1 ] && /etc/init.d/eclipvpn enable >/dev/null 2>&1 || true

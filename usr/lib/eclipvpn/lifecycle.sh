@@ -156,9 +156,7 @@ cmd_start() {
     # Mark intent: VPN should be running. Watchdog uses this to revive
     # the tunnel if processes get killed externally (OOM, manual pkill,
     # crash). Distinct from auto_start (which is only consulted at boot).
-    local cfg_tmp
-    cfg_tmp=$(jq '.running_intent = true' "$ECLIPVPN_CONFIG")
-    save_config "$cfg_tmp"
+    update_config '.running_intent = true'
 
     local server_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
     flog "EclipVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
@@ -175,9 +173,7 @@ cmd_stop() {
     flog "Stopping EclipVPN"
     # Clear intent first — watchdog runs every 20s and would otherwise
     # see processes-down + intent=true and revive the VPN we just stopped.
-    local cfg_tmp
-    cfg_tmp=$(jq '.running_intent = false' "$ECLIPVPN_CONFIG")
-    save_config "$cfg_tmp"
+    update_config '.running_intent = false'
     teardown_network
     stop_singbox
     stop_xray
@@ -297,9 +293,7 @@ cmd_restart() {
     # Without this a soft restart (UI button, set-server, set-mode, watchdog
     # failover) wouldn't carry the intent, and an external kill afterwards
     # wouldn't trigger auto-recovery.
-    local cfg_tmp
-    cfg_tmp=$(jq '.running_intent = true' "$ECLIPVPN_CONFIG")
-    save_config "$cfg_tmp"
+    update_config '.running_intent = true'
 
     local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
     flog "EclipVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"

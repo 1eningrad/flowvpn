@@ -14,8 +14,7 @@ cmd_set_mode() {
         *) echo '{"error":"invalid mode, use all_vpn or blocklist"}'; return 1 ;;
     esac
     flog "Switching mode to $new_mode"
-    local tmp=$(jq --arg m "$new_mode" '.mode = $m' "$ECLIPVPN_CONFIG")
-    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+    update_config '.mode = $m' --arg m "$new_mode" || { echo '{"error":"save failed"}'; return 1; }
     rm -f "$ECLIPVPN_TMP/singbox.json"
     # Rebuild rule lists for the new mode (fetch-then-swap). cmd_restart only
     # regenerates the sing-box config from existing rule files — without this
@@ -158,17 +157,13 @@ cmd_preset() {
                 echo "{\"error\":\"unknown preset: $name\"}"
                 return 1
             fi
-            local tmp
             if [ "$op" = "enable" ]; then
-                tmp=$(jq --arg n "$name" \
-                    '.enabled_presets = (((.enabled_presets // []) + [$n]) | unique)' \
-                    "$ECLIPVPN_CONFIG")
+                update_config '.enabled_presets = (((.enabled_presets // []) + [$n]) | unique)' \
+                    --arg n "$name" || { echo '{"error":"save failed"}'; return 1; }
             else
-                tmp=$(jq --arg n "$name" \
-                    '.enabled_presets = ((.enabled_presets // []) - [$n])' \
-                    "$ECLIPVPN_CONFIG")
+                update_config '.enabled_presets = ((.enabled_presets // []) - [$n])' \
+                    --arg n "$name" || { echo '{"error":"save failed"}'; return 1; }
             fi
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
 
             # Rebuild vpn_domains.list and apply via cmd_restart — same flow
             # as add-domain. A bare start_singbox here was a double bug: it
