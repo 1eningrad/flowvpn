@@ -33,31 +33,59 @@ function Stage-File([string]$rel) {
     Copy-Item -LiteralPath $src -Destination $dst -Force
 }
 
-# 1) installer scripts + SSH library
-# generate the eclipse icon if missing
+# Stage TRACKED files from `git archive HEAD` (committed bytes) into $stage,
+# preserving their repo-relative paths. Immune to Yandex.Disk mid-sync corruption
+# - git reads its immutable object store, not the working tree - the same
+# hardening deploy.sh/install-from-mac.sh got. Throws if a path is not committed.
+function Stage-FromGit([string[]]$rels) {
+    $tmpzip = Join-Path $env:TEMP ("eclip-src-" + [guid]::NewGuid().ToString("N") + ".zip")
+    & git -C $Repo archive --format=zip -o $tmpzip HEAD -- $rels
+    if ($LASTEXITCODE -ne 0) { throw "git archive failed (exit $LASTEXITCODE) - a tracked path not committed at HEAD?" }
+    Expand-Archive -LiteralPath $tmpzip -DestinationPath $stage -Force
+    [IO.File]::Delete($tmpzip)
+}
+
+# 1) the eclipse icon (untracked / gitignored - generate if missing)
 $ico = Join-Path $Self "eclip.ico"
 if (-not (Test-Path $ico)) { & (Join-Path $Self "build-icon.ps1") }
 
-@(
+# 2) TRACKED source -> staged from committed HEAD (git archive), NOT the working
+# tree. This repo lives in a Yandex.Disk sync folder; copying a mid-sync
+# (truncated) file into the bundle would ship broken code INSIDE the .exe - the
+# exact hazard deploy.sh/install-from-mac.sh were hardened against. The shell
+# source list comes from the engine ($EclipTextFiles = packaging/ship-files + UI)
+# so it never drifts; the installer .ps1 scripts + manifest are added explicitly.
+$tracked = @(
     "windows-installer/eclip-core.ps1",
     "windows-installer/install-eclipvpn.ps1",
     "windows-installer/install-eclipvpn-gui.ps1",
     "windows-installer/lang.ru.txt",
-    "windows-installer/eclip.ico",
-    "windows-installer/lib/Renci.SshNet.dll",
     "packaging/ship-files"
-) | ForEach-Object { Stage-File $_ }
+) + $EclipTextFiles
 
-# 2) the per-arch static-binary payload (xray/sing-box/jq/curl/ca-bundle)
+if ($env:ALLOW_DIRTY -eq "1") {
+    Write-Host "ALLOW_DIRTY=1 -> staging tracked source from the WORKING TREE (includes uncommitted edits; NOT immune to mid-sync)" -ForegroundColor Yellow
+    $tracked | ForEach-Object { Stage-File $_ }
+} else {
+    $dirty = & git -C $Repo status --porcelain --untracked-files=no -- $tracked
+    if ($dirty) {
+        Write-Host "WARNING: uncommitted changes in tracked source - the .exe is built from committed HEAD, so those edits are NOT in it. Commit them, or set ALLOW_DIRTY=1 to build the working tree." -ForegroundColor Yellow
+    }
+    Stage-FromGit $tracked
+}
+Write-Host ("source files staged: {0} (from {1})" -f $tracked.Count, $(if ($env:ALLOW_DIRTY -eq "1") {"working tree"} else {"committed HEAD"})) -ForegroundColor DarkGray
+
+# 3) untracked / gitignored artifacts -> from the working tree (not in git):
+#    the eclipse icon and the SSH.NET DLL.
+"windows-installer/eclip.ico", "windows-installer/lib/Renci.SshNet.dll" | ForEach-Object { Stage-File $_ }
+
+# 4) the per-arch static-binary payload (xray/sing-box/jq/curl/ca-bundle) - also
+# gitignored, so staged from the working tree.
 $payloadDst = Join-Path $stage "windows-installer\payload"
 New-Item -ItemType Directory -Force $payloadDst | Out-Null
 Copy-Item -Recurse -Force (Join-Path $Self "payload\*") $payloadDst
 $binCount = (Get-ChildItem (Join-Path $payloadDst "bin") -Recurse -File).Count
 Write-Host "payload binaries staged: $binCount" -ForegroundColor DarkGray
-
-# 3) EclipVPN source tree (engine ships these; list comes from packaging/ship-files + UI)
-$EclipTextFiles | ForEach-Object { Stage-File $_ }
-Write-Host "source files staged: $($EclipTextFiles.Count)" -ForegroundColor DarkGray
 
 # 4) zip the staging dir (entries become windows-installer/..., usr/..., etc.)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
