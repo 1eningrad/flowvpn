@@ -1,7 +1,9 @@
 #!/bin/sh
 # Bootstrap a new EclipVPN router from local sources (Mac → router via SSH),
-# bypassing the private GitHub repo. Equivalent of install.sh but uses the
-# working tree it lives in instead of fetching tarballs from raw.github.
+# bypassing the private GitHub repo. Equivalent of install.sh but ships local
+# COMMITTED bytes (git archive HEAD) instead of fetching tarballs from raw.github.
+# (Was "the working tree" — now committed-only to dodge Yandex.Disk mid-sync
+# corruption; set ALLOW_DIRTY=1 to ship uncommitted WIP, see the gate below.)
 #
 # Usage:
 #   sh install-from-mac.sh                              # default: root@192.168.2.1
@@ -25,12 +27,31 @@ echo "→ ship sources to $ROUTER"
 # branch and destroy the subscription.
 ssh "$ROUTER" 'mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /tmp/eclipvpn'
 
-COPYFILE_DISABLE=1 tar c \
-    usr/bin/eclipvpn \
+# Ship committed bytes, not the working tree — this repo lives inside a Yandex.Disk
+# sync folder and a mid-sync (truncated/zero-byte) file once broke a deploy.
+# `git archive` reads the immutable object store. Clean tree ships HEAD;
+# ALLOW_DIRTY=1 ships the working tree (racy, opt-in). Scoped to TRACKED changes
+# under the shipped trees (untracked files never enter git archive HEAD).
+DIRTY=$(git status --porcelain --untracked-files=no -- usr www etc)
+SHIP=git
+if [ -n "$DIRTY" ]; then
+    if [ "${ALLOW_DIRTY:-0}" = 1 ]; then
+        echo "WARNING: working tree dirty + ALLOW_DIRTY=1 → shipping working tree (NOT immune to Yandex.Disk mid-sync corruption)" >&2
+        SHIP=worktree
+    else
+        echo "ERROR: uncommitted changes under usr/ www/ etc/." >&2
+        echo "       This bootstrap ships committed bytes (git archive HEAD)." >&2
+        echo "       Commit first, or set ALLOW_DIRTY=1 to ship the working tree (racy)." >&2
+        exit 1
+    fi
+fi
+
+SHIP_FILES="usr/bin/eclipvpn \
     usr/lib/eclipvpn/parse.sh \
     usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
+    usr/lib/eclipvpn/rules.sh \
     usr/lib/eclipvpn/network.sh \
     usr/lib/eclipvpn/watchdog.sh \
     usr/lib/eclipvpn/lifecycle.sh \
@@ -40,10 +61,33 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/health.sh \
     usr/lib/eclipvpn/config.sh \
     etc/init.d/eclipvpn \
-    www/cgi-bin/eclipvpn \
-| ssh "$ROUTER" 'cd / && tar x'
+    www/cgi-bin/eclipvpn"
 
-cat www/eclipvpn/index.html | ssh "$ROUTER" 'cat > /www/eclipvpn/index.html'
+# Buffer archive + UI to temp files and check exit codes BEFORE shipping: plain
+# sh has no pipefail, so a failed `git archive`/`git show` would emit 0 bytes,
+# the remote `tar x`/`cat >` would succeed (shipping nothing / blanking the UI),
+# and set -e would never trip.
+TARBALL=$(mktemp) || exit 1
+UITMP=$(mktemp) || { rm -f "$TARBALL"; exit 1; }
+if [ "$SHIP" = git ]; then
+    git archive --format=tar HEAD -- $SHIP_FILES > "$TARBALL" || {
+        echo "ERROR: git archive HEAD failed — a path in \$SHIP_FILES not committed?" >&2
+        rm -f "$TARBALL" "$UITMP"; exit 1; }
+    git show HEAD:www/eclipvpn/index.html > "$UITMP" || {
+        echo "ERROR: git show HEAD:www/eclipvpn/index.html failed" >&2
+        rm -f "$TARBALL" "$UITMP"; exit 1; }
+else
+    COPYFILE_DISABLE=1 tar c $SHIP_FILES > "$TARBALL" || {
+        echo "ERROR: tar of \$SHIP_FILES failed" >&2; rm -f "$TARBALL" "$UITMP"; exit 1; }
+    cat www/eclipvpn/index.html > "$UITMP" || {
+        echo "ERROR: reading UI failed" >&2; rm -f "$TARBALL" "$UITMP"; exit 1; }
+fi
+{ [ -s "$TARBALL" ] && [ -s "$UITMP" ]; } || {
+    echo "ERROR: empty archive or UI — aborting before it ships/blanks the router" >&2
+    rm -f "$TARBALL" "$UITMP"; exit 1; }
+ssh "$ROUTER" 'cd / && tar x' < "$TARBALL"
+ssh "$ROUTER" 'cat > /www/eclipvpn/index.html' < "$UITMP"
+rm -f "$TARBALL" "$UITMP"
 
 echo "→ install dependencies + xray + Tailscale on router"
 ssh "$ROUTER" "WITH_REMOTE=$WITH_REMOTE sh -s" <<'REMOTE_EOF'

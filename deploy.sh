@@ -13,11 +13,13 @@ set -eu
 ROUTER="${ROUTER:-root@192.168.1.1}"
 cd "$(dirname "$0")"
 
-# SKIP_PULL=1 ships the current working tree as-is, without syncing git first.
-# Use it to deploy uncommitted local changes (e.g. to a test router) or when the
-# git remote is unreachable (GitHub is blocked from inside RU).
+# SKIP_PULL=1 skips the `git pull` sync below — use it when the git remote is
+# unreachable (GitHub is blocked from inside RU). It does NOT change WHAT ships:
+# deploy always ships committed bytes (git archive HEAD). To deploy uncommitted
+# local changes, set ALLOW_DIRTY=1 (ships the working tree — racy vs Yandex.Disk
+# mid-sync; see the integrity gate after the pull block).
 if [ "${SKIP_PULL:-0}" = 1 ]; then
-    echo "→ skip git pull (SKIP_PULL=1) — shipping working tree as-is"
+    echo "→ skip git pull (SKIP_PULL=1)"
 else
     echo "→ git pull"
     # Capture instead of piping straight to tail: without pipefail (plain sh),
@@ -31,17 +33,39 @@ else
     printf '%s\n' "$PULL_OUT" | tail -3
 fi
 
-echo "→ ship scripts/cgi/init.d to $ROUTER"
-# COPYFILE_DISABLE=1 keeps macOS BSD tar from embedding `._*` AppleDouble
-# resource forks; they end up next to every shipped file on the router and
-# clutter /usr/lib/eclipvpn (the dispatcher only sources by exact filename,
-# so they're inert — just noise).
-COPYFILE_DISABLE=1 tar c \
-    usr/bin/eclipvpn \
+# Ship committed bytes, not the working tree. This repo lives inside a Yandex.Disk
+# sync folder; tarring the working tree once shipped a half-synced rules.sh to the
+# router and the tunnel never came up (2026-06-16). `git archive` reads the
+# immutable object store, so a mid-sync (truncated/zero-byte) file can never reach
+# the router. Default requires a clean tree (ships HEAD). ALLOW_DIRTY=1 falls back
+# to the old working-tree tar for fast local iteration — racy, opt-in only. Scope
+# the check to TRACKED modifications under the shipped trees: untracked files
+# (Yandex.Disk conflict-copies, editor temps) never enter `git archive HEAD`, so
+# they must not block a clean committed-bytes deploy; a genuinely-missing committed
+# file is caught loudly by the archive rc-check below instead.
+DIRTY=$(git status --porcelain --untracked-files=no -- usr www etc)
+SHIP=git
+if [ -n "$DIRTY" ]; then
+    if [ "${ALLOW_DIRTY:-0}" = 1 ]; then
+        echo "WARNING: working tree dirty + ALLOW_DIRTY=1 → shipping working tree (NOT immune to Yandex.Disk mid-sync corruption)" >&2
+        SHIP=worktree
+    else
+        echo "ERROR: uncommitted changes under usr/ www/ etc/." >&2
+        echo "       deploy ships committed bytes (git archive HEAD) to dodge the" >&2
+        echo "       Yandex.Disk sync-corruption bug. Commit first, or set" >&2
+        echo "       ALLOW_DIRTY=1 to ship the working tree as-is (racy)." >&2
+        exit 1
+    fi
+fi
+
+# One file list, used by both ship paths below. A new lib must be added here AND
+# to the remote `ash -n` loop further down.
+SHIP_FILES="usr/bin/eclipvpn \
     usr/lib/eclipvpn/parse.sh \
     usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
+    usr/lib/eclipvpn/rules.sh \
     usr/lib/eclipvpn/network.sh \
     usr/lib/eclipvpn/watchdog.sh \
     usr/lib/eclipvpn/lifecycle.sh \
@@ -51,14 +75,49 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/health.sh \
     usr/lib/eclipvpn/config.sh \
     etc/init.d/eclipvpn \
-    www/cgi-bin/eclipvpn \
-| ssh "$ROUTER" 'cd / && tar x'
+    www/cgi-bin/eclipvpn"
+
+echo "→ ship scripts/cgi/init.d to $ROUTER ($SHIP)"
+# Buffer the archive to a temp file and check its exit code BEFORE shipping.
+# Piping straight into ssh would hide a failure: plain sh has no pipefail, so a
+# failed `git archive` (e.g. a $SHIP_FILES path not committed at HEAD) emits 0
+# bytes, `tar x` succeeds on empty stdin, the pipeline returns 0, and set -e never
+# trips — the router silently keeps the OLD code while the deploy reports success.
+TARBALL=$(mktemp) || exit 1
+if [ "$SHIP" = git ]; then
+    git archive --format=tar HEAD -- $SHIP_FILES > "$TARBALL" || {
+        echo "ERROR: git archive HEAD failed — a path in \$SHIP_FILES not committed (or typo'd)?" >&2
+        rm -f "$TARBALL"; exit 1; }
+else
+    # COPYFILE_DISABLE=1 keeps macOS BSD tar from embedding `._*` AppleDouble
+    # resource forks; they end up next to every shipped file on the router and
+    # clutter /usr/lib/eclipvpn (the dispatcher only sources by exact filename,
+    # so they're inert — just noise).
+    COPYFILE_DISABLE=1 tar c $SHIP_FILES > "$TARBALL" || {
+        echo "ERROR: tar of \$SHIP_FILES failed" >&2; rm -f "$TARBALL"; exit 1; }
+fi
+[ -s "$TARBALL" ] || { echo "ERROR: empty archive — nothing to ship, aborting" >&2; rm -f "$TARBALL"; exit 1; }
+ssh "$ROUTER" 'cd / && tar x' < "$TARBALL"
+rm -f "$TARBALL"
 
 echo "→ ship UI"
 # mkdir -p first: on a router that only ever had the old flowvpn layout the
 # directory doesn't exist yet, the redirect fails, and set -eu kills the
 # deploy BEFORE the migration block below ever runs.
-cat www/eclipvpn/index.html | ssh "$ROUTER" 'mkdir -p /www/eclipvpn && cat > /www/eclipvpn/index.html'
+# Same temp-file guard: a failed `git show` would otherwise pipe 0 bytes into
+# `cat >` and BLANK the router's UI (white screen) while returning 0. Refuse to
+# ship an empty index.html.
+UITMP=$(mktemp) || exit 1
+if [ "$SHIP" = git ]; then
+    git show HEAD:www/eclipvpn/index.html > "$UITMP" || {
+        echo "ERROR: git show HEAD:www/eclipvpn/index.html failed" >&2; rm -f "$UITMP"; exit 1; }
+else
+    cat www/eclipvpn/index.html > "$UITMP" || {
+        echo "ERROR: reading www/eclipvpn/index.html failed" >&2; rm -f "$UITMP"; exit 1; }
+fi
+[ -s "$UITMP" ] || { echo "ERROR: UI index.html is empty — refusing to blank the router UI" >&2; rm -f "$UITMP"; exit 1; }
+ssh "$ROUTER" 'mkdir -p /www/eclipvpn && cat > /www/eclipvpn/index.html' < "$UITMP"
+rm -f "$UITMP"
 
 echo "→ apply on router"
 ssh "$ROUTER" 'set -eu
@@ -124,7 +183,7 @@ chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn
 
 # Syntax check before touching live state — bail before stop if anything broke.
 for f in /usr/bin/eclipvpn /usr/lib/eclipvpn/parse.sh /usr/lib/eclipvpn/subscriptions.sh /usr/lib/eclipvpn/xray.sh \
-         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/network.sh \
+         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/rules.sh /usr/lib/eclipvpn/network.sh \
          /usr/lib/eclipvpn/watchdog.sh /usr/lib/eclipvpn/lifecycle.sh \
          /usr/lib/eclipvpn/servers.sh /usr/lib/eclipvpn/domains.sh \
          /usr/lib/eclipvpn/traffic.sh /usr/lib/eclipvpn/health.sh \
