@@ -101,8 +101,15 @@ save_config() {
 # steal — the bug that let two cmd_starts through the old mkdir + separate-PID-
 # file op-lock. Stale reclaim (owner PID dead) is serialized under a per-lock
 # reclaim dir so two waiters can't both rm+recreate. A crash right after `ln`
-# still leaves the dead PID in the symlink target on disk, so a stale lock is
-# always reclaimable — no permanent wedge.
+# still leaves the dead PID in the symlink target on disk, so a stale .lock
+# symlink is always reclaimable. CAVEAT (review #4): a crash BETWEEN `mkdir
+# $rlock` and its `rmdir` (the reclaim window) orphans the reclaim dir — then
+# `_lock_try`'s reclaim branch is permanently disabled (its `mkdir` always
+# fails). The config lock (wait mode) still recovers via the ~10s force-steal;
+# the op lock (try mode, no force-steal) can WEDGE — every lifecycle op then
+# reports "operation in progress" until /tmp is wiped on reboot or a deploy
+# rm -rf's op.reclaim.lockdir. Low-probability (tiny window), recoverable, and
+# pre-dates this unify — documented, not yet guarded.
 #
 #   _lock_acquire NAME        try once: 0 = acquired, 1 = held by a LIVE owner
 #   _lock_acquire NAME wait   block until acquired; force-steal a wedged holder
