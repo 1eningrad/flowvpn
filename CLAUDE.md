@@ -16,7 +16,7 @@ Two things deliberately **stay `flowvpn`** — do not rename them:
 
 A VPN manager for OpenWrt routers. Written almost entirely in **busybox ash** (`#!/bin/ash`, not bash) with a single-file HTML/JS web UI. Two binaries do the actual work: **xray** (SOCKS outbound, VLESS+XHTTP over either **Reality** *or* plain **TLS**) and **sing-box** (tproxy inbound, DNS, routing). Everything else is glue. The TLS variant is what powers **CDN fronting** — `xray.sh` switches on the subscription entry's `security` field (`reality` → `realitySettings`, `tls` → `tlsSettings`), so a server can front through a CDN (`sni=*.selcdn.net`) to dodge the per-flow policer (see "CDN fronting" below).
 
-There is no build step, no test suite, no package manager, no CI for the router code. Code is shipped to a live router via `deploy.sh`. (The Windows installer under `windows-installer/` is the one piece with a build step — see its section below.)
+There is no build step, no package manager, no CI for the router code. Code is shipped to a live router via `deploy.sh`. (The Windows installer under `windows-installer/` is the one piece with a build step — see its section below.) There **is** a unit-test suite (`tests/`, added 2026-06-16) covering the pure parsers, input validators, and the lock / config-write primitives — see "Testing" below.
 
 ## Common commands
 
@@ -27,10 +27,15 @@ There is no build step, no test suite, no package manager, no CI for the router 
 | `./install.sh` | One-shot installer (run *on the router*) — installs deps, fetches xray 26.4.17 binary, writes files to canonical paths. |
 | `sh install-from-mac.sh` | Bootstrap a *fresh* router from the local tree over SSH (default `root@192.168.2.1`), bypassing the GitHub repo — pushes the same files as `install.sh` but from the working tree. Use for first-time provisioning / after a factory reset; `deploy.sh` is for updating an already-installed router. `WITH_REMOTE=0` skips the Tailscale step. |
 | `ash -n <file>` | Syntax-check a script before deploy. `deploy.sh` already runs this on every shell file. |
+| `sh tests/run.sh [suite...]` | Run the unit suite (needs `jq`). No args = all; `parse`/`validators`/`locks`/`config` = one suite. Exit non-zero on any failure. See "Testing". |
 | `cd docs && tectonic eclipvpn_manual.tex` | Rebuild the user manual PDF. |
 | `cd windows-installer && powershell -ExecutionPolicy Bypass -File build-exe.ps1` | Rebuild `EclipVPN-Installer.exe` (offline Windows installer). Stages the live `usr/`/`www/`/`etc/` tree — rebuild after any router-code change. See its own section below. |
 
-There are no unit/integration tests — the `test-results/` dir is for old screenshots, not a runner. Verify changes by running `./deploy.sh` and exercising the UI.
+### Testing
+
+`tests/run.sh` is a small ash+jq unit suite (added 2026-06-16) — the first automated net for ~6k lines of shell. It sources the REAL code (`usr/bin/eclipvpn` with `ECLIPVPN_SOURCE_ONLY=1`, which stops before init/the dispatch case) against a scratch `ECLIPVPN_TMP`/`ECLIPVPN_CONFIG`, so tests call the actual functions — no copies. The three path vars (`ECLIPVPN_LIB`/`ECLIPVPN_CONFIG`/`ECLIPVPN_TMP`) are overridable for exactly this reason; production passes none, so defaults are unchanged. Suites: `test_parse.sh` (proxy-URL + subscription-body parsers, `url_decode`, `_b64_pad`), `test_validators.sh` (`_validate_ipv4`, `_normalize_mac`, engine helpers, `_is_metered_server`), `test_locks.sh` (`_op_begin` TOCTOU + `_config_lock`), `test_config.sh` (`update_config` RMW, concurrency, backup rotation). 89 assertions as of the first cut.
+
+Run on the dev box if `jq` is present (`sh tests/run.sh`); the Windows box has no `jq`, so run on the router: `tar c usr tests | ssh root@ROUTER 'rm -rf /tmp/eclvt && mkdir -p /tmp/eclvt && cd /tmp/eclvt && tar x && sh tests/run.sh'`. `tests/` is NOT shipped by `deploy.sh`/installers — it's dev-only. Still verify runtime/UI behaviour with `./deploy.sh` + the UI; the suite covers the pure/lock logic, not the live tunnel. The `test-results/` dir is unrelated (old screenshots).
 
 For UI changes, hard-reload in the browser (`Cmd+Shift+R`) — the CGI sends no-cache headers but the static `index.html` is cached aggressively.
 

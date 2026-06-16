@@ -1,0 +1,47 @@
+# test_config.sh — update_config: locked read-modify-write of config.json. run.sh env.
+
+# basic key set
+_t update_config_basic
+fresh_config '{"n":0,"mode":"all_vpn"}'
+update_config '.mode=$m' --arg m blocklist
+assert_eq "set-mode" "$(jq -r .mode "$ECLIPVPN_CONFIG")" blocklist
+assert_eq "still-valid" "$(jq -e . "$ECLIPVPN_CONFIG" >/dev/null 2>&1 && echo ok)" ok
+
+# argjson numeric
+update_config '.selected_server=$i' --argjson i 7
+assert_eq "set-selected" "$(jq -r .selected_server "$ECLIPVPN_CONFIG")" 7
+
+# concurrency: 10 racing increments under the lock -> exactly 10 (no lost update)
+_t update_config_concurrency
+fresh_config '{"n":0}'
+i=0; while [ "$i" -lt 10 ]; do update_config '.n += 1' & i=$((i + 1)); done
+wait
+assert_eq "concurrent-incr" "$(jq -r .n "$ECLIPVPN_CONFIG")" 10
+
+# replace-form (restore path): program ignores stdin, emits the arg
+_t update_config_replace
+fresh_config '{"n":1,"old":true}'
+update_config '$repl' --argjson repl '{"restored":true,"k":9}'
+assert_eq "replace-restored" "$(jq -r '.restored' "$ECLIPVPN_CONFIG")" true
+assert_eq "replace-dropped-old" "$(jq -r '.old // "absent"' "$ECLIPVPN_CONFIG")" absent
+
+# jq-failure: bad program -> rc 1, config untouched, lock freed
+_t update_config_badjq
+fresh_config '{"keep":42}'
+update_config 'this is not valid jq ((('; rc=$?
+assert_rc "badjq-rc" "$rc" 1
+assert_eq "badjq-untouched" "$(jq -r .keep "$ECLIPVPN_CONFIG")" 42
+assert_eq "badjq-lock-freed" "$( [ -e "$ECLIPVPN_TMP/config.lock" ] && echo present || echo gone )" gone
+
+# save_config backup rotation: a non-volatile change rotates config.json.1
+_t save_config_backups
+fresh_config '{"mode":"all_vpn","selected_server":0}'
+rm -f "$ECLIPVPN_CONFIG".1 "$ECLIPVPN_CONFIG".2 "$ECLIPVPN_CONFIG".3
+update_config '.mode=$m' --arg m blocklist
+assert_eq "backup-1-made" "$( [ -f "$ECLIPVPN_CONFIG".1 ] && echo yes || echo no )" yes
+# a volatile-only change (selected_server) must NOT rotate the backup history
+cp "$ECLIPVPN_CONFIG".1 "$ECLIPVPN_TMP/bk_before"
+update_config '.selected_server=$i' --argjson i 3
+assert_eq "backup-not-churned-by-volatile" \
+    "$(cmp -s "$ECLIPVPN_CONFIG".1 "$ECLIPVPN_TMP/bk_before" && echo same || echo changed)" same
+rm -f "$ECLIPVPN_TMP/bk_before"
