@@ -378,6 +378,27 @@ _vpn_live() {
     is_singbox_running || is_xray_running
 }
 
+# --- make-before-break: active / staged xray SOCKS port ----------------------
+# A server switch STAGES the new xray on the alternate SOCKS port, verifies it,
+# then has sing-box adopt it — so the active xray port rotates 1080<->1081 across
+# switches. $ECLIPVPN_TMP/xray_port holds the active xray's port (absent => 1080).
+_active_xray_port() { cat "$ECLIPVPN_TMP/xray_port" 2>/dev/null || echo 1080; }
+
+# Port that health/probe code should curl to reach the LIVE tunnel's SOCKS:
+# hysteria2 => sing-box owns 1080; xray => the active xray port.
+_active_socks_port() {
+    if [ "$(_selected_engine)" = "singbox" ]; then echo 1080; else _active_xray_port; fi
+}
+
+# The alternate xray port to STAGE a new exit on, given the current active xray
+# port and the OLD tunnel's engine. Old hysteria2 owns 1080 => stage on 1081;
+# otherwise whichever of 1080/1081 the live xray is not using.
+_stage_xray_port() {
+    local active="$1" old_engine="$2"
+    [ "$old_engine" = "singbox" ] && { echo 1081; return; }
+    [ "$active" = "1081" ] && echo 1080 || echo 1081
+}
+
 # A server is "metered" (RU-safe, mobile-carrier) when its name contains
 # carrier markers. Such servers give a Russian IP, so watchdog must NEVER
 # auto-switch to them — doing so defeats the purpose of a VPN.

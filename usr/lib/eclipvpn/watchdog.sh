@@ -345,7 +345,7 @@ cmd_watchdog() {
         # tunnel is fine (real-world: cp.cloudflare.com periodically returns
         # 5xx during CF maintenance windows — a single-endpoint probe would
         # have failed-over the user to a worse server for no reason).
-        if _watchdog_probe_via_socks 1080; then
+        if _watchdog_probe_via_socks "$(_active_socks_port)"; then
             # If we were tracking a WAN outage, close it out with a single
             # "recovered" incident and clear the streak markers. Without
             # this, an outage that started at 08:24 and ended at 08:28
@@ -398,7 +398,7 @@ cmd_watchdog() {
             if [ "$(get_config_val tput_guard true)" = "true" ] && [ $((tick % TPUT_EVERY)) -eq 0 ]; then
                 local min_kbps; min_kbps=$(get_config_val tput_min_kbps 500)
                 case "$min_kbps" in ''|*[!0-9]*) min_kbps=500 ;; esac
-                local kbps; kbps=$(_watchdog_throughput_kbps 1080)
+                local kbps; kbps=$(_watchdog_throughput_kbps "$(_active_socks_port)")
                 if [ -n "$kbps" ] && [ "$kbps" -lt "$min_kbps" ]; then
                     slow_count=$((slow_count + 1))
                     logger -t eclipvpn "Watchdog: low throughput ${kbps}KB/s < ${min_kbps} ($slow_count/$TPUT_SLOW_MAX)"

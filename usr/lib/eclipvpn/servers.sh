@@ -38,6 +38,7 @@ cmd_set_server() {
     [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    local old_sel; old_sel=$(get_config_val selected_server 0)
     update_config '.selected_server = $idx' --argjson idx "$idx" || { echo '{"error":"save failed"}'; return 1; }
     # _vpn_live, not _vpn_running: selected_server was JUST changed above, so an
     # engine-aware check would read the NEW server's engine (e.g. xray) while the
@@ -45,6 +46,12 @@ cmd_set_server() {
     # that false-negative would silently skip the switch.
     if _vpn_live; then
         cmd_restart
+        local _rc=$?
+        # make-before-break can REJECT the switch (new server unreachable) and
+        # keep the OLD tunnel up. Roll selected_server back so status/UI don't
+        # show a server we're not actually on.
+        [ "$_rc" -ne 0 ] && update_config '.selected_server = $old' --argjson old "$old_sel" >/dev/null 2>&1
+        return "$_rc"
     else
         local name=$(jq -r ".[$idx].name" "$ECLIPVPN_TMP/servers.json")
         jq -n --arg srv "$name" '{status:"server set",server:$srv}'
