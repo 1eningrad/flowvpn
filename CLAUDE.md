@@ -91,7 +91,11 @@ usr/lib/eclipvpn/subscriptions.sh  multi-provider fetch + merge + `sub` mgmt
                               (fetch_subscription/update_subscription/_remap/cmd_sub
                               /_migrate_subscriptions); was split out of parse.sh+config
 usr/lib/eclipvpn/xray.sh      xray config gen + start/stop/test
-usr/lib/eclipvpn/singbox.sh   sing-box config gen, RU domain list, blocklist sources
+usr/lib/eclipvpn/singbox.sh   sing-box config gen (generate_singbox_config + rule-builders),
+                              proxy outbounds, probe-config gen, start/stop/is-running
+usr/lib/eclipvpn/rules.sh     routing-rule + domain-list SOURCING (split out of singbox.sh
+                              2026-06-16): .srs fetch/compile, RU-direct/force-VPN/blocklist
+                              domain lists, service presets. Shares singbox.sh's globals.
 usr/lib/eclipvpn/network.sh   nftables + dnsmasq redirect setup/teardown
 usr/lib/eclipvpn/watchdog.sh  connectivity probing, auto-failover, throughput guard
 usr/lib/eclipvpn/lifecycle.sh cmd_start / stop / restart / status

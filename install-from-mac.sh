@@ -31,6 +31,7 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
+    usr/lib/eclipvpn/rules.sh \
     usr/lib/eclipvpn/network.sh \
     usr/lib/eclipvpn/watchdog.sh \
     usr/lib/eclipvpn/lifecycle.sh \

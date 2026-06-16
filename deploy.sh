@@ -42,6 +42,7 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
     usr/lib/eclipvpn/singbox.sh \
+    usr/lib/eclipvpn/rules.sh \
     usr/lib/eclipvpn/network.sh \
     usr/lib/eclipvpn/watchdog.sh \
     usr/lib/eclipvpn/lifecycle.sh \
@@ -124,7 +125,7 @@ chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn
 
 # Syntax check before touching live state — bail before stop if anything broke.
 for f in /usr/bin/eclipvpn /usr/lib/eclipvpn/parse.sh /usr/lib/eclipvpn/subscriptions.sh /usr/lib/eclipvpn/xray.sh \
-         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/network.sh \
+         /usr/lib/eclipvpn/singbox.sh /usr/lib/eclipvpn/rules.sh /usr/lib/eclipvpn/network.sh \
          /usr/lib/eclipvpn/watchdog.sh /usr/lib/eclipvpn/lifecycle.sh \
          /usr/lib/eclipvpn/servers.sh /usr/lib/eclipvpn/domains.sh \
          /usr/lib/eclipvpn/traffic.sh /usr/lib/eclipvpn/health.sh \
