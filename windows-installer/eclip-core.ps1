@@ -9,23 +9,17 @@
 # Keep this file pure ASCII: PowerShell 5.1 reads a BOM-less script as the ANSI
 # codepage and a stray non-ASCII byte desyncs the parser.
 
-# Source files shipped as TEXT (CR stripped). Relative to the repo root; the
-# same relative path is recreated under / on the router.
+# Source files shipped as TEXT (CR stripped). The shell files come from the
+# single manifest packaging/ship-files (shared with deploy.sh / install*.sh and
+# the CI guard) so this list can never drift; the UI is appended here because it
+# ships to a special dest and is intentionally not in the manifest. Relative
+# paths; the same path is recreated under / on the router. $PSScriptRoot is
+# windows-installer\ (set even when dot-sourced); the repo root - and the
+# extracted bundle root at install time - is its parent.
+$script:EclipManifest = Join-Path (Split-Path $PSScriptRoot -Parent) "packaging\ship-files"
 $script:EclipTextFiles = @(
-    "usr/bin/eclipvpn",
-    "usr/lib/eclipvpn/parse.sh",
-    "usr/lib/eclipvpn/xray.sh",
-    "usr/lib/eclipvpn/singbox.sh",
-    "usr/lib/eclipvpn/network.sh",
-    "usr/lib/eclipvpn/watchdog.sh",
-    "usr/lib/eclipvpn/lifecycle.sh",
-    "usr/lib/eclipvpn/servers.sh",
-    "usr/lib/eclipvpn/domains.sh",
-    "usr/lib/eclipvpn/traffic.sh",
-    "usr/lib/eclipvpn/health.sh",
-    "usr/lib/eclipvpn/config.sh",
-    "etc/init.d/eclipvpn",
-    "www/cgi-bin/eclipvpn",
+    (Get-Content -LiteralPath $script:EclipManifest |
+        Where-Object { $_ -and ($_ -notmatch '^\s*#') }) +
     "www/eclipvpn/index.html"
 )
 

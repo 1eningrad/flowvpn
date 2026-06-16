@@ -46,22 +46,8 @@ if [ -n "$DIRTY" ]; then
     fi
 fi
 
-SHIP_FILES="usr/bin/eclipvpn \
-    usr/lib/eclipvpn/parse.sh \
-    usr/lib/eclipvpn/subscriptions.sh \
-    usr/lib/eclipvpn/xray.sh \
-    usr/lib/eclipvpn/singbox.sh \
-    usr/lib/eclipvpn/rules.sh \
-    usr/lib/eclipvpn/network.sh \
-    usr/lib/eclipvpn/watchdog.sh \
-    usr/lib/eclipvpn/lifecycle.sh \
-    usr/lib/eclipvpn/servers.sh \
-    usr/lib/eclipvpn/domains.sh \
-    usr/lib/eclipvpn/traffic.sh \
-    usr/lib/eclipvpn/health.sh \
-    usr/lib/eclipvpn/config.sh \
-    etc/init.d/eclipvpn \
-    www/cgi-bin/eclipvpn"
+# Router shell files to ship — single source of truth (packaging/ship-files).
+SHIP_FILES=$(grep -v '^#' packaging/ship-files | grep -v '^$')
 
 # Buffer archive + UI to temp files and check exit codes BEFORE shipping: plain
 # sh has no pipefail, so a failed `git archive`/`git show` would emit 0 bytes,

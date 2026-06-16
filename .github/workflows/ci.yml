@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install busybox + shellcheck
+        run: sudo apt-get update && sudo apt-get install -y busybox-static shellcheck
+
+      # Hard gate: syntax-check every router shell file (from the manifest) plus
+      # the dev scripts, with BOTH dash (sh -n) and busybox ash -n (router parity).
+      - name: syntax check (sh -n + busybox ash -n)
+        run: |
+          set -eu
+          files=$(grep -v '^#' packaging/ship-files | grep -v '^$')
+          fail=0
+          for f in $files deploy.sh install.sh install-from-mac.sh \
+                   tests/run.sh tests/test_parse.sh tests/test_validators.sh \
+                   tests/test_locks.sh tests/test_config.sh; do
+            sh -n "$f"          || { echo "sh -n FAIL:  $f"; fail=1; }
+            busybox ash -n "$f" || { echo "ash -n FAIL: $f"; fail=1; }
+          done
+          [ "$fail" -eq 0 ]
+
+      # Advisory only: shellcheck flags many false positives on these
+      # function-only busybox-ash libs (shared globals, dynamic source, `local`
+      # in POSIX mode). Never fails the build.
+      - name: shellcheck (advisory)
+        continue-on-error: true
+        run: |
+          files=$(grep -v '^#' packaging/ship-files | grep -v '^$')
+          for f in $files; do
+            shellcheck -s bash -S info -e SC1090,SC1091,SC2154,SC3043,SC2034 "$f" || true
+          done
+          for f in deploy.sh install.sh install-from-mac.sh; do
+            shellcheck -s sh -S info -e SC1090,SC1091,SC2154 "$f" || true
+          done
+
+  manifest-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: every lib is in the manifest, and every manifest entry exists
+        run: |
+          set -eu
+          fail=0
+          for f in usr/lib/eclipvpn/*.sh; do
+            grep -qxF "$f" packaging/ship-files || { echo "MISSING FROM MANIFEST: $f"; fail=1; }
+          done
+          while IFS= read -r line; do
+            case "$line" in ''|\#*) continue ;; esac
+            [ -f "$line" ] || { echo "MANIFEST ENTRY NOT ON DISK: $line"; fail=1; }
+          done < packaging/ship-files
+          [ "$fail" -eq 0 ]
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: run unit suite
+        run: bash tests/run.sh

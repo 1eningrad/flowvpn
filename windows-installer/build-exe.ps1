@@ -44,7 +44,8 @@ if (-not (Test-Path $ico)) { & (Join-Path $Self "build-icon.ps1") }
     "windows-installer/install-eclipvpn-gui.ps1",
     "windows-installer/lang.ru.txt",
     "windows-installer/eclip.ico",
-    "windows-installer/lib/Renci.SshNet.dll"
+    "windows-installer/lib/Renci.SshNet.dll",
+    "packaging/ship-files"
 ) | ForEach-Object { Stage-File $_ }
 
 # 2) the per-arch static-binary payload (xray/sing-box/jq/curl/ca-bundle)
@@ -54,7 +55,7 @@ Copy-Item -Recurse -Force (Join-Path $Self "payload\*") $payloadDst
 $binCount = (Get-ChildItem (Join-Path $payloadDst "bin") -Recurse -File).Count
 Write-Host "payload binaries staged: $binCount" -ForegroundColor DarkGray
 
-# 3) EclipVPN source tree (the 15 files the engine ships to the router)
+# 3) EclipVPN source tree (engine ships these; list comes from packaging/ship-files + UI)
 $EclipTextFiles | ForEach-Object { Stage-File $_ }
 Write-Host "source files staged: $($EclipTextFiles.Count)" -ForegroundColor DarkGray
 
