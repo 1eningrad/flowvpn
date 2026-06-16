@@ -52,3 +52,20 @@ _config_lock; assert_rc "cfg-reclaim-dead" "$?" 0
 assert_eq "cfg-reclaim-newowner" "$(readlink "$ECLIPVPN_TMP/config.lock")" "$$"
 _config_unlock
 _reset_cfg
+
+# --- shared _lock_acquire / _lock_release primitive (op + config sit on it) ---
+_t lock_primitive
+rm -f "$ECLIPVPN_TMP/foo.lock"; rm -rf "$ECLIPVPN_TMP/foo.reclaim.lockdir"
+_lock_acquire foo;       assert_rc "lk-try-acquire" "$?" 0
+assert_eq "lk-owner" "$(readlink "$ECLIPVPN_TMP/foo.lock")" "$$"
+_lock_acquire foo;       assert_rc "lk-try-reject-live" "$?" 1   # try-mode: held by live owner
+_lock_release foo
+assert_eq "lk-released" "$( [ -e "$ECLIPVPN_TMP/foo.lock" ] && echo present || echo gone )" gone
+_lock_acquire foo wait;  assert_rc "lk-wait-acquire" "$?" 0      # wait-mode acquires when free
+_lock_release foo
+# stale reclaim through the primitive
+ln -s 999999 "$ECLIPVPN_TMP/foo.lock"
+_lock_acquire foo;       assert_rc "lk-reclaim-dead" "$?" 0
+assert_eq "lk-reclaim-newowner" "$(readlink "$ECLIPVPN_TMP/foo.lock")" "$$"
+_lock_release foo
+rm -f "$ECLIPVPN_TMP/foo.lock"; rm -rf "$ECLIPVPN_TMP/foo.reclaim.lockdir"

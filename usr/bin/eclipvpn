@@ -91,67 +91,77 @@ save_config() {
     fi
 }
 
-# Serialized read-modify-write of config.json. Every config mutation in this
-# codebase is `read (jq reads config.json) → edit → write (save_config)`; two
-# of them interleaving silently loses one writer's change (the watchdog's
-# selected_server failover vs. a concurrent user cmd_set_*/cmd_sub — whichever
-# saves last wins). update_config holds a short mutex across BOTH the read and
-# the write, so the whole RMW is atomic against every other writer that also
-# goes through here. It is the ONLY safe way to mutate config concurrently
-# with the watchdog.
+# --- unified lock primitive --------------------------------------------------
+# One symlink-PID mutex behind BOTH the op-lock (lifecycle ops, try-once) and
+# the config-write lock (read-modify-write of config.json, wait). A symlink
+# whose TARGET is the owner PID: `ln -s "$$"` creates-if-absent (atomic acquire)
+# AND records the owner in the same syscall, so there is no "lock created but
+# owner not yet recorded" window for a second arrival to misread as stale and
+# steal — the bug that let two cmd_starts through the old mkdir + separate-PID-
+# file op-lock. Stale reclaim (owner PID dead) is serialized under a per-lock
+# reclaim dir so two waiters can't both rm+recreate. A crash right after `ln`
+# still leaves the dead PID in the symlink target on disk, so a stale lock is
+# always reclaimable — no permanent wedge.
 #
-#   update_config '<jq program>' [jq args...]
+#   _lock_acquire NAME        try once: 0 = acquired, 1 = held by a LIVE owner
+#   _lock_acquire NAME wait   block until acquired; force-steal a wedged holder
+#                             after ~10s (always 0 — dropping a write is worse)
+#   _lock_release NAME        drop it
 #
-# The jq program receives the CURRENT config as input; its output is saved.
-# Pass values as jq args (--arg/--argjson), exactly as the old inline
-# `jq … "$ECLIPVPN_CONFIG"` calls did. Returns save_config's status (1 on jq
-# failure or save failure; the lock is always released).
-#
-# NON-REENTRANT: never call update_config from inside another update_config or
-# from within a jq program — the lock would self-deadlock (then force-steal
-# after the timeout). Every current caller is sequential, not nested.
-#
-# Lock primitive: a symlink whose target IS the owner PID. `ln -s` publishes
-# the owner atomically, so unlike a mkdir-dir + separate PID-file lock there is
-# no "acquired but owner not yet recorded" window for a second waiter to
-# misread as stale (the same race fixed in _op_begin). Stale reclaim (owner
-# process dead) is serialized under a second lock so two waiters can't both
-# rm+recreate. A wedged holder is force-stolen after ~10s rather than dropping
-# the caller's config change on the floor.
-_config_lock() {
-    local lock="$ECLIPVPN_TMP/config.lock"
-    local rlock="$ECLIPVPN_TMP/config.reclaim.lockdir"
-    local tries=0 owner
-    mkdir -p "$ECLIPVPN_TMP"
-    while ! ln -s "$$" "$lock" 2>/dev/null; do
-        # Held by someone. Reclaim ONLY a verifiably-dead owner, and serialize
-        # the reclaim itself (second lock) so two waiters can't both steal. An
-        # empty owner means a holder that just acquired but readlink lost a
-        # race — treat as alive and wait (the timeout below is the backstop for
-        # a holder that died before its symlink target was set, which `ln`'s
-        # atomicity makes impossible anyway).
-        if mkdir "$rlock" 2>/dev/null; then
-            owner=$(readlink "$lock" 2>/dev/null)
-            if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-                rm -f "$lock"
-            fi
-            rmdir "$rlock" 2>/dev/null
+# NOT reentrant. watchdog.lockdir and auto.lock deliberately stay on their own
+# primitives: the watchdog lock has external PID-file consumers (init.d,
+# deploy.sh) and a distinct "I'm a duplicate, exit" semantic, and auto.lock
+# relies on flock's auto-release-on-subshell-exit in the auto-select rollback.
+_lock_try() {
+    # One acquire+reclaim cycle. 0 = got it, 1 = held by a live owner.
+    local lock="$1" rlock="$2"
+    ln -s "$$" "$lock" 2>/dev/null && return 0
+    if mkdir "$rlock" 2>/dev/null; then
+        local owner; owner=$(readlink "$lock" 2>/dev/null)
+        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+            rm -f "$lock"
+            ln -s "$$" "$lock" 2>/dev/null && { rmdir "$rlock" 2>/dev/null; return 0; }
         fi
+        rmdir "$rlock" 2>/dev/null
+    fi
+    return 1
+}
+_lock_acquire() {
+    local name="$1" mode="${2:-try}"
+    local lock="$ECLIPVPN_TMP/$name.lock" rlock="$ECLIPVPN_TMP/$name.reclaim.lockdir"
+    mkdir -p "$ECLIPVPN_TMP"
+    _lock_try "$lock" "$rlock" && return 0
+    [ "$mode" = "wait" ] || return 1
+    local tries=0
+    while ! _lock_try "$lock" "$rlock"; do
         tries=$((tries + 1))
         if [ "$tries" -ge 10 ]; then
-            # ~10s of contention — the holder is wedged. Steal and proceed:
-            # dropping a user's config change is worse than a one-off race.
+            # Wedged holder — steal and proceed; dropping a write is worse.
             rm -f "$lock"; ln -s "$$" "$lock" 2>/dev/null
-            flog "WARN: config lock forced after timeout"
+            flog "WARN: $name lock forced after timeout"
             return 0
         fi
         sleep 1
     done
     return 0
 }
-_config_unlock() {
-    rm -f "$ECLIPVPN_TMP/config.lock"
-}
+_lock_release() { rm -f "$ECLIPVPN_TMP/$1.lock"; }
+
+# Serialized read-modify-write of config.json. Every config mutation here is
+# `read (jq reads config.json) -> edit -> write (save_config)`; two interleaving
+# silently lose one writer's change (watchdog selected_server failover vs. a
+# user cmd_set_*/cmd_sub — whichever saves last wins). update_config holds the
+# config lock across BOTH the read and the write, so the whole RMW is atomic
+# against every other writer that also goes through here — the ONLY safe way to
+# mutate config concurrently with the watchdog.
+#
+#   update_config '<jq program>' [jq args...]
+#
+# The jq program receives the CURRENT config as input; its output is saved.
+# Pass values as jq args (--arg/--argjson). Returns save_config's status (1 on
+# jq or save failure; the lock is always released). NON-REENTRANT.
+_config_lock()   { _lock_acquire config wait; }
+_config_unlock() { _lock_release config; }
 update_config() {
     local prog="$1"; shift
     _config_lock
@@ -173,60 +183,23 @@ update_config() {
 # Core commands
 # ============================================================
 
-# Operation lock — held while a user-initiated lifecycle command (start,
-# stop, restart, set-server, set-mode) is in flight.
-#
-# Real mutex via an atomic symlink, not just a pidfile marker: lifecycle
-# commands can arrive simultaneously (init.d's S99eclipvpn races with the UI's
-# "включить" button on a slow boot, or the watchdog reviver fires on a
-# borderline tick). Two concurrent cmd_start invocations both passed the old
-# marker write and ran end-to-end, leaving two xray processes fighting for
-# 127.0.0.1:1080.
-#
-# The lock is a symlink ($ECLIPVPN_TMP/op.lock) whose TARGET is the owner PID.
-# `ln -s` both creates-if-absent (atomic acquire, like mkdir) AND records the
-# owner in the same syscall — so there is no "lock created but owner not yet
-# written" window. The previous mkdir+separate-PID-file had exactly that
-# window: a second arrival between `mkdir` and `echo $$ > op.in_progress` read
-# an EMPTY owner, judged it stale, and `rm -rf` + re-`mkdir` stole the lock the
-# first one legitimately held → both proceeded. Stale reclaim (owner process
-# genuinely dead) is now serialized under a second lock so two waiters can't
-# both rm+recreate. A crash right after `ln` still leaves the dead PID in the
-# symlink target (it's on disk), so a stale lock is always reclaimable — no
-# permanent wedge.
-#
-# The watchdog's deferral check still reads the op.in_progress PID file (also
-# written here) — kept for compatibility; it only needs "is an op in flight".
-#
-# Returns 0 on acquire, 1 if another LIVE owner holds the lock.
+# Operation lock — held while a user-initiated lifecycle command (start, stop,
+# restart, set-server, set-mode) is in flight. Lifecycle commands can arrive
+# simultaneously (init.d's S99eclipvpn races with the UI's "включить" button on
+# a slow boot, or the watchdog reviver fires on a borderline tick); two
+# concurrent cmd_starts both acquiring would leave two xray processes fighting
+# for 127.0.0.1:1080. Try-once on the shared symlink-PID _lock (no wait — a
+# second lifecycle op is rejected, not queued). The op.in_progress PID file is
+# written alongside for the watchdog's deferral check (it only needs "is an op
+# in flight"). Returns 0 on acquire, 1 if another LIVE owner holds it.
 _op_begin() {
-    mkdir -p "$ECLIPVPN_TMP"
-    local lock="$ECLIPVPN_TMP/op.lock"
-    if ln -s "$$" "$lock" 2>/dev/null; then
-        echo $$ > "$ECLIPVPN_TMP/op.in_progress"
-        return 0
-    fi
-    # Held. Reclaim only if the owner is verifiably dead, serialized under a
-    # reclaim lock so two waiters can't both steal. An empty owner means the
-    # holder just acquired (readlink lost a race) — treat as alive, don't steal.
-    if mkdir "$ECLIPVPN_TMP/op.reclaim.lockdir" 2>/dev/null; then
-        local owner ret=1
-        owner=$(readlink "$lock" 2>/dev/null)
-        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-            rm -f "$lock"
-            if ln -s "$$" "$lock" 2>/dev/null; then
-                echo $$ > "$ECLIPVPN_TMP/op.in_progress"
-                ret=0
-            fi
-        fi
-        rmdir "$ECLIPVPN_TMP/op.reclaim.lockdir" 2>/dev/null
-        return $ret
-    fi
-    return 1
+    _lock_acquire op || return 1
+    echo $$ > "$ECLIPVPN_TMP/op.in_progress"
+    return 0
 }
 _op_end() {
     rm -f "$ECLIPVPN_TMP/op.in_progress"
-    rm -f "$ECLIPVPN_TMP/op.lock"
+    _lock_release op
 }
 
 _ensure_watchdog() {
