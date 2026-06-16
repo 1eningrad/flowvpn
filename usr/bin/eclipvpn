@@ -33,6 +33,13 @@ ulimit -n 8192 2>/dev/null
 
 get_config_val() { jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$ECLIPVPN_CONFIG"; }
 flog() { logger -t eclipvpn "$*"; }
+# Log an error AND emit it as the {"error":...} JSON the CLI/CGI returns, so a
+# user-visible failure is never silent in the log (the recurring "ошибка есть —
+# в логах пусто"). Usage: _err "message"  -> logs ERROR: ... + prints {"error":...}
+_err() { flog "ERROR: $1"; jq -n -c --arg e "$1" '{error:$e}'; }
+# Verbose step-trace, OFF by default. Enable without a redeploy via
+# `eclipvpn set-config log_debug true` to trace e.g. a server switch step-by-step.
+flogd() { [ "$(get_config_val log_debug false)" = "true" ] && logger -t eclipvpn "DEBUG: $*"; return 0; }
 
 # Returns the per-install Clash API secret. Generates one on first call.
 # Stored in /etc/eclipvpn/clash_secret (chmod 600).

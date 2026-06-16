@@ -400,6 +400,7 @@ cmd_restart() {
     local stage_eng stage_port
     stage_eng=$(printf '%s' "$stage" | cut -d' ' -f1)
     stage_port=$(printf '%s' "$stage" | cut -d' ' -f2)
+    flogd "switch idx=$selected: staged [$stage], old=$old_engine@$old_port"
 
     # 2) Adopt — the ONLY interruption is one sing-box swap (~1s, deterministic;
     #    the new exit is already warm/verified, so no cold handshake in the gap).
@@ -434,7 +435,7 @@ cmd_restart() {
         [ -z "$vpn_ip" ] && { _restart_fallback "$selected" "$mode"; return $?; }
     fi
 
-    flog "Tunnel switched (make-before-break), VPN IP: $vpn_ip"
+    flog "Tunnel switched (make-before-break) -> $vpn_ip (engine=$stage_eng port=${stage_port:-1080})"
     date +%s > "$ECLIPVPN_TMP/start_time"
     echo "$vpn_ip" > "$ECLIPVPN_TMP/vpn_ip"
 

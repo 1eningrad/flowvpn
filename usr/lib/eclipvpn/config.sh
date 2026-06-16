@@ -5,11 +5,11 @@
 
 cmd_set_config() {
     local key="$1" value="$2"
-    [ -z "$key" ] || [ -z "$value" ] && { echo '{"error":"missing key or value"}'; return 1; }
+    [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu) ;;
-        *) echo '{"error":"invalid key"}'; return 1 ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel) ;;
+        *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
     # cmd_set_mode. Without this delegation, `set-config?key=mode&value=...`
@@ -25,33 +25,39 @@ cmd_set_config() {
     # `[a-zA-Z0-9_-]` through, so a malformed value would silently fall
     # through to the default branch in _fetch_blocklist_domains).
     if [ "$key" = "blocklist_source" ]; then
-        case "$value" in curated|full) ;; *) echo '{"error":"blocklist_source must be curated or full"}'; return 1 ;; esac
+        case "$value" in curated|full) ;; *) _err "blocklist_source must be curated or full"; return 1 ;; esac
+    fi
+    # singbox_loglevel: warn (default) keeps the log readable; info restores the
+    # per-connection flow detail (get-log flow) for debugging. log_debug toggles
+    # EclipVPN's own DEBUG trace (flogd) — both changeable without a redeploy.
+    if [ "$key" = "singbox_loglevel" ]; then
+        case "$value" in warn|info|error|debug) ;; *) _err "singbox_loglevel must be warn|info|error|debug"; return 1 ;; esac
     fi
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,
     # so cmd_status's `// true` defaults work and the UI gets a real bool.
     case "$key" in
-        auto_start|auto_mode|tput_guard)
+        auto_start|auto_mode|tput_guard|log_debug)
             local bv
             case "$value" in
                 true|1|on|yes) bv=true ;;
                 *) bv=false ;;
             esac
-            update_config '.[$k] = $v' --arg k "$key" --argjson v "$bv" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.[$k] = $v' --arg k "$key" --argjson v "$bv" || { _err "set-config save failed for $key"; return 1; }
             ;;
         selected_server|tput_min_kbps|wan_mtu)
-            case "$value" in ''|*[!0-9]*) echo '{"error":"'"$key"' must be numeric"}'; return 1 ;; esac
+            case "$value" in ''|*[!0-9]*) _err "$key must be numeric"; return 1 ;; esac
             # wan_mtu: 0 = leave the interface alone; otherwise clamp to a
             # sane range — _apply_wan_mtu would happily set MTU 100 and
             # take the whole WAN down.
             if [ "$key" = "wan_mtu" ] && [ "$value" != "0" ]; then
                 if [ "$value" -lt 576 ] || [ "$value" -gt 1500 ]; then
-                    echo '{"error":"wan_mtu must be 0 (off) or 576-1500"}'; return 1
+                    _err "wan_mtu must be 0 (off) or 576-1500"; return 1
                 fi
             fi
-            update_config '.[$k] = $v' --arg k "$key" --argjson v "$value" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.[$k] = $v' --arg k "$key" --argjson v "$value" || { _err "set-config save failed for $key"; return 1; }
             ;;
         *)
-            update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
             ;;
     esac
     jq -n --arg k "$key" '{status:"saved",key:$k}'
@@ -72,12 +78,12 @@ cmd_schedule() {
                 esac
             done
             update_config '.schedule = {enabled:true, on:$on, off:$off}' \
-                --arg on "$on_time" --arg off "$off_time" || { echo '{"error":"save failed"}'; return 1; }
+                --arg on "$on_time" --arg off "$off_time" || { _err "set-config save failed for $key"; return 1; }
             _setup_cron
             jq -n --arg on "$on_time" --arg off "$off_time" '{status:"schedule set",on:$on,off:$off}'
             ;;
         disable)
-            update_config '.schedule.enabled = false' || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.schedule.enabled = false' || { _err "set-config save failed for $key"; return 1; }
             _remove_cron
             echo '{"status":"schedule disabled"}'
             ;;

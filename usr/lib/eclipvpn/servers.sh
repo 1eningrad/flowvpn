@@ -30,16 +30,16 @@ _reach_ms() {
 
 cmd_set_server() {
     local idx="$1"
-    [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    [ -z "$idx" ] && { _err "missing server index"; return 1; }
     # Numeric, non-negative only: the >= total check below is upper-bound only,
     # so "-1" would pass it and jq .[-1] resolves to the LAST server.
-    case "$idx" in *[!0-9]*) echo '{"error":"invalid index"}'; return 1 ;; esac
+    case "$idx" in *[!0-9]*) _err "invalid server index"; return 1 ;; esac
     flog "Setting server to index $idx"
-    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { _err "no servers (run update first)"; return 1; }
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
-    [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    [ "$idx" -ge "$total" ] 2>/dev/null && { _err "invalid server index"; return 1; }
     local old_sel; old_sel=$(get_config_val selected_server 0)
-    update_config '.selected_server = $idx' --argjson idx "$idx" || { echo '{"error":"save failed"}'; return 1; }
+    update_config '.selected_server = $idx' --argjson idx "$idx" || { _err "config save failed"; return 1; }
     # _vpn_live, not _vpn_running: selected_server was JUST changed above, so an
     # engine-aware check would read the NEW server's engine (e.g. xray) while the
     # OLD tunnel's daemons (e.g. Hysteria2 sing-box) are what's actually live —
@@ -64,14 +64,14 @@ cmd_set_server() {
 #          {"error":"..."} on failure (production xray/sing-box untouched)
 cmd_probe_server() {
     local idx="$1"
-    [ -z "$idx" ] && { echo '{"error":"missing index"}'; return 1; }
+    [ -z "$idx" ] && { _err "missing server index"; return 1; }
     # Numeric, non-negative only — the >= total check is upper-bound only and
     # jq .[-1] would resolve a negative index to the last server.
-    case "$idx" in *[!0-9]*) echo '{"error":"invalid index"}'; return 1 ;; esac
-    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    case "$idx" in *[!0-9]*) _err "invalid server index"; return 1 ;; esac
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { _err "no servers (run update first)"; return 1; }
     local total
     total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
-    [ "$idx" -ge "$total" ] 2>/dev/null && { echo '{"error":"invalid index"}'; return 1; }
+    [ "$idx" -ge "$total" ] 2>/dev/null && { _err "invalid server index"; return 1; }
     # Engine-aware: hysteria2 probes spawn a throwaway sing-box dialer, the rest
     # a throwaway xray — require the matching binary before spending time.
     local p_eng
@@ -209,7 +209,7 @@ cmd_update() {
 }
 
 cmd_ping() {
-    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { _err "no servers (run update first)"; return 1; }
     local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
     local tmpdir=$(mktemp -d "$ECLIPVPN_TMP/ping.XXXXXX")
 
@@ -289,7 +289,7 @@ _attempt_add() {
 }
 
 cmd_auto_select() {
-    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo '{"error":"no servers"}'; return 1; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { _err "no servers (run update first)"; return 1; }
     local total i=0 name host ms
     total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
 

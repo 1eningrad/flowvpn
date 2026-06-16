@@ -213,8 +213,9 @@ generate_singbox_config() {
         --arg clash_secret "$clash_secret" \
         --arg final_outbound "$([ "$mode" = "all_vpn" ] && echo "default" || echo "direct")" \
         --arg final_dns "$([ "$mode" = "all_vpn" ] && echo "dns-proxy" || echo "dns-direct")" \
+        --arg loglevel "$(get_config_val singbox_loglevel warn)" \
     '{
-        log: {level: "info", timestamp: true},
+        log: {level: $loglevel, timestamp: true},
         experimental: {
             cache_file: {enabled: true, path: "/tmp/eclipvpn/cache.db"},
             clash_api: {external_controller: "127.0.0.1:9090", secret: $clash_secret}
