@@ -27,9 +27,10 @@ cmd_set_config() {
     if [ "$key" = "blocklist_source" ]; then
         case "$value" in curated|full) ;; *) _err "blocklist_source must be curated or full"; return 1 ;; esac
     fi
-    # singbox_loglevel: warn (default) keeps the log readable; info restores the
-    # per-connection flow detail (get-log flow) for debugging. log_debug toggles
-    # EclipVPN's own DEBUG trace (flogd) — both changeable without a redeploy.
+    # singbox_loglevel: info (default) drives the UI "Журнал" flow panel
+    # (Все/VPN/Direct/DNS read singbox.log outbound/dns lines); warn shrinks the
+    # raw log but empties those tabs. log_debug toggles EclipVPN's own DEBUG
+    # trace (flogd) — both changeable without a redeploy.
     if [ "$key" = "singbox_loglevel" ]; then
         case "$value" in warn|info|error|debug) ;; *) _err "singbox_loglevel must be warn|info|error|debug"; return 1 ;; esac
     fi

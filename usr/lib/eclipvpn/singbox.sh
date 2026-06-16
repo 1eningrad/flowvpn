@@ -213,7 +213,7 @@ generate_singbox_config() {
         --arg clash_secret "$clash_secret" \
         --arg final_outbound "$([ "$mode" = "all_vpn" ] && echo "default" || echo "direct")" \
         --arg final_dns "$([ "$mode" = "all_vpn" ] && echo "dns-proxy" || echo "dns-direct")" \
-        --arg loglevel "$(get_config_val singbox_loglevel warn)" \
+        --arg loglevel "$(get_config_val singbox_loglevel info)" \
     '{
         log: {level: $loglevel, timestamp: true},
         experimental: {

@@ -67,7 +67,7 @@ cmd_get_log() {
     # router-wide and can't be truncated, so filter by the "log cleared"
     # marker that cmd_clear_log writes — events older than that timestamp
     # were dismissed by the user and shouldn't reappear in the UI.
-    if [ "$filter" = "all" ] || [ "$filter" = "flow" ]; then
+    if [ "$filter" = "all" ] || [ "$filter" = "flow" ] || [ "$filter" = "error" ]; then
         local cleared_since=0
         [ -f "$ECLIPVPN_TMP/log_cleared_ts" ] && cleared_since=$(cat "$ECLIPVPN_TMP/log_cleared_ts" 2>/dev/null)
         # logread on this busybox formats lines like
@@ -76,7 +76,11 @@ cmd_get_log() {
         # log_cleared_ts is `date +%s` (UTC epoch). Parse the textual
         # date in awk and subtract TZ_OFFSET to compare apples to apples.
         # mktime is gawk-only, so we build the epoch by hand.
-        logread 2>/dev/null | grep 'eclipvpn:' | tail -100 | \
+        # Errors tab: only EclipVPN's own ERROR lines (flog/_err); other tabs
+        # show all eclipvpn syslog entries.
+        local _sysgrep='eclipvpn:'
+        [ "$filter" = "error" ] && _sysgrep='eclipvpn:.*ERROR'
+        logread 2>/dev/null | grep "$_sysgrep" | tail -100 | \
             awk -v ts="${cleared_since:-0}" -v tz="${TZ_OFFSET:-3}" '
                 BEGIN {
                     split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " ")
