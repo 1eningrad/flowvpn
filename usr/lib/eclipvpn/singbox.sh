@@ -138,12 +138,15 @@ _gen_probe_config() {
 # Generate sing-box config
 # ============================================================
 
-# Args: OUTPUT MODE SERVERS_FILE SEL_IDX. SERVERS_FILE+SEL_IDX pick the proxy
-# engine for the selected server (see the engine helpers in usr/bin/eclipvpn);
-# omitting them defaults to the xray engine (socks→xray:1080), which is the
-# pre-multi-protocol behaviour.
+# Args: OUTPUT MODE SERVERS_FILE SEL_IDX [SOCKS_PORT=1080]. SERVERS_FILE+SEL_IDX
+# pick the proxy engine for the selected server (see the engine helpers in
+# usr/bin/eclipvpn); omitting them defaults to the xray engine. SOCKS_PORT is the
+# port of the xray SOCKS frontend the "default" outbound dials — usually 1080,
+# but make-before-break stages the new xray on the alternate port and points the
+# new sing-box config at it (the active xray port rotates 1080<->1081; see
+# _active_socks_port). Ignored for the hysteria2 engine (sing-box dials natively).
 generate_singbox_config() {
-    local output="$1" mode="$2" servers_file="$3" sel_idx="$4"
+    local output="$1" mode="$2" servers_file="$3" sel_idx="$4" socks_port="${5:-1080}"
 
     # Sing-box reads geosite-ru/geoip-ru as local files (see rule_set block
     # below). They MUST exist or sing-box refuses to start. Cached files from a
@@ -171,7 +174,7 @@ generate_singbox_config() {
             || { flog "ERROR: could not build native sing-box outbound for $proto"; return 1; }
         socks_inbound='{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}'
     else
-        proxy_outbound='{"type":"socks","tag":"default","server":"127.0.0.1","server_port":1080,"version":"5"}'
+        proxy_outbound=$(jq -n --argjson p "$socks_port" '{type:"socks",tag:"default",server:"127.0.0.1",server_port:$p,version:"5"}')
     fi
 
     local rules dns_rules
@@ -414,11 +417,16 @@ start_singbox() {
     # the log balloons to tens of MB while only a few KB are real data.
     TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/eclipvpn >>/tmp/eclipvpn/singbox.log 2>>/tmp/eclipvpn/singbox.log &
     echo $! > /tmp/eclipvpn/singbox.pid
+    # Busy-poll (netstat-paced, ~20-40ms/iter) instead of a flat `sleep 1` loop:
+    # busybox has no sub-second sleep, and sing-box binds :2154 in well under a
+    # second (~0.3s measured) — the old 1s granularity DOMINATED the switch gap.
+    # The netstat call itself paces the loop; the ~300-iter cap bounds it to
+    # roughly the old 10s budget for a genuinely slow start.
     local tries=0
-    while [ "$tries" -lt 10 ]; do
-        sleep 1; tries=$((tries + 1))
+    while [ "$tries" -lt 300 ]; do
         kill -0 "$(cat /tmp/eclipvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/eclipvpn/singbox.pid; return 1; }
         netstat -tlnp 2>/dev/null | grep -q ":2154 " && return 0
+        tries=$((tries + 1))
     done
     # Process alive but tproxy port never bound. Caller (cmd_start) would
     # otherwise apply nftables rules redirecting LAN traffic to an unbound
@@ -431,7 +439,14 @@ stop_singbox() {
     local pid=""
     [ -f /tmp/eclipvpn/singbox.pid ] && pid=$(cat /tmp/eclipvpn/singbox.pid)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null
-    sleep 1
+    # Wait (netstat-paced, no flat `sleep 1`) for sing-box to exit and release
+    # :2154 so the next start can bind it — sing-box dies in <0.5s, so a fixed 1s
+    # sleep was pure switch-gap latency. Cap ~80 iters (~2-3s) before SIGKILL.
+    local _i=0
+    while netstat -tlnp 2>/dev/null | grep -q ":2154 "; do
+        kill -0 "$pid" 2>/dev/null || break
+        _i=$((_i + 1)); [ "$_i" -ge 80 ] && break
+    done
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
     # Same orphan-sweep as stop_xray — see comment there.
     for orphan in $(pgrep -f 'sing-box run -c /tmp/eclipvpn/singbox.json' 2>/dev/null); do

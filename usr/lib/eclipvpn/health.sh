@@ -213,8 +213,9 @@ cmd_diagnose() {
     # _vpn_running, not is_xray_running: on a hysteria2 server sing-box owns
     # SOCKS:1080 (xray isn't running) and these probes still measure the tunnel.
     if _vpn_running; then
-        ( curl -s --socks5-hostname 127.0.0.1:1080 --max-time 5 https://ifconfig.me 2>/dev/null > "$diag_dir/vpn_ip" ) &
-        ( curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://youtube.com 2>/dev/null > "$diag_dir/yt_code" ) &
+        local _sp; _sp=$(_active_socks_port)
+        ( curl -s --socks5-hostname "127.0.0.1:$_sp" --max-time 5 https://ifconfig.me 2>/dev/null > "$diag_dir/vpn_ip" ) &
+        ( curl -s --socks5-hostname "127.0.0.1:$_sp" --max-time 8 -o /dev/null -w "%{http_code}" https://youtube.com 2>/dev/null > "$diag_dir/yt_code" ) &
     fi
     ( curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://yandex.ru 2>/dev/null > "$diag_dir/ya_code" ) &
 
@@ -436,9 +437,10 @@ cmd_healthcheck() {
     is_singbox_running && _hc "sing-box" "ok" "PID $(cat /tmp/eclipvpn/singbox.pid)" \
         || _hc "sing-box" "error" "Не запущен"
 
-    # 2. Ports
-    netstat -tlnp 2>/dev/null | grep -q ":1080 " && _hc "SOCKS :1080" "ok" "движок слушает" \
-        || _hc "SOCKS :1080" "error" "Порт не открыт"
+    # 2. Ports — the live tunnel's SOCKS is on the ACTIVE port (rotates 1080<->1081).
+    local _sp; _sp=$(_active_socks_port)
+    netstat -tlnp 2>/dev/null | grep -q ":$_sp " && _hc "SOCKS :$_sp" "ok" "движок слушает" \
+        || _hc "SOCKS :$_sp" "error" "Порт не открыт"
     netstat -tlnp 2>/dev/null | grep -q ":2154 " && _hc "tproxy :2154" "ok" "sing-box слушает" \
         || _hc "tproxy :2154" "error" "Порт не открыт"
     netstat -ulnp 2>/dev/null | grep -q ":5354 " && _hc "DNS :5354" "ok" "sing-box DNS слушает" \
@@ -468,7 +470,7 @@ cmd_healthcheck() {
         # -4 forces IPv4 — sing-box's strategy is ipv4_only but ifconfig.me
         # serves IPv6 too via Happy Eyeballs, which produced confusing
         # AAAA records in the "VPN туннель" check.
-        local vpn_ip=$(curl -4 -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://ifconfig.me 2>/dev/null)
+        local vpn_ip=$(curl -4 -s --socks5-hostname "127.0.0.1:$_sp" --max-time 8 https://ifconfig.me 2>/dev/null)
         local home_ip=$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null)
         [ -n "$vpn_ip" ] && _hc "VPN туннель" "ok" "VPN IP: $vpn_ip" \
             || _hc "VPN туннель" "error" "Нет ответа"
@@ -478,7 +480,7 @@ cmd_healthcheck() {
 
     # 7. Blocked sites
     for site in youtube.com instagram.com x.com; do
-        local code=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 -o /dev/null -w "%{http_code}" https://$site 2>/dev/null)
+        local code=$(curl -s --socks5-hostname "127.0.0.1:$_sp" --max-time 8 -o /dev/null -w "%{http_code}" https://$site 2>/dev/null)
         case "$code" in 200|301|302) _hc "$site" "ok" "HTTP $code через VPN" ;; *) _hc "$site" "error" "HTTP $code" ;; esac
     done
 
@@ -509,7 +511,7 @@ cmd_healthcheck() {
     if _vpn_running; then
         local cur_vpn_ip trace seen_ip
         cur_vpn_ip=$(cat "$ECLIPVPN_TMP/vpn_ip" 2>/dev/null)
-        trace=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://1.1.1.1/cdn-cgi/trace 2>/dev/null)
+        trace=$(curl -s --max-time 5 --socks5-hostname "127.0.0.1:$_sp" https://1.1.1.1/cdn-cgi/trace 2>/dev/null)
         seen_ip=$(echo "$trace" | awk -F= '/^ip=/{print $2;exit}')
         if [ -z "$seen_ip" ]; then
             _hc "IP-leak" "warn" "Не удалось проверить (нет связи через VPN)"
