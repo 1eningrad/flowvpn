@@ -213,6 +213,19 @@ _kill_all_xray() {
 # so it never touches the live xray on the other port.
 _stage_drop() { stop_xray "$1" "$ECLIPVPN_TMP/xray.stage.pid"; }
 
+# cmd_restart EXIT/signal cleanup: reap a staged xray if a switch was interrupted
+# mid-stage (a successful switch already promoted it via mv, so xray.stage.pid is
+# gone and this is a no-op — it never touches the LIVE xray.pid). Then release the
+# op-lock. Without this, a SIGTERM/SIGINT (CGI timeout, watchdog OOM-kill) between
+# start_xray and the promote would orphan a staged xray on the alternate port.
+_restart_cleanup() {
+    if [ -f "$ECLIPVPN_TMP/xray.stage.pid" ]; then
+        kill -9 "$(cat "$ECLIPVPN_TMP/xray.stage.pid" 2>/dev/null)" 2>/dev/null
+        rm -f "$ECLIPVPN_TMP/xray.stage.pid"
+    fi
+    _op_end
+}
+
 # Stage + VERIFY the new exit for server $1 WITHOUT touching the live tunnel.
 # $3 = the OLD tunnel's engine (so we stage on a free port). Echoes one of:
 #   "xray <port> <ip>"  — a WARM xray left running on <port>, ready to adopt
@@ -230,6 +243,9 @@ _stage_exit() {
         return 0
     fi
     local sp; sp=$(_stage_xray_port "$(_active_xray_port)" "$old_engine")
+    # Reap any orphaned staged xray a prior interrupted switch may have left on
+    # this port, so start_xray below binds fresh and never adopts a stale exit.
+    _stage_drop "$sp"
     generate_xray_config "$ECLIPVPN_TMP/servers.json" "$sel" "$ECLIPVPN_TMP/xray.$sp.json" "$sp" || return 1
     start_xray "$ECLIPVPN_TMP/xray.$sp.json" "$sp" "$ECLIPVPN_TMP/xray.stage.pid" || { _stage_drop "$sp"; return 1; }
     local ip; ip=$(test_xray "$sp")
@@ -282,7 +298,7 @@ cmd_restart() {
         echo '{"error":"another lifecycle op in progress"}'
         return 1
     fi
-    trap '_op_end' EXIT INT TERM
+    trap '_restart_cleanup' EXIT INT TERM
     _ensure_watchdog
     # Soft restart: keeps nftables rules + dnsmasq redirect in place so
     # that during the process-swap gap, traffic fails closed (no internet
