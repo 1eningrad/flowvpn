@@ -213,7 +213,7 @@ echo
 echo "=== ru direct list ==="
 wc -l /tmp/eclipvpn/rules/ru_domains.list 2>/dev/null || echo "(not generated yet)"
 echo
-echo "=== logs (warn level — should be small) ==="
+echo "=== logs (sing-box at info — drives the UI flow panel) ==="
 wc -l /tmp/eclipvpn/*.log 2>/dev/null || echo "(no logs yet)"
 echo
 echo "=== eclipvpn status ==="
