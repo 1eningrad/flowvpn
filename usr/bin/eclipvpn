@@ -182,10 +182,22 @@ update_config() {
     _config_lock
     local cur new
     cur=$(cat "$ECLIPVPN_CONFIG" 2>/dev/null)
+    # save_config writes atomically (mv), so config.json should never read
+    # empty. An empty read is a transient (e.g. read raced a swap under heavy
+    # concurrency) — retry once, then bail WITHOUT feeding jq empty input
+    # (which silently produces no output and looks like a program bug).
+    [ -z "$cur" ] && cur=$(cat "$ECLIPVPN_CONFIG" 2>/dev/null)
+    if [ -z "$cur" ]; then
+        _config_unlock
+        flog "ERROR: update_config: config.json empty/unreadable — write skipped (prog: $prog)"
+        return 1
+    fi
     new=$(printf '%s' "$cur" | jq "$@" "$prog" 2>/dev/null)
     if [ -z "$new" ]; then
         _config_unlock
-        flog "ERROR: update_config jq program produced no output"
+        # Name the jq program so the Errors tab points at the exact failed
+        # write (bad --arg/--argjson, program bug), not an anonymous line.
+        flog "ERROR: update_config: jq produced no output for: $prog"
         return 1
     fi
     save_config "$new"
