@@ -25,8 +25,25 @@ echo "→ ship sources to $ROUTER"
 # branch and destroy the subscription.
 ssh "$ROUTER" 'mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bin /tmp/eclipvpn'
 
-COPYFILE_DISABLE=1 tar c \
-    usr/bin/eclipvpn \
+# Ship committed bytes, not the working tree — this repo lives inside a Yandex.Disk
+# sync folder and a mid-sync (truncated/zero-byte) file once broke a deploy.
+# `git archive` reads the immutable object store. Clean tree ships HEAD;
+# ALLOW_DIRTY=1 ships the working tree (racy, opt-in). Scoped to the shipped trees.
+DIRTY=$(git status --porcelain -- usr www etc)
+SHIP=git
+if [ -n "$DIRTY" ]; then
+    if [ "${ALLOW_DIRTY:-0}" = 1 ]; then
+        echo "WARNING: working tree dirty + ALLOW_DIRTY=1 → shipping working tree (NOT immune to Yandex.Disk mid-sync corruption)" >&2
+        SHIP=worktree
+    else
+        echo "ERROR: uncommitted changes under usr/ www/ etc/." >&2
+        echo "       This bootstrap ships committed bytes (git archive HEAD)." >&2
+        echo "       Commit first, or set ALLOW_DIRTY=1 to ship the working tree (racy)." >&2
+        exit 1
+    fi
+fi
+
+SHIP_FILES="usr/bin/eclipvpn \
     usr/lib/eclipvpn/parse.sh \
     usr/lib/eclipvpn/subscriptions.sh \
     usr/lib/eclipvpn/xray.sh \
@@ -41,10 +58,15 @@ COPYFILE_DISABLE=1 tar c \
     usr/lib/eclipvpn/health.sh \
     usr/lib/eclipvpn/config.sh \
     etc/init.d/eclipvpn \
-    www/cgi-bin/eclipvpn \
-| ssh "$ROUTER" 'cd / && tar x'
+    www/cgi-bin/eclipvpn"
 
-cat www/eclipvpn/index.html | ssh "$ROUTER" 'cat > /www/eclipvpn/index.html'
+if [ "$SHIP" = git ]; then
+    git archive --format=tar HEAD -- $SHIP_FILES | ssh "$ROUTER" 'cd / && tar x'
+    git show HEAD:www/eclipvpn/index.html | ssh "$ROUTER" 'cat > /www/eclipvpn/index.html'
+else
+    COPYFILE_DISABLE=1 tar c $SHIP_FILES | ssh "$ROUTER" 'cd / && tar x'
+    cat www/eclipvpn/index.html | ssh "$ROUTER" 'cat > /www/eclipvpn/index.html'
+fi
 
 echo "→ install dependencies + xray + Tailscale on router"
 ssh "$ROUTER" "WITH_REMOTE=$WITH_REMOTE sh -s" <<'REMOTE_EOF'
