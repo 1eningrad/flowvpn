@@ -328,7 +328,7 @@ cmd_auto_select() {
     while IFS=' ' read -r ms idx; do
         [ -z "$idx" ] && continue
         name=$(jq -r --argjson i "$idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
-        if [ "$idx" = "$cur" ] && _vpn_running && [ -n "$(test_xray)" ]; then
+        if [ "$idx" = "$cur" ] && _vpn_running && [ -n "$(test_xray "$(_active_socks_port)")" ]; then
             attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "already_active")
             jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" \
                 '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
@@ -443,7 +443,7 @@ cmd_auto_eval() {
         # Is the current tunnel actually carrying traffic? (test_xray returns the
         # exit IP via the running socks; empty = dead tunnel.)
         local current_broken=0
-        [ -z "$(test_xray)" ] && current_broken=1
+        [ -z "$(test_xray "$(_active_socks_port)")" ] && current_broken=1
 
         # Cooldown: if current is fine and we switched < 1h ago, do nothing.
         if [ "$current_broken" -eq 0 ] && [ $((now - last_switch)) -lt 3600 ]; then
