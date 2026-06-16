@@ -22,7 +22,7 @@ jobs:
           fail=0
           for f in $files deploy.sh install.sh install-from-mac.sh \
                    tests/run.sh tests/test_parse.sh tests/test_validators.sh \
-                   tests/test_locks.sh tests/test_config.sh; do
+                   tests/test_locks.sh tests/test_config.sh tests/test_switch.sh; do
             sh -n "$f"          || { echo "sh -n FAIL:  $f"; fail=1; }
             busybox ash -n "$f" || { echo "ash -n FAIL: $f"; fail=1; }
           done

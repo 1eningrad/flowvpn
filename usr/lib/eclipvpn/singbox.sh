@@ -138,12 +138,15 @@ _gen_probe_config() {
 # Generate sing-box config
 # ============================================================
 
-# Args: OUTPUT MODE SERVERS_FILE SEL_IDX. SERVERS_FILE+SEL_IDX pick the proxy
-# engine for the selected server (see the engine helpers in usr/bin/eclipvpn);
-# omitting them defaults to the xray engine (socks→xray:1080), which is the
-# pre-multi-protocol behaviour.
+# Args: OUTPUT MODE SERVERS_FILE SEL_IDX [SOCKS_PORT=1080]. SERVERS_FILE+SEL_IDX
+# pick the proxy engine for the selected server (see the engine helpers in
+# usr/bin/eclipvpn); omitting them defaults to the xray engine. SOCKS_PORT is the
+# port of the xray SOCKS frontend the "default" outbound dials — usually 1080,
+# but make-before-break stages the new xray on the alternate port and points the
+# new sing-box config at it (the active xray port rotates 1080<->1081; see
+# _active_socks_port). Ignored for the hysteria2 engine (sing-box dials natively).
 generate_singbox_config() {
-    local output="$1" mode="$2" servers_file="$3" sel_idx="$4"
+    local output="$1" mode="$2" servers_file="$3" sel_idx="$4" socks_port="${5:-1080}"
 
     # Sing-box reads geosite-ru/geoip-ru as local files (see rule_set block
     # below). They MUST exist or sing-box refuses to start. Cached files from a
@@ -171,7 +174,7 @@ generate_singbox_config() {
             || { flog "ERROR: could not build native sing-box outbound for $proto"; return 1; }
         socks_inbound='{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}'
     else
-        proxy_outbound='{"type":"socks","tag":"default","server":"127.0.0.1","server_port":1080,"version":"5"}'
+        proxy_outbound=$(jq -n --argjson p "$socks_port" '{type:"socks",tag:"default",server:"127.0.0.1",server_port:$p,version:"5"}')
     fi
 
     local rules dns_rules

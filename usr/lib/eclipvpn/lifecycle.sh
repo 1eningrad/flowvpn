@@ -26,27 +26,31 @@ _tunnel_bringup() {
             return 1
         fi
         flog "Starting sing-box (Hysteria2 native, server index=$sel, mode=$mode)"
+        rm -f "$ECLIPVPN_TMP/xray_port"   # hysteria2 engine has no active xray
         generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$sel" \
             || { flog "ERROR: sing-box config generation failed"; return 3; }
         start_singbox "$ECLIPVPN_TMP/singbox.json" || return 3
-        ip=$(test_xray)   # curls SOCKS:1080 — served by sing-box in this mode
+        ip=$(test_xray 1080)   # curls SOCKS:1080 — served by sing-box in this mode
         [ -z "$ip" ] && { stop_singbox; return 2; }
         flog "Hysteria2 tunnel up, VPN IP: $ip"
         printf '%s' "$ip"
         return 0
     fi
 
-    # xray engine (vless / vmess / trojan / shadowsocks)
-    flog "Starting xray (server index=$sel)"
-    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$sel" "$ECLIPVPN_TMP/xray.json" \
+    # xray engine (vless / vmess / trojan / shadowsocks). Cold start brings the
+    # active xray up on the canonical port 1080 (config xray.1080.json); the
+    # active port only rotates on a seamless switch (see cmd_restart).
+    flog "Starting xray (server index=$sel, port 1080)"
+    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$sel" "$ECLIPVPN_TMP/xray.1080.json" 1080 \
         || { flog "ERROR: xray config generation failed"; return 1; }
-    start_xray "$ECLIPVPN_TMP/xray.json" || return 1
-    ip=$(test_xray)
-    [ -z "$ip" ] && { stop_xray; return 2; }
+    start_xray "$ECLIPVPN_TMP/xray.1080.json" 1080 || return 1
+    echo 1080 > "$ECLIPVPN_TMP/xray_port"
+    ip=$(test_xray 1080)
+    [ -z "$ip" ] && { stop_xray 1080; return 2; }
     flog "xray connected, VPN IP: $ip"
-    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$sel" \
-        || { flog "ERROR: sing-box config generation failed"; stop_xray; return 3; }
-    start_singbox "$ECLIPVPN_TMP/singbox.json" || { stop_xray; return 3; }
+    generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$sel" 1080 \
+        || { flog "ERROR: sing-box config generation failed"; stop_xray 1080; return 3; }
+    start_singbox "$ECLIPVPN_TMP/singbox.json" || { stop_xray 1080; return 3; }
     printf '%s' "$ip"
     return 0
 }
@@ -134,8 +138,9 @@ cmd_start() {
     # -> xray switch that fall-through fires while the OLD hysteria2 sing-box is
     # still alive, and _tunnel_bringup assumes a clean slate — without this the
     # new xray/sing-box collide on :1080/:2154. No-op on a genuine cold start.
+    # _kill_all_xray also reaps a legacy pre-rotation xray.json + any staged xray.
     stop_singbox
-    stop_xray
+    _kill_all_xray
 
     # Steps 3-5: bring up the proxy engine(s) for the selected server.
     # Engine-aware — hysteria2 runs sing-box only; xray protocols run xray +
@@ -193,6 +198,79 @@ cmd_stop() {
     echo '{"status":"stopped"}'
 }
 
+# Reap ANY xray this manager spawned — active or staged, either rotation port
+# (xray.1080.json / xray.1081.json), plus the legacy pre-rotation xray.json.
+# Used before a cold bring-up / fallback. Does NOT match probe configs
+# (probe.*.json) — those clean up after themselves.
+_kill_all_xray() {
+    for orphan in $(pgrep -f 'xray run -config /tmp/eclipvpn/xray\.' 2>/dev/null); do
+        kill -9 "$orphan" 2>/dev/null
+    done
+    rm -f "$ECLIPVPN_TMP/xray.pid" "$ECLIPVPN_TMP/xray.stage.pid"
+}
+
+# Kill a STAGED xray (port $1) cleanly — scoped to its own config path + pidfile
+# so it never touches the live xray on the other port.
+_stage_drop() { stop_xray "$1" "$ECLIPVPN_TMP/xray.stage.pid"; }
+
+# Stage + VERIFY the new exit for server $1 WITHOUT touching the live tunnel.
+# $3 = the OLD tunnel's engine (so we stage on a free port). Echoes one of:
+#   "xray <port> <ip>"  — a WARM xray left running on <port>, ready to adopt
+#   "hysteria2 -"       — reachability verified (sing-box dials it natively on adopt)
+# Returns non-zero (leaving nothing running) if the new exit is unreachable.
+_stage_exit() {
+    local sel="$1" mode="$2" old_engine="$3"
+    local new_engine; new_engine=$(_engine_for_protocol "$(_server_protocol "$sel")")
+    if [ "$new_engine" = "singbox" ]; then
+        # hysteria2 = sing-box native exit (singleton on 1080) — can't keep warm,
+        # just verify it answers via a throwaway probe (its own 1082+ port).
+        local pr; pr=$(cmd_probe_server "$sel" 2>/dev/null)
+        printf '%s' "$pr" | jq -e '.status=="ok"' >/dev/null 2>&1 || return 1
+        echo "hysteria2 -"
+        return 0
+    fi
+    local sp; sp=$(_stage_xray_port "$(_active_xray_port)" "$old_engine")
+    generate_xray_config "$ECLIPVPN_TMP/servers.json" "$sel" "$ECLIPVPN_TMP/xray.$sp.json" "$sp" || return 1
+    start_xray "$ECLIPVPN_TMP/xray.$sp.json" "$sp" "$ECLIPVPN_TMP/xray.stage.pid" || { _stage_drop "$sp"; return 1; }
+    local ip; ip=$(test_xray "$sp")
+    [ -z "$ip" ] && { _stage_drop "$sp"; return 1; }
+    echo "xray $sp $ip"
+}
+
+# Cold bring-up fallback when a seamless adopt fails mid-swap (old sing-box
+# already stopped). Cleans all xray, cold-starts $1 in mode $2, emits the full
+# restart result + state, returns the bring-up rc.
+_restart_fallback() {
+    local selected="$1" mode="$2"
+    flog "WARN: seamless adopt failed — falling back to cold bring-up"
+    stop_singbox
+    _kill_all_xray
+    sleep 1
+    local vpn_ip rc
+    vpn_ip=$(_tunnel_bringup "$selected" "$mode"); rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$vpn_ip" ]; then
+        flog "ERROR: cold bring-up failed after switch (rc=$rc)"
+        local fn=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        local fh=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        _log_incident "switch_failed" "$fh" "$fn" "не удалось поднять туннель при переключении (rc=$rc)"
+        case "$rc" in
+            1) echo '{"error":"proxy engine failed to start"}' ;;
+            2) echo '{"error":"VPN connection failed"}' ;;
+            3) echo '{"error":"sing-box failed"}' ;;
+            *) echo '{"error":"VPN restart failed"}' ;;
+        esac
+        return 1
+    fi
+    date +%s > "$ECLIPVPN_TMP/start_time"
+    echo "$vpn_ip" > "$ECLIPVPN_TMP/vpn_ip"
+    update_config '.running_intent = true'
+    local sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
+    flog "EclipVPN restarted (cold fallback): server=$sn, vpn_ip=$vpn_ip, mode=$mode"
+    jq -n --arg s "restarted" --arg srv "$sn" --arg ip "$vpn_ip" --arg m "$mode" \
+        '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
+    return 0
+}
+
 cmd_restart() {
     # $1 = "1" to bypass the unchanged-config fast path. UI's manual "Restart"
     # button passes force=1 so a click always physically swaps the daemons —
@@ -245,11 +323,15 @@ cmd_restart() {
     # compared in that mode (xray_match stays 1 = "nothing to mismatch").
     local new_xray="$ECLIPVPN_TMP/xray.new.json"
     local new_singbox="$ECLIPVPN_TMP/singbox.new.json"
-    generate_singbox_config "$new_singbox" "$mode" "$ECLIPVPN_TMP/servers.json" "$selected" 2>/dev/null
+    # Compare at the ACTIVE socks port (the active xray rotates 1080<->1081):
+    # regenerate the candidate configs on the running port so a genuine no-op
+    # stays byte-identical and the fast path still fires.
+    local cmp_port; cmp_port=$(_active_socks_port)
+    generate_singbox_config "$new_singbox" "$mode" "$ECLIPVPN_TMP/servers.json" "$selected" "$cmp_port" 2>/dev/null
     local xray_match=1
     if [ "$engine" = "xray" ]; then
-        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$new_xray" 2>/dev/null
-        { [ -s "$new_xray" ] && cmp -s "$new_xray" "$ECLIPVPN_TMP/xray.json"; } || xray_match=0
+        generate_xray_config "$ECLIPVPN_TMP/servers.json" "$selected" "$new_xray" "$cmp_port" 2>/dev/null
+        { [ -s "$new_xray" ] && cmp -s "$new_xray" "$ECLIPVPN_TMP/xray.$cmp_port.json"; } || xray_match=0
     fi
     if [ "$force" != "1" ] && [ "$xray_match" -eq 1 ] && \
        [ -s "$new_singbox" ] && \
@@ -259,7 +341,7 @@ cmd_restart() {
         # If xray hung (process alive, socket dead), watchdog would fix it
         # in 40s, but the user clicking Restart expects an immediate kick.
         # Quick health probe — 4s timeout — falls through to real restart on miss.
-        if [ -z "$(test_xray)" ]; then
+        if [ -z "$(test_xray "$cmp_port")" ]; then
             flog "Restart: configs unchanged but tunnel is dead — forcing restart"
             # fallthrough to the real restart below
         else
@@ -280,30 +362,63 @@ cmd_restart() {
     fi
     rm -f "$new_xray" "$new_singbox"
 
-    flog "Restarting EclipVPN (soft — network rules preserved)"
-    stop_singbox
-    stop_xray
-    sleep 1
+    flog "Switching server (make-before-break)"
+    # Old tunnel's engine + active xray port BEFORE the switch — to stage on a
+    # free port and drop the right xray afterwards.
+    local old_engine="singbox" old_port
+    is_xray_running && old_engine="xray"
+    old_port=$(_active_xray_port)
 
-    # Engine-aware bring-up — same path cmd_start uses (hysteria2 = sing-box
-    # only; xray protocols = xray + sing-box). Leaves daemons stopped on failure.
-    local vpn_ip rc
-    vpn_ip=$(_tunnel_bringup "$selected" "$mode"); rc=$?
-    if [ "$rc" -ne 0 ] || [ -z "$vpn_ip" ]; then
-        flog "ERROR: VPN bring-up failed after restart (rc=$rc)"
-        local _fail_name=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-        local _fail_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-        _log_incident "switch_failed" "$_fail_host" "$_fail_name" "не удалось поднять туннель при переключении (rc=$rc)"
-        case "$rc" in
-            1) echo '{"error":"proxy engine failed to start"}' ;;
-            2) echo '{"error":"VPN connection failed"}' ;;
-            3) echo '{"error":"sing-box failed"}' ;;
-            *) echo '{"error":"VPN restart failed"}' ;;
-        esac
+    # 1) Stage + VERIFY the new exit WITHOUT touching the live tunnel. Failure
+    #    keeps the current connection up — no drop on a dead/unreachable target.
+    local stage
+    stage=$(_stage_exit "$selected" "$mode" "$old_engine") || {
+        flog "Switch aborted: new server unreachable — current tunnel kept"
+        local _fn=$(jq -r ".[$selected].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        local _fh=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        _log_incident "switch_failed" "$_fh" "$_fn" "новый сервер недоступен — оставлен текущий туннель"
+        _op_end; trap - EXIT INT TERM
+        echo '{"error":"new server unreachable — kept current connection"}'
         return 1
-    fi
-    flog "Tunnel reconnected, VPN IP: $vpn_ip"
+    }
+    local stage_eng stage_port
+    stage_eng=$(printf '%s' "$stage" | cut -d' ' -f1)
+    stage_port=$(printf '%s' "$stage" | cut -d' ' -f2)
 
+    # 2) Adopt — the ONLY interruption is one sing-box swap (~1s, deterministic;
+    #    the new exit is already warm/verified, so no cold handshake in the gap).
+    local vpn_ip=""
+    if [ "$stage_eng" = "xray" ]; then
+        # New sing-box routes to the WARM staged xray on stage_port. The old xray
+        # stays up across the swap, dropped only after the new one verifies.
+        generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$selected" "$stage_port" \
+            || { _stage_drop "$stage_port"; _restart_fallback "$selected" "$mode"; return $?; }
+        stop_singbox
+        start_singbox "$ECLIPVPN_TMP/singbox.json" \
+            || { _stage_drop "$stage_port"; _restart_fallback "$selected" "$mode"; return $?; }
+        vpn_ip=$(test_xray "$stage_port")
+        [ -z "$vpn_ip" ] && { _stage_drop "$stage_port"; _restart_fallback "$selected" "$mode"; return $?; }
+        # Promote: drop the OLD xray FIRST (xray.pid still holds its pid), then
+        # hand the staged xray's pidfile over and record the new active port.
+        [ "$old_engine" = "xray" ] && stop_xray "$old_port"
+        mv -f "$ECLIPVPN_TMP/xray.stage.pid" "$ECLIPVPN_TMP/xray.pid" 2>/dev/null
+        echo "$stage_port" > "$ECLIPVPN_TMP/xray_port"
+    else
+        # hysteria2 destination: sing-box IS the exit (singleton on 1080) and
+        # can't be warmed ahead — verify-before-commit only. Free the old xray's
+        # port BEFORE the new hy2 sing-box claims 1080.
+        generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$selected" \
+            || { _restart_fallback "$selected" "$mode"; return $?; }
+        stop_singbox
+        [ "$old_engine" = "xray" ] && stop_xray "$old_port"
+        rm -f "$ECLIPVPN_TMP/xray_port"
+        start_singbox "$ECLIPVPN_TMP/singbox.json" \
+            || { _restart_fallback "$selected" "$mode"; return $?; }
+        vpn_ip=$(test_xray 1080)
+        [ -z "$vpn_ip" ] && { _restart_fallback "$selected" "$mode"; return $?; }
+    fi
+
+    flog "Tunnel switched (make-before-break), VPN IP: $vpn_ip"
     date +%s > "$ECLIPVPN_TMP/start_time"
     echo "$vpn_ip" > "$ECLIPVPN_TMP/vpn_ip"
 

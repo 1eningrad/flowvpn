@@ -42,7 +42,7 @@ _xray_stream() {
 }
 
 generate_xray_config() {
-    local servers_file="$1" server_idx="$2" config_file="$3"
+    local servers_file="$1" server_idx="$2" config_file="$3" xport="${4:-1080}"
 
     local server
     # --argjson, not "$server_idx" interpolated into the jq program text: a
@@ -175,12 +175,12 @@ generate_xray_config() {
     esac
 
     # Full config: SOCKS inbound on 1080 + the per-protocol proxy outbound.
-    jq -n --argjson proxy "$proxy" \
+    jq -n --argjson proxy "$proxy" --argjson xport "$xport" \
     '{
         log: {loglevel: "warning"},
         inbounds: [{
             tag: "socks-in",
-            port: 1080,
+            port: $xport,
             listen: "127.0.0.1",
             protocol: "socks",
             settings: {auth: "noauth", udp: true}
@@ -202,49 +202,57 @@ generate_xray_config() {
     chmod 600 "$config_file" 2>/dev/null
 }
 
+# start_xray config [port=1080] [pidfile=xray.pid]
+# port/pidfile let make-before-break stage a SECOND xray on the alternate port
+# (1081) without touching the live one — see stop_xray's scoped sweep.
 start_xray() {
-    local config_file="$1"
+    local config_file="$1" xport="${2:-1080}" pidfile="${3:-/tmp/eclipvpn/xray.pid}"
     if [ ! -x /usr/bin/xray ]; then
         logger -t eclipvpn "ERROR: /usr/bin/xray not found or not executable"
         return 1
     fi
     # Append-mode (>>) — see singbox.sh for rationale (NUL-hole sparse files).
     /usr/bin/xray run -config "$config_file" >>/tmp/eclipvpn/xray.log 2>>/tmp/eclipvpn/xray.log &
-    echo $! > /tmp/eclipvpn/xray.pid
+    echo $! > "$pidfile"
 
     local tries=0
     while [ "$tries" -lt 10 ]; do
         sleep 1
         tries=$((tries + 1))
-        if ! kill -0 "$(cat /tmp/eclipvpn/xray.pid)" 2>/dev/null; then
-            rm -f /tmp/eclipvpn/xray.pid
+        if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            rm -f "$pidfile"
             return 1
         fi
-        if netstat -tlnp 2>/dev/null | grep -q ":1080 "; then
+        if netstat -tlnp 2>/dev/null | grep -q ":$xport "; then
             return 0
         fi
     done
     # Process alive but socks port never bound. Don't return success — the
     # caller would then apply nftables tproxy rules pointing at an unbound
     # port, stranding LAN clients. Surface the failure instead.
-    logger -t eclipvpn "ERROR: xray started but socks port :1080 never opened"
+    logger -t eclipvpn "ERROR: xray started but socks port :$xport never opened"
     return 1
 }
 
+# stop_xray [port] [pidfile]
+# No args = stop the ACTIVE xray (port from xray_port, default 1080; pidfile
+# xray.pid). The orphan sweep is SCOPED to that port's config path
+# (xray.<port>.json) so a staged xray on the OTHER port is never reaped by a
+# live-tunnel stop, and aborting a stage never reaps the live xray —
+# make-before-break runs two xrays briefly on 1080/1081.
 stop_xray() {
+    local xport="${1:-$(_active_xray_port)}"
+    local pidfile="${2:-/tmp/eclipvpn/xray.pid}"
     local pid=""
-    [ -f /tmp/eclipvpn/xray.pid ] && pid=$(cat /tmp/eclipvpn/xray.pid)
+    [ -f "$pidfile" ] && pid=$(cat "$pidfile")
     [ -n "$pid" ] && kill "$pid" 2>/dev/null
     sleep 1
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
-    # Sweep orphans — any other xray running with our prod config means a
-    # previous restart raced and left a zombie; if we don't reap it, the
-    # next start_xray spawns a third one and they fight over port 1080.
-    for orphan in $(pgrep -f 'xray run -config /tmp/eclipvpn/xray.json' 2>/dev/null); do
+    for orphan in $(pgrep -f "xray run -config /tmp/eclipvpn/xray.$xport.json" 2>/dev/null); do
         [ "$orphan" = "$pid" ] && continue
         kill -9 "$orphan" 2>/dev/null
     done
-    rm -f /tmp/eclipvpn/xray.pid
+    rm -f "$pidfile"
 }
 
 is_xray_running() {
@@ -256,7 +264,8 @@ is_xray_running() {
         local pid=$(cat /tmp/eclipvpn/xray.pid 2>/dev/null)
         [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
     fi
-    pgrep -f 'xray run -config /tmp/eclipvpn/xray.json' >/dev/null 2>&1
+    local xport=$(_active_xray_port)
+    pgrep -f "xray run -config /tmp/eclipvpn/xray.$xport.json" >/dev/null 2>&1
 }
 
 test_xray() {
@@ -265,9 +274,10 @@ test_xray() {
     # spuriously flag healthy servers right after a switch (incident 2026-04-29:
     # 🇳🇱 Нидерланды, server actually up — second start of same index succeeded
     # ~3s later). Worst case here is ~21s, only on a genuinely dead tunnel.
+    local sport="${1:-1080}"
     local ip
-    ip=$(curl -s --socks5-hostname 127.0.0.1:1080 --max-time 8 https://api.ipify.org 2>/dev/null)
+    ip=$(curl -s --socks5-hostname "127.0.0.1:$sport" --max-time 8 https://api.ipify.org 2>/dev/null)
     [ -n "$ip" ] && { echo "$ip"; return 0; }
     sleep 1
-    curl -s --socks5-hostname 127.0.0.1:1080 --max-time 12 https://api.ipify.org 2>/dev/null
+    curl -s --socks5-hostname "127.0.0.1:$sport" --max-time 12 https://api.ipify.org 2>/dev/null
 }
