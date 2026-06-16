@@ -417,11 +417,16 @@ start_singbox() {
     # the log balloons to tens of MB while only a few KB are real data.
     TZ=$(cat /etc/TZ 2>/dev/null || echo "MSK-3") /usr/bin/sing-box run -c "$config_file" -D /tmp/eclipvpn >>/tmp/eclipvpn/singbox.log 2>>/tmp/eclipvpn/singbox.log &
     echo $! > /tmp/eclipvpn/singbox.pid
+    # Busy-poll (netstat-paced, ~20-40ms/iter) instead of a flat `sleep 1` loop:
+    # busybox has no sub-second sleep, and sing-box binds :2154 in well under a
+    # second (~0.3s measured) — the old 1s granularity DOMINATED the switch gap.
+    # The netstat call itself paces the loop; the ~300-iter cap bounds it to
+    # roughly the old 10s budget for a genuinely slow start.
     local tries=0
-    while [ "$tries" -lt 10 ]; do
-        sleep 1; tries=$((tries + 1))
+    while [ "$tries" -lt 300 ]; do
         kill -0 "$(cat /tmp/eclipvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/eclipvpn/singbox.pid; return 1; }
         netstat -tlnp 2>/dev/null | grep -q ":2154 " && return 0
+        tries=$((tries + 1))
     done
     # Process alive but tproxy port never bound. Caller (cmd_start) would
     # otherwise apply nftables rules redirecting LAN traffic to an unbound
@@ -434,7 +439,14 @@ stop_singbox() {
     local pid=""
     [ -f /tmp/eclipvpn/singbox.pid ] && pid=$(cat /tmp/eclipvpn/singbox.pid)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null
-    sleep 1
+    # Wait (netstat-paced, no flat `sleep 1`) for sing-box to exit and release
+    # :2154 so the next start can bind it — sing-box dies in <0.5s, so a fixed 1s
+    # sleep was pure switch-gap latency. Cap ~80 iters (~2-3s) before SIGKILL.
+    local _i=0
+    while netstat -tlnp 2>/dev/null | grep -q ":2154 "; do
+        kill -0 "$pid" 2>/dev/null || break
+        _i=$((_i + 1)); [ "$_i" -ge 80 ] && break
+    done
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
     # Same orphan-sweep as stop_xray — see comment there.
     for orphan in $(pgrep -f 'sing-box run -c /tmp/eclipvpn/singbox.json' 2>/dev/null); do

@@ -215,10 +215,11 @@ start_xray() {
     /usr/bin/xray run -config "$config_file" >>/tmp/eclipvpn/xray.log 2>>/tmp/eclipvpn/xray.log &
     echo $! > "$pidfile"
 
+    # Busy-poll (netstat-paced) instead of `sleep 1` — xray binds its SOCKS
+    # inbound in well under a second; the cold exit handshake happens later in
+    # test_xray, not here. ~300-iter cap ~= the old 10s budget.
     local tries=0
-    while [ "$tries" -lt 10 ]; do
-        sleep 1
-        tries=$((tries + 1))
+    while [ "$tries" -lt 300 ]; do
         if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
             rm -f "$pidfile"
             return 1
@@ -226,6 +227,7 @@ start_xray() {
         if netstat -tlnp 2>/dev/null | grep -q ":$xport "; then
             return 0
         fi
+        tries=$((tries + 1))
     done
     # Process alive but socks port never bound. Don't return success — the
     # caller would then apply nftables tproxy rules pointing at an unbound
@@ -246,7 +248,12 @@ stop_xray() {
     local pid=""
     [ -f "$pidfile" ] && pid=$(cat "$pidfile")
     [ -n "$pid" ] && kill "$pid" 2>/dev/null
-    sleep 1
+    # netstat-paced wait for the SOCKS port to free (no flat `sleep 1`).
+    local _i=0
+    while netstat -tlnp 2>/dev/null | grep -q ":$xport "; do
+        kill -0 "$pid" 2>/dev/null || break
+        _i=$((_i + 1)); [ "$_i" -ge 80 ] && break
+    done
     [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
     for orphan in $(pgrep -f "xray run -config /tmp/eclipvpn/xray.$xport.json" 2>/dev/null); do
         [ "$orphan" = "$pid" ] && continue
