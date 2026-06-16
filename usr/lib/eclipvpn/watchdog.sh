@@ -1,7 +1,7 @@
 #!/bin/ash
 # EclipVPN — watchdog: connectivity probing, auto-failover, throughput guard.
 # Sourced into /usr/bin/eclipvpn; shares its globals ($ECLIPVPN_TMP, etc.) and
-# helpers (flog, get_config_val, save_config, is_xray_running/is_singbox_running,
+# helpers (flog, get_config_val, update_config, is_xray_running/is_singbox_running,
 # cmd_restart, generate_xray_config, _log_incident, _record_switch,
 # _is_metered_server, _rotate_log, _apply_wan_mtu, cmd_auto_eval). All are
 # resolved at call time, so source order among the libs does not matter.
@@ -62,22 +62,32 @@ _watchdog_check_wan() {
 # VPN exit IPs — speedtest endpoints (speed.cloudflare.com, speed.hetzner.de)
 # deliberately rate-limit such IPs and would lie about a healthy server.
 # Takes the BEST of two independent CDNs so one blocked/flaky mirror can't
-# fake a "slow server". Prints nothing if BOTH fail — the caller treats an
-# empty reading as "no data" (NOT "slow"), so our own probe glitch never
-# triggers a false failover.
+# fake a "slow server". Prints nothing if BOTH fail to connect — the caller
+# treats an empty reading as "no data" (NOT "slow"), so our own probe glitch
+# never triggers a false failover.
+#
+# A response that DID arrive (2xx/206) but moved <1KB/s rounds to 0 KB/s, and
+# that 0 IS reported (not swallowed): the old `[ best -gt 0 ]` guard echoed
+# nothing for a sub-1KB/s crawl, so the throughput guard mistook a near-dead
+# tunnel for "no data" and reset its slow_count — blind below 1KB/s. We split
+# connect-failure (http_code 000 → skip, latency probe's job) from a genuine
+# slow-but-connected reading (2xx → report, even if 0) via %{http_code}.
 _watchdog_throughput_kbps() {
-    local port="$1" best=0
-    local url sp kbps
+    local port="$1" best=0 measured=0
+    local url out code sp kbps
     for url in https://cachefly.cachefly.net/10mb.test \
                https://proof.ovh.net/files/10Mb.dat; do
-        sp=$(curl -s --socks5-hostname "127.0.0.1:$port" -r 0-4000000 \
+        out=$(curl -s --socks5-hostname "127.0.0.1:$port" -r 0-4000000 \
              --connect-timeout 4 --max-time 6 -o /dev/null \
-             -w "%{speed_download}" "$url" 2>/dev/null)
+             -w "%{http_code} %{speed_download}" "$url" 2>/dev/null)
+        code="${out%% *}"; sp="${out##* }"
+        case "$code" in 2*) ;; *) continue ;; esac   # no HTTP response → no data
         [ -z "$sp" ] && continue
+        measured=1
         kbps=$(awk -v s="$sp" 'BEGIN{printf "%d", s/1024}')
         [ "$kbps" -gt "$best" ] && best=$kbps
     done
-    [ "$best" -gt 0 ] && echo "$best"
+    [ "$measured" -eq 1 ] && echo "$best"
 }
 
 # Spawn a throwaway proxy engine (xray, or a sing-box dialer for hysteria2) for
@@ -311,7 +321,7 @@ cmd_watchdog() {
                     echo $now > "$revive_marker"
                     # Subshell: cmd_start's `trap _op_end EXIT` only fires on
                     # process exit, and the watchdog never exits. A bare call
-                    # would leak op.lockdir forever (owner=watchdog), wedging
+                    # would leak op.lock forever (owner=watchdog), wedging
                     # every later user lifecycle op. The subshell makes EXIT
                     # fire on its own exit, releasing the lock.
                     ( cmd_start ) >/dev/null 2>&1
@@ -455,8 +465,7 @@ cmd_watchdog() {
                                     logger -t eclipvpn "Watchdog: switching to $sel_name (${cand_kbps}KB/s vs ${kbps}KB/s)"
                                     _log_incident "slow_degraded" "$sel_host" "$sel_name" "низкая скорость на $cur_name (${kbps}КБ/с) → $sel_name (${cand_kbps}КБ/с)"
                                     _record_switch "$cur_idx" "$sel" "throughput"
-                                    local tmp=$(jq --argjson idx "$sel" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
-                                    save_config "$tmp" || flog "WARN: throughput failover save_config failed"
+                                    update_config '.selected_server = $idx' --argjson idx "$sel" || flog "WARN: throughput failover save_config failed"
                                     ( cmd_restart ) >/dev/null 2>&1
                                     last_tput_switch=$(date +%s)
                                     tput_switch_helped=0
@@ -563,8 +572,7 @@ cmd_watchdog() {
                 logger -t eclipvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
                 _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
                 _record_switch "$current" "$selected" "failover"
-                local tmp=$(jq --argjson idx "$selected" '.selected_server = $idx' "$ECLIPVPN_CONFIG")
-                save_config "$tmp" || flog "WARN: failover save_config failed (will retry next tick)"
+                update_config '.selected_server = $idx' --argjson idx "$selected" || flog "WARN: failover save_config failed (will retry next tick)"
                 # Subshell so cmd_restart's EXIT trap releases the op-lock —
                 # see the revival call above; a bare call leaks it forever.
                 ( cmd_restart ) >/dev/null 2>&1

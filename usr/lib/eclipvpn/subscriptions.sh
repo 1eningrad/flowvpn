@@ -28,14 +28,12 @@ _migrate_subscriptions() {
     local has; has=$(jq -r 'if (.subscriptions|type)=="array" then "y" else "n" end' "$ECLIPVPN_CONFIG" 2>/dev/null)
     [ "$has" = "y" ] && return 0
     local url; url=$(jq -r '.subscription_url // ""' "$ECLIPVPN_CONFIG" 2>/dev/null)
-    local tmp
     if [ -n "$url" ] && [ "$url" != "null" ]; then
-        tmp=$(jq --arg id "$(_sub_id_for_url "$url")" --arg url "$url" \
-            '.subscriptions = [{id:$id, name:"Подписка 1", url:$url, enabled:true, name_auto:true}]' "$ECLIPVPN_CONFIG")
+        update_config '.subscriptions = [{id:$id, name:"Подписка 1", url:$url, enabled:true, name_auto:true}]' \
+            --arg id "$(_sub_id_for_url "$url")" --arg url "$url"
     else
-        tmp=$(jq '.subscriptions = []' "$ECLIPVPN_CONFIG")
+        update_config '.subscriptions = []'
     fi
-    [ -n "$tmp" ] && save_config "$tmp"
 }
 
 # --- fetch + per-provider metadata (was in parse.sh) ------------------------
@@ -269,12 +267,10 @@ _remap_selected_server() {
     case "$newidx" in ''|*[!0-9-]*) return 0 ;; esac
     if [ "$newidx" -ge 0 ] 2>/dev/null; then
         if [ "$newidx" != "$sel" ]; then
-            local tmp; tmp=$(jq --argjson i "$newidx" '.selected_server = $i' "$config")
-            save_config "$tmp" && logger -t eclipvpn "Subscription: remapped selected_server $sel -> $newidx (identity preserved)"
+            update_config '.selected_server = $i' --argjson i "$newidx" && logger -t eclipvpn "Subscription: remapped selected_server $sel -> $newidx (identity preserved)"
         fi
     else
-        local tmp; tmp=$(jq '.selected_server = 0' "$config")
-        save_config "$tmp"
+        update_config '.selected_server = 0'
         logger -t eclipvpn "Subscription: selected server gone after refresh -> reset to index 0"
     fi
 }
@@ -339,9 +335,8 @@ update_subscription() {
                 title=$(jq -r --arg id "$sid" '.[$id].title // ""' /tmp/eclipvpn/subscription_meta.json 2>/dev/null)
                 if [ -n "$title" ] && [ "$title" != "null" ] && [ "$title" != "$sname" ]; then
                     sname="$title"
-                    local cfg; cfg=$(jq --arg id "$sid" --arg n "$title" \
-                        '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .name=$n else . end))' "$config")
-                    [ -n "$cfg" ] && save_config "$cfg"
+                    update_config '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .name=$n else . end))' \
+                        --arg id "$sid" --arg n "$title"
                     logger -t eclipvpn "Subscription[$sid]: name taken from panel title"
                 fi
             fi
@@ -423,7 +418,7 @@ cmd_sub() {
             # Idempotent by id. A user-supplied name pins name_auto=false (never
             # overridden by the panel title); no name ⇒ a placeholder + name_auto
             # =true, so update_subscription adopts the Profile-Title on fetch.
-            local tmp; tmp=$(jq --arg id "$id" --arg url "$url" --arg name "$name" '
+            update_config '
                 .subscriptions = ((.subscriptions // []) as $s
                     | if ($s | map(.id) | index($id)) then
                         ($s | map(if .id==$id
@@ -434,17 +429,16 @@ cmd_sub() {
                                 name:(if $name!="" then $name else "Подписка \(($s|length)+1)" end),
                                 url:$url, enabled:true, name_auto:($name=="")}])
                       end)
-                | .subscription_url = ((.subscriptions[0].url) // "")' "$ECLIPVPN_CONFIG")
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+                | .subscription_url = ((.subscriptions[0].url) // "")' \
+                --arg id "$id" --arg url "$url" --arg name "$name" || { echo '{"error":"save failed"}'; return 1; }
             cmd_update >/dev/null 2>&1
             jq -n --arg id "$id" '{status:"added", id:$id}'
             ;;
         remove)
             local id="$arg2"; [ -z "$id" ] && { echo '{"error":"id required"}'; return 1; }
-            local tmp; tmp=$(jq --arg id "$id" \
-                '.subscriptions = ((.subscriptions // []) | map(select(.id != $id)))
-                 | .subscription_url = ((.subscriptions[0].url) // "")' "$ECLIPVPN_CONFIG")
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.subscriptions = ((.subscriptions // []) | map(select(.id != $id)))
+                 | .subscription_url = ((.subscriptions[0].url) // "")' \
+                --arg id "$id" || { echo '{"error":"save failed"}'; return 1; }
             rm -f "$ECLIPVPN_TMP/sub.$id.servers.json" "$ECLIPVPN_TMP/sub.$id.servers.json.tmp" "$ECLIPVPN_TMP/sub.$id.body" "$ECLIPVPN_TMP/sub.$id.servers.new"
             # Prune the provider's keyed metadata too, so removed subs don't leak
             # dead entries in subscription_meta.json (atomic write).
@@ -456,9 +450,8 @@ cmd_sub() {
         enable|disable)
             local id="$arg2"; [ -z "$id" ] && { echo '{"error":"id required"}'; return 1; }
             local en=false; [ "$op" = "enable" ] && en=true
-            local tmp; tmp=$(jq --arg id "$id" --argjson en "$en" \
-                '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .enabled=$en else . end))' "$ECLIPVPN_CONFIG")
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .enabled=$en else . end))' \
+                --arg id "$id" --argjson en "$en" || { echo '{"error":"save failed"}'; return 1; }
             # Drop a disabled provider's cache so its servers leave the pool now.
             [ "$op" = "disable" ] && rm -f "$ECLIPVPN_TMP/sub.$id.servers.json"
             cmd_update >/dev/null 2>&1
@@ -469,9 +462,8 @@ cmd_sub() {
             { [ -z "$id" ] || [ -z "$name" ]; } && { echo '{"error":"id and name required"}'; return 1; }
             # name_auto=false pins this name so a later update won't replace it
             # with the panel's Profile-Title.
-            local tmp; tmp=$(jq --arg id "$id" --arg name "$name" \
-                '.subscriptions = ((.subscriptions // []) | map(if .id==$id then (.name=$name | .name_auto=false) else . end))' "$ECLIPVPN_CONFIG")
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.subscriptions = ((.subscriptions // []) | map(if .id==$id then (.name=$name | .name_auto=false) else . end))' \
+                --arg id "$id" --arg name "$name" || { echo '{"error":"save failed"}'; return 1; }
             # Rename is purely cosmetic (sub_name tag) — re-tag the per-sub cache
             # and the merged servers.json IN PLACE instead of re-fetching every
             # provider over the network. No restart: server identities unchanged.

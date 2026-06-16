@@ -29,7 +29,6 @@ cmd_set_config() {
     fi
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,
     # so cmd_status's `// true` defaults work and the UI gets a real bool.
-    local tmp
     case "$key" in
         auto_start|auto_mode|tput_guard)
             local bv
@@ -37,7 +36,7 @@ cmd_set_config() {
                 true|1|on|yes) bv=true ;;
                 *) bv=false ;;
             esac
-            tmp=$(jq --arg k "$key" --argjson v "$bv" '.[$k] = $v' "$ECLIPVPN_CONFIG")
+            update_config '.[$k] = $v' --arg k "$key" --argjson v "$bv" || { echo '{"error":"save failed"}'; return 1; }
             ;;
         selected_server|tput_min_kbps|wan_mtu)
             case "$value" in ''|*[!0-9]*) echo '{"error":"'"$key"' must be numeric"}'; return 1 ;; esac
@@ -49,13 +48,12 @@ cmd_set_config() {
                     echo '{"error":"wan_mtu must be 0 (off) or 576-1500"}'; return 1
                 fi
             fi
-            tmp=$(jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$ECLIPVPN_CONFIG")
+            update_config '.[$k] = $v' --arg k "$key" --argjson v "$value" || { echo '{"error":"save failed"}'; return 1; }
             ;;
         *)
-            tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$ECLIPVPN_CONFIG")
+            update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { echo '{"error":"save failed"}'; return 1; }
             ;;
     esac
-    save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
     jq -n --arg k "$key" '{status:"saved",key:$k}'
 }
 
@@ -73,15 +71,13 @@ cmd_schedule() {
                     *) echo '{"error":"time must be HH:MM in 00:00-23:59"}'; return 1 ;;
                 esac
             done
-            local tmp=$(jq --arg on "$on_time" --arg off "$off_time" \
-                '.schedule = {enabled:true, on:$on, off:$off}' "$ECLIPVPN_CONFIG")
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.schedule = {enabled:true, on:$on, off:$off}' \
+                --arg on "$on_time" --arg off "$off_time" || { echo '{"error":"save failed"}'; return 1; }
             _setup_cron
             jq -n --arg on "$on_time" --arg off "$off_time" '{status:"schedule set",on:$on,off:$off}'
             ;;
         disable)
-            local tmp=$(jq '.schedule.enabled = false' "$ECLIPVPN_CONFIG")
-            save_config "$tmp" || { echo '{"error":"save failed"}'; return 1; }
+            update_config '.schedule.enabled = false' || { echo '{"error":"save failed"}'; return 1; }
             _remove_cron
             echo '{"status":"schedule disabled"}'
             ;;
@@ -156,14 +152,12 @@ cmd_auto_update() {
     local action="$1"
     case "$action" in
         enable)
-            local tmp=$(jq '.auto_update = true' "$ECLIPVPN_CONFIG")
-            save_config "$tmp"
+            update_config '.auto_update = true'
             _setup_auto_update_cron
             echo '{"status":"auto-update enabled"}'
             ;;
         disable)
-            local tmp=$(jq '.auto_update = false' "$ECLIPVPN_CONFIG")
-            save_config "$tmp"
+            update_config '.auto_update = false'
             _remove_auto_update_cron
             echo '{"status":"auto-update disabled"}'
             ;;
@@ -199,12 +193,17 @@ cmd_restore() {
     if ! printf '%s' "$data" | jq -e '.config' >/dev/null 2>&1; then
         echo '{"error":"invalid backup format"}'; return 1
     fi
-    # Route the config through save_config so we get atomic mv + chmod 600 +
-    # JSON re-validation. A raw `>` redirect would leave a world-readable
-    # file with the subscription URL on partial writes (OOM kill, reboot).
+    # Route the config through update_config/save_config so we get atomic mv +
+    # chmod 600 + JSON re-validation. A raw `>` redirect would leave a world-
+    # readable file with the subscription URL on partial writes (OOM, reboot).
     local cfg
     cfg=$(printf '%s' "$data" | jq -c '.config')
-    save_config "$cfg" || { echo '{"error":"invalid config in backup"}'; return 1; }
+    # Full replace, not a key edit — but still routed through update_config so
+    # it takes the config lock: a watchdog selected_server write landing between
+    # a bare read and save would otherwise silently drop the whole restore. The
+    # jq program ignores the current config and emits the backup's verbatim;
+    # save_config re-validates + atomically mv's it.
+    update_config '$repl' --argjson repl "$cfg" || { echo '{"error":"invalid config in backup"}'; return 1; }
 
     # Domain lists are merged into ru_domains.list / vpn_domains.list at
     # the next mode/start. A backup blob is untrusted input, so filter to
@@ -272,9 +271,7 @@ cmd_set_device_route() {
     elif ! _validate_ipv4 "$id"; then
         echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
     fi
-    local tmp=$(jq --arg id "$id" --arg r "$route" \
-        '.device_rules[$id] = $r' "$ECLIPVPN_CONFIG")
-    save_config "$tmp"
+    update_config '.device_rules[$id] = $r' --arg id "$id" --arg r "$route"
     # Rebuild nftables if running
     if is_singbox_running; then
         local iface=$(get_config_val interface "br-lan")
@@ -295,8 +292,7 @@ cmd_remove_device_route() {
     elif ! _validate_ipv4 "$id"; then
         echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
     fi
-    local tmp=$(jq --arg id "$id" 'del(.device_rules[$id])' "$ECLIPVPN_CONFIG")
-    save_config "$tmp"
+    update_config 'del(.device_rules[$id])' --arg id "$id"
     if is_singbox_running; then
         local iface=$(get_config_val interface "br-lan")
         # Serialize the nft delete+rebuild against a watchdog failover (cmd_start
