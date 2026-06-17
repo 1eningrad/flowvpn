@@ -188,6 +188,24 @@ cmd_backup() {
         --arg direct "$direct_domains" --arg vpn "$vpn_domains" \
         '{config:$config, direct_domains:$direct, vpn_domains:$vpn, version:"v4"}'
 }
+# Does a restore blob's `.config` look like a REAL EclipVPN config, or a stub
+# that would full-replace the live config into an unusable husk? A real config
+# ALWAYS carries a routing `mode` (all_vpn|blocklist — set by the init default,
+# never deleted by any path) plus either a `subscriptions` array or a legacy
+# `subscription_url`. A `.config` missing `mode` is a truncated/test blob —
+# restoring one once stubbed prod (subscriptions, mode AND auto_start all
+# vanished, leaving an empty server list while the tunnel kept running;
+# 2026-06-17). Pulled out of cmd_restore so the unit suite can exercise the
+# accept/reject decision without cmd_restore's destructive accept path. Returns
+# 0 = sane, 1 = stub/foreign.
+_restore_config_sane() {
+    printf '%s' "$1" | jq -e '
+        .config
+        | (type=="object")
+          and ((.mode=="all_vpn") or (.mode=="blocklist"))
+          and (((.subscriptions|type)=="array") or ((.subscription_url|type)=="string"))
+    ' >/dev/null 2>&1
+}
 cmd_restore() {
     local data
     if [ -n "$1" ]; then
@@ -199,6 +217,13 @@ cmd_restore() {
     # Validate JSON structure before applying — prevents writing garbage to config
     if ! printf '%s' "$data" | jq -e '.config' >/dev/null 2>&1; then
         echo '{"error":"invalid backup format"}'; return 1
+    fi
+    # Reject a STUB/foreign blob before the FULL replace below commits it —
+    # restoring a truncated config (no mode) once stubbed prod (see
+    # _restore_config_sane). This is the only chance to catch it.
+    if ! _restore_config_sane "$data"; then
+        _err "restore: backup config incomplete (needs mode + subscriptions/subscription_url) — refusing to overwrite a working config with a stub"
+        return 1
     fi
     # Route the config through update_config/save_config so we get atomic mv +
     # chmod 600 + JSON re-validation. A raw `>` redirect would leave a world-

@@ -45,3 +45,24 @@ update_config '.selected_server=$i' --argjson i 3
 assert_eq "backup-not-churned-by-volatile" \
     "$(cmp -s "$ECLIPVPN_CONFIG".1 "$ECLIPVPN_TMP/bk_before" && echo same || echo changed)" same
 rm -f "$ECLIPVPN_TMP/bk_before"
+
+# restore stub-guard predicate: accept real configs, reject truncated/foreign
+# blobs (the class that stubbed prod 2026-06-17 — restore is a FULL replace).
+_t restore_config_sane_predicate
+_restore_config_sane '{"config":{"mode":"blocklist","subscriptions":[]}}';            rc=$?; assert_rc "accept-multisub"  "$rc" 0
+_restore_config_sane '{"config":{"mode":"all_vpn","subscription_url":"https://x"}}';   rc=$?; assert_rc "accept-legacy"    "$rc" 0
+_restore_config_sane '{"config":{"subscriptions":[],"auto_start":true}}';             rc=$?; assert_rc "reject-no-mode"   "$rc" 1
+_restore_config_sane '{"direct_domains":""}';                                          rc=$?; assert_rc "reject-no-config" "$rc" 1
+_restore_config_sane '{"config":"oops"}';                                              rc=$?; assert_rc "reject-nonobject" "$rc" 1
+_restore_config_sane '{"config":{"mode":"banana","subscriptions":[]}}';                rc=$?; assert_rc "reject-bad-mode"  "$rc" 1
+
+# cmd_restore integration: a stub blob is rejected (rc 1) and the LIVE config is
+# left completely untouched — no full-replace into a husk. Pass the blob as the
+# arg (as the dispatcher does: `cmd_restore "$2"`); the stdin form would trip
+# run.sh's `set -u` on the unset $1, which production never hits.
+_t restore_rejects_stub_leaves_config
+fresh_config '{"mode":"all_vpn","subscriptions":[{"id":"keepme"}],"auto_start":true}'
+cmd_restore '{"config":{"running_intent":true,"selected_server":0,"subscriptions":[]}}' >/dev/null 2>&1; rc=$?
+assert_rc "stub-rejected"          "$rc" 1
+assert_eq "stub-config-mode-kept"  "$(jq -r .mode "$ECLIPVPN_CONFIG")" all_vpn
+assert_eq "stub-config-subs-kept"  "$(jq -r '.subscriptions[0].id' "$ECLIPVPN_CONFIG")" keepme
