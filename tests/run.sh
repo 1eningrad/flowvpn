@@ -33,6 +33,20 @@ export ECLIPVPN_SOURCE_ONLY=1
 # shellcheck disable=SC1090
 . "$REPO/usr/bin/eclipvpn"
 
+# ISOLATION GUARD — a sourced lib must NOT clobber the scratch paths we exported.
+# network.sh once had a BARE `ECLIPVPN_CONFIG=/etc/eclipvpn/config.json` at top
+# level that overrode our override, so `sh tests/run.sh` wrote to the LIVE
+# config and stubbed prod twice (2026-06-17). Refuse to run a single test if any
+# sandbox path escaped to a real /etc or /tmp location — a wrong test is far
+# better than a wiped production config.
+for _v in ECLIPVPN_CONFIG ECLIPVPN_TMP ECLIPVPN_LIB; do
+    eval "_pv=\$$_v"
+    case "$_pv" in
+        "$TESTROOT"/*|"$REPO"/*) ;;
+        *) echo "FATAL: $_v escaped the sandbox -> '$_pv' (a sourced lib clobbered it). Refusing to run against live paths."; exit 3 ;;
+    esac
+done
+
 PASS=0; FAIL=0; CUR="-"
 _t()  { CUR="$1"; }
 ok()  { PASS=$((PASS + 1)); }

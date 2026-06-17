@@ -3,7 +3,12 @@
 # Uses 'ip' table (not inet) for tproxy
 # tproxy mark 0x1, sing-box mark 0x8000
 
-ECLIPVPN_CONFIG="/etc/eclipvpn/config.json"
+# Respect an already-set ECLIPVPN_CONFIG (the dispatcher in usr/bin/eclipvpn
+# exports the same default at load; the test harness overrides it to a scratch
+# path). A BARE assignment here used to clobber that override unconditionally —
+# so `sh tests/run.sh` wrote to the LIVE /etc/eclipvpn/config.json and the suite
+# stubbed prod twice (2026-06-17). Match the dispatcher's `:-` default form.
+ECLIPVPN_CONFIG="${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}"
 
 setup_network() {
     local port="$1" mark="$2" iface="$3"
