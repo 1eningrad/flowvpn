@@ -1851,6 +1851,13 @@ function showTabMobile(name){
   const desktopTab=document.querySelector('.tabs .tab[data-tab="'+name+'"]');
   showTab(name,desktopTab||document.createElement('div'));
 }
+// Jump to Settings ▸ Подписки and focus the URL field so the user can paste a
+// subscription link immediately. Used by the empty-server-list hint when there
+// are no subscriptions configured.
+function goToSubscriptions(){
+  showTabMobile('settings');
+  setTimeout(function(){var i=document.getElementById('subUrl');if(i){i.scrollIntoView({behavior:'smooth',block:'center'});try{i.focus()}catch(e){}}},120);
+}
 
 // Windows / Chrome on Windows / Brave-on-Windows / некоторые Linux distros
 // don't render flag emoji at all — Segoe UI Emoji (Windows) deliberately
@@ -1928,7 +1935,20 @@ function toggleSubGroup(key){
 }
 function renderServers(servers,sel,switchingIdx){
   const el=document.getElementById('serverList');
-  if(!servers||!servers.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Серверы не загружены</div>';return}
+  if(!servers||!servers.length){
+    // 0 servers means one of two very different things: subscriptions exist but
+    // the fetch hasn't populated the pool yet (loading / panel blocked), OR there
+    // are NO subscriptions at all (config reset, or the last sub was removed) —
+    // in which case the tunnel may still be live off its already-generated config
+    // while the list looks mysteriously empty. Distinguish via state.subscriptions
+    // (only once /status has actually returned the array, to avoid a load flash)
+    // so the no-subs case gets an actionable hint, not a dead-end message.
+    const noSubs=state&&Array.isArray(state.subscriptions)&&state.subscriptions.length===0;
+    el.innerHTML=noSubs
+      ? '<div style="color:var(--text-dim);font-size:12.5px;padding:18px 14px;text-align:center;line-height:1.5">Нет активных подписок — список серверов пуст.<br>Добавьте подписку, чтобы серверы появились.<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="goToSubscriptions()">Добавить подписку</button></div></div>'
+      : '<div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Серверы не загружены</div>';
+    return;
+  }
   // Group by provider when servers come from >1 subscription (single provider
   // needs no header). Key on the stable sub_id; servers are contiguous per sub.
   // A collapsed group renders only its header — its rows are dropped from the
