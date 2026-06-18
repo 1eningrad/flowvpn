@@ -36,6 +36,8 @@
 
 ## Быстрая установка
 
+> **Репозиторий приватный.** Публичный `curl | sh` ниже сработает только у тех, у кого есть доступ к репо (или если сделать его публичным). Способы установки сейчас: **Windows-установщик** (см. ниже), приватный `curl` с PAT, либо `install-from-mac.sh` из локальной копии.
+
 **Если репозиторий публичный:**
 ```bash
 ssh root@router-ip
@@ -52,6 +54,20 @@ curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
 ```
 
 Установщик ставит зависимости, скачивает xray под архитектуру, кладёт скрипты и UI в правильные пути, создаёт redirect со старого `/flowvpn/` на `/eclipvpn/`.
+
+## Windows-установщик (офлайн `.exe`)
+
+Для тех, кто не хочет возиться с SSH/curl вручную: **`EclipVPN-Installer.exe`** — самодостаточный офлайн-установщик под Windows. Ставит EclipVPN на роутер по SSH из графического окна (EN/RU, авто-поиск роутера по шлюзу + SSH-скан). Полностью офлайн — внутри зашиты xray, sing-box, jq, curl, CA-bundle (aarch64) и код роутера, так что доступ к GitHub/apk **с роутера не нужен** (актуально, когда GitHub в RU заблокирован).
+
+Скачивается из релиза:
+
+- **Релиз**: [`v2026.06`](https://github.com/1eningrad/flowvpn/releases/tag/v2026.06)
+- **Файл**: `EclipVPN-Installer.exe` (~31 МБ, aarch64)
+- **SHA-256**: `9d5563a5844c3bf7daf2ee8396c2b9470604dc8137f7c0054b208eba4693f1ec`
+
+> Поскольку репозиторий приватный, ассет качается **только с авторизацией** в GitHub: открой страницу релиза в браузере, где ты залогинен, и нажми на файл (прямая ссылка `releases/download/...` без авторизации отдаёт 404). Либо из CLI с доступом: `gh release download v2026.06 -R 1eningrad/flowvpn`.
+
+Пересборка после изменений в `usr/`/`www/`/`etc/`: `cd windows-installer && powershell -ExecutionPolicy Bypass -File build-exe.ps1` (подробности — `windows-installer/README.md`).
 
 ## Ручная установка
 
@@ -302,6 +318,8 @@ ssh root@<new-router-ip> '/etc/init.d/eclipvpn enable'
 Lightweight VPN manager for OpenWrt routers. Russian sites bypass the tunnel. Supports VLESS / VMess / Trojan / Shadowsocks (via xray) and Hysteria2 (native sing-box outbound), with several provider subscriptions merged into one server list.
 
 ### Quick install
+
+> The repository is **private**, so the public `curl | sh` below only works for users with repo access (or if you make it public). Options: the **Windows installer** (`EclipVPN-Installer.exe`, from the [`v2026.06` release](https://github.com/1eningrad/flowvpn/releases/tag/v2026.06) — a fully offline GUI installer; the download itself needs GitHub auth), the private-PAT curl below, or `install-from-mac.sh`.
 
 Public repo:
 ```bash
