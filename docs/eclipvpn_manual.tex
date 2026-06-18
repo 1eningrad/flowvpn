@@ -192,6 +192,20 @@ eclipvpn start
 /etc/init.d/eclipvpn enable
 \end{lstlisting}
 
+\subsection{Windows-установщик и релиз}
+
+Для установки без ручного SSH есть самодостаточный офлайн-установщик под Windows — \texttt{EclipVPN-Installer.exe} (\textasciitilde{}31\,МБ, aarch64). Он ставит EclipVPN на роутер по SSH из графического окна (EN/RU, авто-поиск роутера), а внутри несёт xray, sing-box, jq, curl, CA-bundle и код роутера, поэтому доступ к GitHub/apk \emph{с роутера} не нужен.
+
+Файл распространяется через GitHub-релиз \texttt{v2026.06}: \url{https://github.com/1eningrad/flowvpn/releases/tag/v2026.06}
+
+\begin{lstlisting}
+SHA-256: 9d5563a5844c3bf7daf2ee8396c2b9470604dc8137f7c0054b208eba4693f1ec
+\end{lstlisting}
+
+\begin{notebox}
+\textbf{Репозиторий приватный.} Ассет релиза и raw-ссылки \texttt{install.sh} доступны только с авторизацией в GitHub: открыть страницу релиза в браузере под своим логином и скачать файл, либо \texttt{gh release download v2026.06 -R 1eningrad/flowvpn}. Прямая ссылка \texttt{releases/download/...} без авторизации отдаёт 404.
+\end{notebox}
+
 \section{Веб-интерфейс}
 
 После запуска откройте \texttt{http://192.168.1.1/eclipvpn/} в браузере.
