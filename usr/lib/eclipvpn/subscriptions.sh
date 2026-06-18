@@ -386,6 +386,47 @@ update_subscription() {
     echo "$count"
 }
 
+# Re-merge the enabled subs' EXISTING per-sub caches into servers.json with NO
+# network fetch and NO rule refresh — for `sub enable/disable/remove`, which only
+# change WHICH providers are in the pool, not their contents. Mirrors
+# update_subscription's merge phase (incl. the n==0 → clear and the count>0 swap
+# guard). Echoes the merged server count.
+_merge_sub_pool() {
+    local config="$1"
+    local tmp="${ECLIPVPN_TMP:-/tmp/eclipvpn}"
+    mkdir -p "$tmp"
+    local subs n
+    subs=$(jq -c 'if (.subscriptions|type)=="array" and ((.subscriptions|length)>0)
+                  then [ .subscriptions[] | select(.enabled != false) ]
+                  elif (.subscription_url // "") != ""
+                  then [ {id:"legacy", url:.subscription_url} ]
+                  else [] end' "$config" 2>/dev/null)
+    [ -z "$subs" ] && subs="[]"
+    n=$(printf '%s' "$subs" | jq 'length' 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    if [ "$n" -eq 0 ]; then
+        [ -f "$tmp/servers.json" ] && ( umask 077; echo '[]' > "$tmp/servers.json" )
+        echo 0; return 0
+    fi
+    local merged="[]" i=0
+    while [ "$i" -lt "$n" ]; do
+        local sid; sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id'); i=$((i + 1))
+        { [ -z "$sid" ] || [ "$sid" = "null" ]; } && continue
+        local cache="$tmp/sub.$sid.servers.json"
+        if [ -s "$cache" ] && jq -e 'type=="array"' "$cache" >/dev/null 2>&1; then
+            local _m; _m=$(printf '%s' "$merged" | jq -c --slurpfile add "$cache" '. + $add[0]' 2>/dev/null)
+            [ -n "$_m" ] && merged="$_m"
+        fi
+    done
+    local count; count=$(printf '%s' "$merged" | jq 'length' 2>/dev/null); case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    if [ "$count" -gt 0 ]; then
+        _remap_selected_server "$config" "$merged"
+        ( umask 077; printf '%s' "$merged" | jq '.' > "$tmp/servers.json.new" ) \
+            && mv "$tmp/servers.json.new" "$tmp/servers.json"
+        chmod 600 "$tmp/servers.json" 2>/dev/null
+    fi
+    echo "$count"
+}
+
 # --- management command (was in config.sh) ----------------------------------
 # Multi-subscription manager. Subscriptions live in config.subscriptions[];
 # servers from every enabled one are merged into the flat servers.json by
@@ -444,7 +485,10 @@ cmd_sub() {
             # dead entries in subscription_meta.json (atomic write).
             local mf="$ECLIPVPN_TMP/subscription_meta.json"
             [ -f "$mf" ] && { jq --arg id "$id" 'del(.[$id])' "$mf" > "$mf.tmp" 2>/dev/null && mv "$mf.tmp" "$mf" || rm -f "$mf.tmp"; }
-            cmd_update >/dev/null 2>&1
+            # No fetch needed — the provider is gone; re-merge the remaining caches
+            # (cheap, offline) instead of cmd_update re-fetching everyone + rules.
+            local newc; newc=$(_merge_sub_pool "$ECLIPVPN_CONFIG")
+            [ "${newc:-0}" -gt 0 ] 2>/dev/null && _vpn_running && cmd_restart >/dev/null 2>&1
             jq -n --arg id "$id" '{status:"removed", id:$id}'
             ;;
         enable|disable)
@@ -452,9 +496,21 @@ cmd_sub() {
             local en=false; [ "$op" = "enable" ] && en=true
             update_config '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .enabled=$en else . end))' \
                 --arg id "$id" --argjson en "$en" || { echo '{"error":"save failed"}'; return 1; }
-            # Drop a disabled provider's cache so its servers leave the pool now.
-            [ "$op" = "disable" ] && rm -f "$ECLIPVPN_TMP/sub.$id.servers.json"
-            cmd_update >/dev/null 2>&1
+            # A toggle only changes WHICH providers are in the pool, not their
+            # contents — so re-merge the existing per-sub caches instead of a full
+            # cmd_update, which re-fetches every enabled provider AND re-downloads
+            # the geosite/blocklist rule sets over the network (slow; the .srs
+            # force-download routinely hangs on RU-blocked raw.githubusercontent).
+            # The disabled provider's cache is KEPT so re-enabling stays instant —
+            # the merge reads enabled subs only, so it's excluded regardless. Only
+            # fall back to a real fetch when enabling a sub whose cache is absent.
+            local newc
+            if [ "$op" = "enable" ] && [ ! -s "$ECLIPVPN_TMP/sub.$id.servers.json" ]; then
+                cmd_update >/dev/null 2>&1
+            else
+                newc=$(_merge_sub_pool "$ECLIPVPN_CONFIG")
+                [ "${newc:-0}" -gt 0 ] 2>/dev/null && _vpn_running && cmd_restart >/dev/null 2>&1
+            fi
             jq -n --arg id "$id" --arg s "$op" '{status:$s, id:$id}'
             ;;
         rename)
