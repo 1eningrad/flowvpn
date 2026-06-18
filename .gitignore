@@ -20,6 +20,9 @@ combined.tmp
 # Claude Code local tooling / session state (may hold backups + secrets)
 .claude/
 
+# Stale Playwright test-runner artifacts (unrelated to the ash unit suite in tests/)
+test-results/
+
 # Windows installer — generated artifacts + bundled binaries (regenerable via build-*.ps1)
 windows-installer/EclipVPN-Installer.exe
 windows-installer/bundle.zip
