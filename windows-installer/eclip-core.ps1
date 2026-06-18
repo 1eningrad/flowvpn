@@ -241,6 +241,14 @@ function Invoke-EclipInstall {
         Invoke-SSH "chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn /usr/lib/eclipvpn/*.sh" -Check | Out-Null
         Invoke-SSH "/usr/bin/eclipvpn >/dev/null 2>&1 || true" | Out-Null
 
+        # --- build stamp: which committed build this installer carries ----
+        # /etc/eclipvpn exists by now (the line above mints the default config).
+        $buildFile = Join-Path $SrcRoot "build.txt"
+        $buildId = if (Test-Path $buildFile) { ((Get-Content -LiteralPath $buildFile -TotalCount 1) -join '').Trim() } else { "unknown via=installer.exe" }
+        $bb = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes("$buildId`n"))
+        Invoke-SSH "mkdir -p /etc/eclipvpn && echo '$bb' | base64 -d > /etc/eclipvpn/build && chmod 644 /etc/eclipvpn/build" -Check | Out-Null
+        _log "build: $buildId" "ok"
+
         # --- legacy redirect ---------------------------------------------
         $redirect = "<!DOCTYPE html>`n<meta charset=`"utf-8`">`n<meta http-equiv=`"refresh`" content=`"0;url=/eclipvpn/`">`n<title>EclipVPN</title>`n<p>Open <a href=`"/eclipvpn/`">/eclipvpn/</a></p>`n"
         Push-Bytes ((New-Object Text.UTF8Encoding($false)).GetBytes($redirect)) "/www/flowvpn/index.html" $false $null

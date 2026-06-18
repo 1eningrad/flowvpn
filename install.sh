@@ -183,6 +183,11 @@ cat > /www/flowvpn/index.html <<'EOF'
 <p>Адрес изменился. Открываю <a href="/eclipvpn/">/eclipvpn/</a>…</p>
 EOF
 
+# Build stamp — install.sh runs on the router with no git checkout, so record
+# what it can (branch + install date). deploy.sh / installer.exe carry the SHA.
+printf 'main installed=%s via=install.sh\n' "$(date -u +%Y-%m-%d 2>/dev/null || echo '?')" > /etc/eclipvpn/build
+chmod 644 /etc/eclipvpn/build
+
 echo "[4/6] Initial configuration..."
 /usr/bin/eclipvpn >/dev/null 2>&1 || true  # Creates default config
 

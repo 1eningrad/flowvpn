@@ -87,6 +87,16 @@ Copy-Item -Recurse -Force (Join-Path $Self "payload\*") $payloadDst
 $binCount = (Get-ChildItem (Join-Path $payloadDst "bin") -Recurse -File).Count
 Write-Host "payload binaries staged: $binCount" -ForegroundColor DarkGray
 
+# build stamp baked into the bundle root so the installed router records which
+# committed build this .exe carries (eclip-core writes it to /etc/eclipvpn/build).
+# ECLIPVPN_VERSION is a constant; this is the real per-build id.
+$bsha = (& git -C $Repo rev-parse --short HEAD).Trim()
+$bdate = (& git -C $Repo show -s --format=%cd --date=short HEAD).Trim()
+if (& git -C $Repo status --porcelain --untracked-files=no -- usr www etc) { $bsha = "$bsha+dirty" }
+$bstamp = "$bsha $bdate via=installer.exe"
+[IO.File]::WriteAllText((Join-Path $stage "build.txt"), $bstamp, (New-Object Text.UTF8Encoding($false)))
+Write-Host "build stamp: $bstamp" -ForegroundColor DarkGray
+
 # 4) zip the staging dir (entries become windows-installer/..., usr/..., etc.)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = Join-Path $Self "bundle.zip"

@@ -200,6 +200,15 @@ echo "  2) restore here:    cat ~/eclip-config.json | ssh root@$(uci -q get netw
 echo "     (cat|ssh, not scp — OpenWrt dropbear has no sftp-server)"
 REMOTE_EOF
 
+# Stamp the build identity (committed SHA + date) into /etc/eclipvpn/build so
+# `eclipvpn system-info` / the UI can identify the running build — ECLIPVPN_VERSION
+# is a release constant, not a per-build id.
+BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)
+[ "$SHIP" = worktree ] && BUILD_SHA="$BUILD_SHA+dirty"
+BUILD_STAMP="$BUILD_SHA $(git show -s --format=%cd --date=short HEAD 2>/dev/null) via=install-from-mac"
+printf '%s\n' "$BUILD_STAMP" | ssh "$ROUTER" 'mkdir -p /etc/eclipvpn && cat > /etc/eclipvpn/build && chmod 644 /etc/eclipvpn/build'
+echo "→ build: $BUILD_STAMP"
+
 echo
 echo "✓ install done — UI at http://${ROUTER#*@}/eclipvpn/"
 echo "  если выше есть TAILSCALE_AUTH_URL — открой его в браузере и подставь свежий Device Auth Key"

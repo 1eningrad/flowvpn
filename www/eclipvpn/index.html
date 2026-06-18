@@ -3319,6 +3319,7 @@ async function loadSystemInfo(){
     const flashCls=flashPct>90?'err':flashPct>80?'warn':'';
     const rows=[
       ['EclipVPN','v'+(d.eclipvpn||'—')],
+      ['Build',d.build||'—'],
       ['xray',d.xray||'—'],
       ['sing-box',d.singbox||'—'],
       ['Прошивка',d.openwrt||'—'],

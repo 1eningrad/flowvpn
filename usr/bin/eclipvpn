@@ -40,6 +40,11 @@ _err() { flog "ERROR: $1"; jq -n -c --arg e "$1" '{error:$e}'; }
 # Verbose step-trace, OFF by default. Enable without a redeploy via
 # `eclipvpn set-config log_debug true` to trace e.g. a server switch step-by-step.
 flogd() { [ "$(get_config_val log_debug false)" = "true" ] && logger -t eclipvpn "DEBUG: $*"; return 0; }
+# Build identity — stamped into /etc/eclipvpn/build by whatever shipped the code
+# (deploy.sh / install*.sh / installer.exe): "<short-sha> <commit-date> via=<tool>".
+# ECLIPVPN_VERSION is a hand-set release constant and never distinguishes two
+# deploys of the same release; THIS is what identifies the running build.
+_build_id() { [ -f /etc/eclipvpn/build ] && head -n1 /etc/eclipvpn/build 2>/dev/null || echo "unknown"; }
 
 # Returns the per-install Clash API secret. Generates one on first call.
 # Stored in /etc/eclipvpn/clash_secret (chmod 600).

@@ -220,5 +220,15 @@ echo "=== eclipvpn status ==="
 /usr/bin/eclipvpn status 2>/dev/null | head -10
 '
 
+# Stamp the build identity (the committed SHA + date that just shipped) into
+# /etc/eclipvpn/build so `eclipvpn system-info` and the UI can tell exactly which
+# build a router runs — ECLIPVPN_VERSION is a constant and never distinguishes
+# two deploys of the same release.
+BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)
+[ "$SHIP" = worktree ] && BUILD_SHA="$BUILD_SHA+dirty"
+BUILD_STAMP="$BUILD_SHA $(git show -s --format=%cd --date=short HEAD 2>/dev/null) via=deploy.sh"
+printf '%s\n' "$BUILD_STAMP" | ssh "$ROUTER" 'mkdir -p /etc/eclipvpn && cat > /etc/eclipvpn/build && chmod 644 /etc/eclipvpn/build'
+echo "→ build: $BUILD_STAMP"
+
 echo
 echo "✓ deploy done — open http://${ROUTER#*@}/eclipvpn/ to verify UI"

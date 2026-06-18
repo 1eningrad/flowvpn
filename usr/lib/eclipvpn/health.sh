@@ -401,8 +401,10 @@ cmd_system_info() {
     local flash_avail=$(echo "$flash_info" | cut -d, -f3)
     local cpu_model=$(awk -F: '/model name|Hardware/{print $2;exit}' /proc/cpuinfo 2>/dev/null | sed 's/^ //')
     local arch=$(uname -m)
+    local build_id=$(_build_id)
     jq -n \
         --arg eclipvpn "$ECLIPVPN_VERSION" \
+        --arg build "$build_id" \
         --arg xray "$xray_ver" \
         --arg singbox "$sb_ver" \
         --argjson singbox_quic "$sb_quic" \
@@ -420,7 +422,7 @@ cmd_system_info() {
           arch:$arch, cpu:$cpu, load:$load, sys_uptime:$sys_uptime,
           mem_total_kb:$mem_total_kb, mem_avail_kb:$mem_avail_kb,
           flash_total_kb:$flash_total_kb, flash_used_kb:$flash_used_kb,
-          flash_avail_kb:$flash_avail_kb}'
+          flash_avail_kb:$flash_avail_kb, singbox_quic:$singbox_quic, build:$build}'
 }
 cmd_healthcheck() {
     local results="[]"
