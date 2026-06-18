@@ -3,8 +3,12 @@
 # Mode "all_vpn": everything through VPN, RU domains direct
 # Mode "blocklist": only blocked domains through VPN (Shadowrocket lists)
 
-SR_RULES_DIR="/tmp/eclipvpn/rules"
-RULESET_DIR="/etc/eclipvpn/rules"
+# Derived from the overridable base paths (set in usr/bin/eclipvpn BEFORE the
+# libs are sourced) so the test harness's ECLIPVPN_TMP/ECLIPVPN_CONFIG sandbox
+# also redirects rule writes, never the live /tmp or /etc. Same lesson as the
+# network.sh bare-assignment bug (b81ad0c) that let the suite clobber prod.
+SR_RULES_DIR="${ECLIPVPN_TMP:-/tmp/eclipvpn}/rules"
+RULESET_DIR="$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/rules"
 CUSTOM_DIRECT="/etc/eclipvpn/direct_domains.txt"
 CUSTOM_VPN="/etc/eclipvpn/vpn_domains.txt"
 

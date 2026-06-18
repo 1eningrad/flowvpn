@@ -21,6 +21,11 @@ cmd_set_config() {
     # manager so it becomes/updates the primary subscriptions[] entry (and
     # triggers a refresh) instead of writing a dangling key the merge ignores.
     [ "$key" = "subscription_url" ] && { cmd_sub add "$value"; return $?; }
+    # selected_server must go through cmd_set_server: it bounds-checks the index
+    # against servers.json, runs the make-before-break switch, and rolls back on
+    # a failed switch. A bare set-config write skips all that and would leave a
+    # stale/out-of-range index in the live config (this key is CGI-reachable).
+    [ "$key" = "selected_server" ] && { cmd_set_server "$value"; return $?; }
     # blocklist_source: validate value at the boundary (CGI lets any
     # `[a-zA-Z0-9_-]` through, so a malformed value would silently fall
     # through to the default branch in _fetch_blocklist_domains).
@@ -45,7 +50,7 @@ cmd_set_config() {
             esac
             update_config '.[$k] = $v' --arg k "$key" --argjson v "$bv" || { _err "set-config save failed for $key"; return 1; }
             ;;
-        selected_server|tput_min_kbps|wan_mtu)
+        tput_min_kbps|wan_mtu)
             case "$value" in ''|*[!0-9]*) _err "$key must be numeric"; return 1 ;; esac
             # wan_mtu: 0 = leave the interface alone; otherwise clamp to a
             # sane range — _apply_wan_mtu would happily set MTU 100 and
@@ -79,12 +84,12 @@ cmd_schedule() {
                 esac
             done
             update_config '.schedule = {enabled:true, on:$on, off:$off}' \
-                --arg on "$on_time" --arg off "$off_time" || { _err "set-config save failed for $key"; return 1; }
+                --arg on "$on_time" --arg off "$off_time" || { _err "schedule save failed"; return 1; }
             _setup_cron
             jq -n --arg on "$on_time" --arg off "$off_time" '{status:"schedule set",on:$on,off:$off}'
             ;;
         disable)
-            update_config '.schedule.enabled = false' || { _err "set-config save failed for $key"; return 1; }
+            update_config '.schedule.enabled = false' || { _err "schedule save failed"; return 1; }
             _remove_cron
             echo '{"status":"schedule disabled"}'
             ;;

@@ -72,7 +72,7 @@ _sub_curl() {
     model=$(cat /tmp/sysinfo/model 2>/dev/null | sed 's/ *(.*$//; s/[[:space:]]*$//')
     [ -z "$model" ] && model=$(cat /tmp/sysinfo/board_name 2>/dev/null)
     [ -z "$model" ] && model="OpenWrt Router"
-    curl -fsS --max-time 15 --proto '=http,https' \
+    curl -fsS --max-time 15 --max-filesize 8000000 --proto '=http,https' \
         -A "EclipVPN/${ECLIPVPN_VERSION}" \
         -H "X-HWID: $(_get_hwid)" \
         -H "X-Device-OS: OpenWrt" \
@@ -479,6 +479,6 @@ cmd_sub() {
             fi
             jq -n --arg id "$id" --arg n "$name" '{status:"renamed", id:$id, name:$n}'
             ;;
-        *) echo "{\"error\":\"unknown op: $op (use list/add/remove/enable/disable/rename)\"}"; return 1 ;;
+        *) jq -n --arg op "$op" '{error:("unknown op: "+$op+" (use list/add/remove/enable/disable/rename)")}'; return 1 ;;
     esac
 }

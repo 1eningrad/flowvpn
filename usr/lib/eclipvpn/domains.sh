@@ -154,7 +154,7 @@ cmd_preset() {
         enable|disable)
             [ -z "$name" ] && { echo '{"error":"name required"}'; return 1; }
             if ! _preset_known "$name"; then
-                echo "{\"error\":\"unknown preset: $name\"}"
+                jq -n --arg n "$name" '{error:("unknown preset: "+$n)}'
                 return 1
             fi
             if [ "$op" = "enable" ]; then

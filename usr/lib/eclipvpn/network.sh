@@ -259,8 +259,11 @@ _apply_wan_mtu() {
     [ -z "$dev" ] && { logger -t eclipvpn "WARN: wan_mtu: no default-route device"; return 0; }
     local cur; cur=$(cat "/sys/class/net/$dev/mtu" 2>/dev/null)
     [ "$cur" = "$target" ] && return 0       # already applied — idempotent, cheap to re-call
-    # Remember the pre-eclipvpn MTU once, so teardown can put it back.
-    [ -f /tmp/eclipvpn/wan_mtu.orig ] || echo "${cur:-1500}" > /tmp/eclipvpn/wan_mtu.orig
+    # Remember the pre-eclipvpn MTU once, so teardown can put it back. Save the
+    # DEVICE too (mirrors the IPv6 kill-switch): a WAN failover (wired↔LTE)
+    # between apply and stop changes the default-route dev, and _restore_wan_mtu
+    # must put the cap back on the iface we actually capped, not the new one.
+    [ -f /tmp/eclipvpn/wan_mtu.orig ] || { echo "${cur:-1500}" > /tmp/eclipvpn/wan_mtu.orig; echo "$dev" > /tmp/eclipvpn/wan_mtu.dev; }
     if ip link set "$dev" mtu "$target" 2>/dev/null; then
         logger -t eclipvpn "wan_mtu: $dev MTU ${cur:-?} → $target (PMTU-blackhole guard)"
     else
@@ -270,8 +273,12 @@ _apply_wan_mtu() {
 _restore_wan_mtu() {
     local orig; orig=$(cat /tmp/eclipvpn/wan_mtu.orig 2>/dev/null)
     [ -z "$orig" ] && return 0
-    local dev; dev=$(_wan_default_dev)
+    # Restore on the device we ACTUALLY capped (saved at apply time), falling
+    # back to the current default-route dev only if the saved file is missing
+    # (upgrade from a build that didn't record it).
+    local dev; dev=$(cat /tmp/eclipvpn/wan_mtu.dev 2>/dev/null)
+    [ -z "$dev" ] && dev=$(_wan_default_dev)
     [ -n "$dev" ] && ip link set "$dev" mtu "$orig" 2>/dev/null \
         && logger -t eclipvpn "wan_mtu: restored $dev MTU → $orig"
-    rm -f /tmp/eclipvpn/wan_mtu.orig
+    rm -f /tmp/eclipvpn/wan_mtu.orig /tmp/eclipvpn/wan_mtu.dev
 }

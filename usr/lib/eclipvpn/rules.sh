@@ -104,7 +104,7 @@ _fetch_one_srs() {
         # bytes "SRS" (0x53 0x52 0x53). Without this a garbage page gets mv'd
         # into the PERSISTENT /etc cache, the cache-wins check then pins it,
         # and sing-box fails rule-set load on every start until manual deletion.
-        if curl -fsSL --max-time 10 -o "$tmp" "$url" 2>/dev/null \
+        if curl -fsSL --max-time 10 --max-filesize 8000000 -o "$tmp" "$url" 2>/dev/null \
            && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ] \
            && [ "$(dd if="$tmp" bs=1 count=3 2>/dev/null)" = "SRS" ]; then
             mv "$tmp" "$dest"
@@ -615,7 +615,7 @@ _fetch_blocklist_domains() {
     # the line count, swap only on success. -fsS also drops HTTP error pages
     # (>50-line CAPTCHA/block pages would otherwise pass the count gate).
     local tmp_dl="$SR_RULES_DIR/domains.list.new"
-    curl -fsS --max-time 30 "$url" 2>/dev/null | \
+    curl -fsS --max-time 30 --max-filesize 8000000 "$url" 2>/dev/null | \
         awk 'NF && !/^#/ && !/^!/ {gsub(/[[:space:]]+/, "", $0); if(length($0)) print "DOMAIN-SUFFIX," $0}' \
         > "$tmp_dl"
     local cnt=$(wc -l < "$tmp_dl" 2>/dev/null)
@@ -630,16 +630,16 @@ _fetch_blocklist_domains() {
     # Telegram + Discord lists supplement domain-based routing for these
     # specific apps (their domain routing alone is unreliable due to
     # CDN sharding). Both are well-maintained.
-    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/telegram.list" \
+    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/telegram.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Telegram/Telegram.list"
-    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/discord.list" \
+    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/discord.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Discord/Discord.list"
     # github.com/.../releases/latest/download/ ALWAYS 302-redirects to
     # objects.githubusercontent.com — WITHOUT -L curl writes the empty redirect
     # body, convert_ip_list emits nothing, and the Meta/Telegram IP-CIDR bypass
     # rules silently never load. -f also drops error pages instead of caching them.
-    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/meta_ips.list" \
+    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/meta_ips.list" \
         "https://github.com/toneywhitez/zkeen_rules/releases/latest/download/meta_ips.list"
-    curl -fsSL --max-time 15 -o "$SR_RULES_DIR/telegram_ips.list" \
+    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/telegram_ips.list" \
         "https://github.com/toneywhitez/zkeen_rules/releases/latest/download/telegram_ips.list"
 }
