@@ -169,7 +169,7 @@ _watchdog_pick_best() {
     local current="$1" total="$2" probe_port="$3" metric="${4:-latency}"
     local servers_json="$ECLIPVPN_TMP/servers.json"
     local best_idx="" best_ms=99999 best_kbps=-1
-    local i=0
+    local i=0 consec_fail=0
     while [ "$i" -lt "$total" ]; do
         if [ "$i" -eq "$current" ]; then i=$((i+1)); continue; fi
         local cand_name=$(jq -r ".[$i].name" "$servers_json" 2>/dev/null)
@@ -178,6 +178,7 @@ _watchdog_pick_best() {
         fi
         local res=$(_watchdog_probe_candidate "$i" "$probe_port" "$metric")
         if [ "${res%% *}" = "ok" ]; then
+            consec_fail=0
             local val="${res#ok }"
             if [ "$metric" = "throughput" ]; then
                 logger -t eclipvpn "Watchdog: $cand_name ${val}KB/s"
@@ -192,6 +193,16 @@ _watchdog_pick_best() {
             fi
         else
             logger -t eclipvpn "Watchdog: $cand_name probe failed (code=${res#fail })"
+            # When candidates start failing back-to-back the WAN itself may have
+            # dropped (MTS/mobile flap) — re-check it and ABORT the scan if it's
+            # down, instead of burning ~13s/server probing ~20 dead nodes during
+            # an outage that no server switch can fix. A single genuinely-dead
+            # server (WAN still up) just lets the scan continue.
+            consec_fail=$((consec_fail + 1))
+            if [ "$consec_fail" -ge 2 ] && ! _watchdog_check_wan; then
+                logger -t eclipvpn "Watchdog: WAN down mid-scan — aborting server probe (provider issue)"
+                break
+            fi
         fi
         i=$((i+1))
     done
