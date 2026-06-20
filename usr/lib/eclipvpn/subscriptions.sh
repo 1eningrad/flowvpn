@@ -374,6 +374,7 @@ update_subscription() {
             [ -n "$_m" ] && merged="$_m"
         fi
     done
+    merged=$(printf '%s' "$merged" | _apply_server_filter)
     local count; count=$(printf '%s' "$merged" | jq 'length' 2>/dev/null)
     case "$count" in ''|*[!0-9]*) count=0 ;; esac
 
@@ -384,6 +385,36 @@ update_subscription() {
         chmod 600 /tmp/eclipvpn/servers.json 2>/dev/null
     fi
     echo "$count"
+}
+
+# Narrow a merged server pool by the optional `server_filter` config key — a
+# comma-separated list of case-sensitive NAME substrings; a server is kept if its
+# name contains ANY token. Empty/unset = no filtering. This keeps probe-driven
+# failover/auto-select fast when a provider lists many servers that don't work
+# from this network (e.g. only "WL" nodes pass the local whitelist): filtering
+# the pool down to the working subset means the watchdog never spends minutes
+# probing ~130 dead nodes before it lands on a live one.
+#   - contains() is used, NOT test() — the router's jq is often built WITHOUT
+#     Oniguruma (see parse.sh), so regex matchers error out.
+#   - SAFETY: if the filter would leave 0 servers (typo, or a provider whose
+#     names don't match), it is IGNORED and the unfiltered pool is returned, so a
+#     bad filter can never silently empty servers.json and strand the tunnel.
+# stdin: JSON array of servers; stdout: filtered (or original) JSON array.
+_apply_server_filter() {
+    local filt; filt=$(get_config_val server_filter "")
+    [ -z "$filt" ] && { cat; return 0; }
+    local input; input=$(cat)
+    local out
+    out=$(printf '%s' "$input" | jq -c --arg f "$filt" '
+        ($f | split(",") | map(select(length>0))) as $toks
+        | [ .[] | . as $s
+            | select($toks | any(. as $t | ($s.name // "") | contains($t))) ]
+    ' 2>/dev/null)
+    if [ -n "$out" ] && [ "$(printf '%s' "$out" | jq 'length' 2>/dev/null)" -gt 0 ]; then
+        printf '%s' "$out"
+    else
+        printf '%s' "$input"
+    fi
 }
 
 # Re-merge the enabled subs' EXISTING per-sub caches into servers.json with NO
@@ -417,6 +448,7 @@ _merge_sub_pool() {
             [ -n "$_m" ] && merged="$_m"
         fi
     done
+    merged=$(printf '%s' "$merged" | _apply_server_filter)
     local count; count=$(printf '%s' "$merged" | jq 'length' 2>/dev/null); case "$count" in ''|*[!0-9]*) count=0 ;; esac
     if [ "$count" -gt 0 ]; then
         _remap_selected_server "$config" "$merged"

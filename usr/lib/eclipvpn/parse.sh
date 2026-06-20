@@ -440,10 +440,18 @@ _parse_json_subscription() {
     [ -z "$valid_objs" ] && valid_objs="[]"
 
     # Any proxy-URL string entries go through the scheme dispatcher.
+    # NB: use startswith(), NOT test() — OpenWrt/RouteRich jq packages are often
+    # compiled WITHOUT the Oniguruma regex library, so test()/match()/sub() error
+    # out ("jq was compiled without ONIGURUMA"), which silently dropped EVERY
+    # string entry and made JSON-array subscriptions parse to 0 servers (observed
+    # on RouteRich 24.10.5, 2026-06-20). startswith() needs no regex engine and is
+    # an exact anchored-prefix match — semantically identical here.
     local vlines
     vlines=$(jq -r '
         (if type=="array" then . elif (type=="object" and has("servers")) then .servers else [] end)
-        | [ .[] | select(type=="string") | select(test("^(vless|vmess|trojan|ss|hysteria2|hy2)://")) ] | .[]
+        | [ .[] | select(type=="string")
+            | select(startswith("vless://") or startswith("vmess://") or startswith("trojan://")
+                     or startswith("ss://") or startswith("hysteria2://") or startswith("hy2://")) ] | .[]
     ' "$file" 2>/dev/null)
 
     local out="$valid_objs"

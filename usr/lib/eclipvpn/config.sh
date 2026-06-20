@@ -8,7 +8,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter) ;;
         *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
@@ -38,6 +38,28 @@ cmd_set_config() {
     # trace (flogd) — both changeable without a redeploy.
     if [ "$key" = "singbox_loglevel" ]; then
         case "$value" in warn|info|error|debug) ;; *) _err "singbox_loglevel must be warn|info|error|debug"; return 1 ;; esac
+    fi
+    # server_filter: comma-separated case-sensitive NAME substrings; only servers
+    # whose name contains one of them stay in the merged pool (e.g. "WL" keeps
+    # only the whitelist nodes that work on a network where the rest are dead, so
+    # probe-driven failover/auto-select stop wasting minutes on unreachable
+    # servers). Save, then re-merge the existing per-sub caches so it applies
+    # immediately (no re-fetch). off/none/- clears it. The merge ignores a filter
+    # that matches 0 servers (_apply_server_filter), so a typo can't empty the
+    # pool. Stored via --arg (jq-safe); reject quotes/backslash/backtick/$ and cap
+    # length defensively since this key is CGI-reachable.
+    if [ "$key" = "server_filter" ]; then
+        case "$value" in off|none|-) value="" ;; esac
+        case "$value" in
+            *\"*|*\\*|*\`*|*\$*) _err "server_filter: must not contain \" \\ \` or \$"; return 1 ;;
+        esac
+        [ "${#value}" -gt 100 ] && { _err "server_filter: too long (max 100 chars)"; return 1; }
+        update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+        local _nc; _nc=$(_merge_sub_pool "$ECLIPVPN_CONFIG" 2>/dev/null)
+        case "$_nc" in ''|*[!0-9]*) _nc=0 ;; esac
+        jq -n --arg k "$key" --arg v "$value" --argjson n "$_nc" \
+            '{status:"saved", key:$k, value:$v, pool:$n}'
+        return 0
     fi
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,
     # so cmd_status's `// true` defaults work and the UI gets a real bool.
