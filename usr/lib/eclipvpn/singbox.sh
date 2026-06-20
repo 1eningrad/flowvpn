@@ -322,6 +322,18 @@ _build_allvpn_rules() {
     rules="$rules,{\"port\":[853],\"action\":\"reject\"}"
     rules="$rules,{\"network\":[\"udp\"],\"port\":[443],\"action\":\"reject\"}"
 
+    # Force-VPN devices: device_rules[id]=="vpn" → route that SOURCE IP through
+    # the VPN even toward RU-classified destinations (this rule sits BEFORE the
+    # geosite-ru/geoip-ru direct rules below, so it overrides them). For an
+    # IoT/camera device whose cloud geo-resolves as RU but is only reachable via
+    # the tunnel. IP-based only (source_ip_cidr); a MAC "vpn" rule is ignored here.
+    local vpn_dev_ips
+    vpn_dev_ips=$(jq -r '(.device_rules // {}) | to_entries[] | select(.value=="vpn") | .key' "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}" 2>/dev/null \
+        | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | jq -R . | jq -cs '.')
+    if [ -n "$vpn_dev_ips" ] && [ "$vpn_dev_ips" != "[]" ]; then
+        rules="$rules,$(jq -cn --argjson ips "$vpn_dev_ips" '{source_ip_cidr:$ips, outbound:"default"}')"
+    fi
+
     # Custom VPN domains (force through VPN)
     if [ -n "$vpn_rule" ]; then
         rules="$rules,$(echo "$vpn_rule" | jq '. + {outbound:"default"}')"

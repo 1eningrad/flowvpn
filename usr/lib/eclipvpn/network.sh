@@ -86,20 +86,25 @@ setup_network() {
         done
     fi
 
-    # Detect LAN subnet from interface. NR==1 — alias interfaces and
-    # secondary IPv4s would otherwise concat into a multi-line string,
-    # the unquoted expansion below splits it into multiple nft args, and
-    # the rule silently fails to install (LAN never gets tproxied).
-    local lan_subnet
-    lan_subnet=$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9./]+' | awk 'NR==1{print $2; exit}')
-    if [ -z "$lan_subnet" ]; then
-        lan_subnet="192.168.1.0/24"
-        logger -t eclipvpn "WARN: could not detect LAN subnet on $iface — using fallback $lan_subnet; if the real LAN differs, clients are NOT tproxied (direct leak)"
+    # Detect LAN subnet(s) from interface. We tproxy EVERY IPv4 on $iface —
+    # the primary LAN plus any alias/secondary subnet (e.g. a camera/IoT network
+    # carried on a second IP on br-lan) — so devices on a secondary subnet are
+    # tunneled too, not leaked direct. The old code took only NR==1 to dodge a
+    # multi-line-concat bug (unquoted expansion split the nft args); the explicit
+    # per-subnet loop below installs each rule cleanly instead.
+    local lan_subnets
+    lan_subnets=$(ip -4 addr show "$iface" 2>/dev/null | grep -oE 'inet [0-9./]+' | awk '{print $2}')
+    if [ -z "$lan_subnets" ]; then
+        lan_subnets="192.168.1.0/24"
+        logger -t eclipvpn "WARN: could not detect LAN subnet on $iface — using fallback 192.168.1.0/24; if the real LAN differs, clients are NOT tproxied (direct leak)"
     fi
 
-    # TPROXY: LAN clients → sing-box
-    nft add rule ip eclipvpn prerouting ip saddr "$lan_subnet" meta l4proto tcp tproxy to :$port meta mark set 0x1 counter accept
-    nft add rule ip eclipvpn prerouting ip saddr "$lan_subnet" meta l4proto udp tproxy to :$port meta mark set 0x1 counter accept
+    # TPROXY: LAN clients → sing-box (one rule pair per subnet)
+    local lan_subnet
+    for lan_subnet in $lan_subnets; do
+        nft add rule ip eclipvpn prerouting ip saddr "$lan_subnet" meta l4proto tcp tproxy to :$port meta mark set 0x1 counter accept
+        nft add rule ip eclipvpn prerouting ip saddr "$lan_subnet" meta l4proto udp tproxy to :$port meta mark set 0x1 counter accept
+    done
 
     # DNS redirect: dnsmasq → sing-box
     _setup_dnsmasq_redirect
