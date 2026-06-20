@@ -88,8 +88,14 @@ _fetch_rule_sets() {
 
 _fetch_one_srs() {
     local dest="$1" url="$2" force="$3"
-    # Existing non-trivial cache wins unless caller forces refresh.
-    if [ -z "$force" ] && [ -s "$dest" ] && [ "$(wc -c < "$dest")" -gt 1024 ]; then
+    # An existing VALID cache wins unless the caller forces a refresh. Gate on the
+    # SRS magic bytes ("SRS" = 0x53 0x52 0x53), NOT size>1024: an _ensure_srs_present
+    # empty fallback is a perfectly valid ~17-byte .srs, and the old size gate
+    # rejected it — so on a network where raw.githubusercontent.com is blocked
+    # (RU), EVERY restart/switch re-tried the fetch (3x~11s x2 files ≈ 60s),
+    # which surfaced as "can't switch server" / hangs (2026-06-20). cmd_update
+    # still passes force=1 to pull the real lists when the network allows.
+    if [ -z "$force" ] && [ -s "$dest" ] && [ "$(dd if="$dest" bs=1 count=3 2>/dev/null)" = "SRS" ]; then
         return 0
     fi
     local tmp="${dest}.tmp.$$"
