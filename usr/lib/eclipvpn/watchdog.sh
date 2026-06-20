@@ -562,7 +562,7 @@ cmd_watchdog() {
         # fail_count kept climbing past max_fails and the switch path was
         # disarmed until a probe happened to succeed — a dead current server
         # stayed selected even when alternatives came back hours later.
-        if [ "$fail_count" -ge "$max_fails" ] && [ $(( (fail_count - max_fails) % 15 )) -eq 0 ]; then
+        if [ "$fail_count" -ge "$max_fails" ] && [ $(( (fail_count - max_fails) % 15 )) -eq 0 ] && [ "$(get_config_val auto_failover true)" = "true" ]; then
             logger -t eclipvpn "Watchdog: switching server (cause: $why)"
 
             local current=$(get_config_val selected_server 0)
