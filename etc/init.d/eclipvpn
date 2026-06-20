@@ -3,6 +3,21 @@
 START=99
 STOP=10
 
+# WAN-ready probe. The original gate pinged ONLY 8.8.8.8, which fails wherever
+# foreign ICMP is blocked or the router sits behind an upstream that doesn't
+# route to it (double-NAT, observed 2026-06-20: autostart was skipped though the
+# network was fine and the subscription reachable). Ready if ANY anchor answers:
+# Yandex DNS 77.88.8.8 (reachable on RU networks incl. behind CGNAT/double-NAT),
+# 8.8.8.8 (non-RU), or the default gateway (proves the WAN link/lease is up).
+# cmd_start still does its own subscription fetch + watchdog retries afterwards.
+_eclip_net_ready() {
+    ping -c 1 -W 2 77.88.8.8 >/dev/null 2>&1 && return 0
+    ping -c 1 -W 2 8.8.8.8  >/dev/null 2>&1 && return 0
+    local gw; gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
+    [ -n "$gw" ] && ping -c 1 -W 2 "$gw" >/dev/null 2>&1 && return 0
+    return 1
+}
+
 start() {
     local auto_start
     # `.auto_start // true` looks correct but jq's // operator treats `false`
@@ -18,11 +33,11 @@ start() {
     # giving up and leaving the LAN with no VPN until manual intervention.
     local tries=0
     while [ "$tries" -lt 60 ]; do
-        if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then break; fi
+        _eclip_net_ready && break
         sleep 1; tries=$((tries + 1))
     done
 
-    if ! ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    if ! _eclip_net_ready; then
         logger -t eclipvpn "Network not ready after 60s, skipping autostart"
         return 0
     fi
@@ -46,7 +61,23 @@ start() {
     # spawning it again here would race on watchdog.lock and leave the
     # locking semantics half-broken (lock owned by one process, pidfile
     # pointing at a different one).
-    /usr/bin/eclipvpn start >/dev/null 2>&1 &
+    #
+    # Retry the bring-up in the background: at first boot cmd_start can fail
+    # transiently (rc=3) when fw4 / the nft_tproxy kernel module isn't fully up
+    # yet and sing-box's tproxy :2154 bind fails — a manual start always succeeds
+    # once the system settles. So loop until status reports running, capped so a
+    # genuinely-broken start doesn't spin forever (watchdog covers it after that).
+    (
+        n=0
+        while [ "$n" -lt 6 ]; do
+            /usr/bin/eclipvpn start >/dev/null 2>&1
+            sleep 6
+            [ "$(/usr/bin/eclipvpn status 2>/dev/null | jq -r '.running' 2>/dev/null)" = "true" ] && exit 0
+            n=$((n + 1))
+            logger -t eclipvpn "Boot: tunnel not up yet (attempt $n/6) — retrying after settle"
+            sleep 4
+        done
+    ) &
 }
 
 stop() {
