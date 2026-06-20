@@ -293,6 +293,22 @@ _build_allvpn_rules() {
         [ "$vpn_rule" = "null" ] && vpn_rule=""
     fi
 
+    # Force-DIRECT whitelist: the user's CUSTOM_DIRECT file (direct_domains.txt),
+    # built inline as domain_suffix (NOT the broad ru_domains.list). Honoured even
+    # under full_tunnel — there it's the ONLY thing allowed to bypass the VPN, for
+    # RU services that need a RU residential IP AND are reachable on the direct
+    # path (e.g. Kinopoisk/Okko/wink streaming, which a foreign VPN exit geo-blocks
+    # while RU banks on un-routable subnets must stay on the VPN). In normal
+    # all_vpn these domains are already covered by ru_rule, so this only adds the
+    # extra direct rule when full_tunnel is on.
+    local direct_rule=""
+    if [ -f "$CUSTOM_DIRECT" ]; then
+        direct_rule=$(tr -d '\r' < "$CUSTOM_DIRECT" | grep -vE '^(#|$)' \
+            | jq -R -s '[split("\n")[] | select(length > 0)]
+                        | if length == 0 then null else {domain_suffix: .} end')
+        [ "$direct_rule" = "null" ] && direct_rule=""
+    fi
+
     # Route rules:
     # 1. sniff
     # 2. hijack DNS
@@ -318,6 +334,9 @@ _build_allvpn_rules() {
         if [ -n "$ru_rule" ]; then
             rules="$rules,$(echo "$ru_rule" | jq '. + {outbound:"direct"}')"
         fi
+    elif [ -n "$direct_rule" ]; then
+        # full_tunnel: ONLY the explicit direct whitelist bypasses the VPN.
+        rules="$rules,$(echo "$direct_rule" | jq '. + {outbound:"direct"}')"
     fi
     rules="$rules]"
 
@@ -335,10 +354,21 @@ _build_allvpn_rules() {
     fi
 
     if [ "$full_tunnel" = "true" ]; then
-        # Full-tunnel: no RU → dns-direct; everything resolves via dns-proxy
-        # (final). Strip the trailing comma the force-VPN rule may have left so
-        # the array stays valid whether or not a force-VPN rule preceded it.
-        dns_rules="${dns_rules%,}]"
+        # Full-tunnel: everything resolves via dns-proxy (final) EXCEPT the
+        # explicit direct whitelist, which resolves via dns-direct (Yandex) so it
+        # gets RU-locality CDN IPs for streaming. The dangling "$dns_vpn," comma
+        # (if any) is consumed by appending dns_cd; with no force-VPN rule the "["
+        # absorbs it cleanly. No whitelist → strip the trailing comma and close.
+        if [ -n "$direct_rule" ]; then
+            local dns_cd
+            dns_cd=$(echo "$direct_rule" | jq '{}
+                + (if .domain then {domain: .domain} else {} end)
+                + (if .domain_suffix then {domain_suffix: .domain_suffix} else {} end)
+                + {action: "route", server: "dns-direct"}')
+            dns_rules="$dns_rules$dns_cd]"
+        else
+            dns_rules="${dns_rules%,}]"
+        fi
     else
         dns_rules="$dns_rules{\"rule_set\":[\"geosite-ru\"],\"action\":\"route\",\"server\":\"dns-direct\"}"
         if [ -n "$ru_rule" ]; then
