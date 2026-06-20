@@ -269,7 +269,13 @@ generate_singbox_config() {
 }
 
 _build_allvpn_rules() {
-    # Mode: everything through VPN, RU domains direct
+    # Mode: everything through VPN, RU domains direct — UNLESS full_tunnel=true,
+    # which drops the RU→direct rules (route + DNS) so EVERYTHING (incl. RU banks)
+    # rides the VPN. Needed where the direct path can't actually reach RU services:
+    # e.g. behind an upstream router that doesn't route major RU subnets (observed
+    # 2026-06-20 — Sberbank's 84.252.x was unreachable direct but fine via the VPN
+    # exit, so RU-direct stranded banks while full-tunnel fixed them).
+    local full_tunnel; full_tunnel=$(get_config_val full_tunnel false)
 
     local ru_rule=""
     [ -f "$SR_RULES_DIR/ru_domains.list" ] && ru_rule=$(convert_sr_to_singbox_rule "$SR_RULES_DIR/ru_domains.list")
@@ -305,10 +311,13 @@ _build_allvpn_rules() {
         rules="$rules,$(echo "$vpn_rule" | jq '. + {outbound:"default"}')"
     fi
 
-    # RU traffic → direct (geosite + geoip + manual list)
-    rules="$rules,{\"rule_set\":[\"geosite-ru\",\"geoip-ru\"],\"outbound\":\"direct\"}"
-    if [ -n "$ru_rule" ]; then
-        rules="$rules,$(echo "$ru_rule" | jq '. + {outbound:"direct"}')"
+    # RU traffic → direct (geosite + geoip + manual list) — skipped in full_tunnel
+    # so RU falls through to the default VPN outbound.
+    if [ "$full_tunnel" != "true" ]; then
+        rules="$rules,{\"rule_set\":[\"geosite-ru\",\"geoip-ru\"],\"outbound\":\"direct\"}"
+        if [ -n "$ru_rule" ]; then
+            rules="$rules,$(echo "$ru_rule" | jq '. + {outbound:"direct"}')"
+        fi
     fi
     rules="$rules]"
 
@@ -325,17 +334,24 @@ _build_allvpn_rules() {
         dns_rules="$dns_rules$dns_vpn,"
     fi
 
-    dns_rules="$dns_rules{\"rule_set\":[\"geosite-ru\"],\"action\":\"route\",\"server\":\"dns-direct\"}"
-    if [ -n "$ru_rule" ]; then
-        local dns_ru
-        dns_ru=$(echo "$ru_rule" | jq '{}
-            + (if .domain then {domain: .domain} else {} end)
-            + (if .domain_suffix then {domain_suffix: .domain_suffix} else {} end)
-            + (if .domain_keyword then {domain_keyword: .domain_keyword} else {} end)
-            + {action: "route", server: "dns-direct"}')
-        dns_rules="$dns_rules,$dns_ru"
+    if [ "$full_tunnel" = "true" ]; then
+        # Full-tunnel: no RU → dns-direct; everything resolves via dns-proxy
+        # (final). Strip the trailing comma the force-VPN rule may have left so
+        # the array stays valid whether or not a force-VPN rule preceded it.
+        dns_rules="${dns_rules%,}]"
+    else
+        dns_rules="$dns_rules{\"rule_set\":[\"geosite-ru\"],\"action\":\"route\",\"server\":\"dns-direct\"}"
+        if [ -n "$ru_rule" ]; then
+            local dns_ru
+            dns_ru=$(echo "$ru_rule" | jq '{}
+                + (if .domain then {domain: .domain} else {} end)
+                + (if .domain_suffix then {domain_suffix: .domain_suffix} else {} end)
+                + (if .domain_keyword then {domain_keyword: .domain_keyword} else {} end)
+                + {action: "route", server: "dns-direct"}')
+            dns_rules="$dns_rules,$dns_ru"
+        fi
+        dns_rules="$dns_rules]"
     fi
-    dns_rules="$dns_rules]"
 }
 
 _build_blocklist_rules() {

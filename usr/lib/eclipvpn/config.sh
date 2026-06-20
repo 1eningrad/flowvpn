@@ -8,7 +8,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|full_tunnel) ;;
         *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
@@ -64,7 +64,7 @@ cmd_set_config() {
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,
     # so cmd_status's `// true` defaults work and the UI gets a real bool.
     case "$key" in
-        auto_start|auto_mode|tput_guard|log_debug)
+        auto_start|auto_mode|tput_guard|log_debug|full_tunnel)
             local bv
             case "$value" in
                 true|1|on|yes) bv=true ;;
