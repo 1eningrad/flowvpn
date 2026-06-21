@@ -41,6 +41,29 @@ _xray_stream() {
     printf '%s' "$stream"
 }
 
+# Resolve a server hostname to a STABLE IP via a DIRECT resolver, so xray dials
+# the exit BY IP and never needs DNS to (re)connect. THE root-cause fix for the
+# recurring MTS-flap instability (2026-06-21): with the address left as a domain,
+# a tunnel drop made xray re-dial the server by name → resolve via 127.0.0.1 →
+# sing-box → DoH over the DOWN tunnel → fail → the tunnel could not self-heal
+# until a watchdog restart. The TLS/Reality SNI stays the domain ($sni, set
+# separately in streamSettings), so the handshake is unaffected. Query Yandex
+# 77.88.8.8 (reachable direct on RU uplinks even with the tunnel down), fall back
+# to 8.8.8.8, then to the domain itself. Pick the lowest-sorted A record so
+# repeated generations are DETERMINISTIC — the cmd_restart unchanged-config fast
+# path and the make-before-break config compare both rely on a stable xray.json.
+_resolve_server_ip() {
+    local h="$1"
+    case "$h" in *[!0-9.]*) ;; *) printf '%s' "$h"; return ;; esac  # already an IP
+    local ip ns
+    for ns in 77.88.8.8 8.8.8.8; do
+        ip=$(nslookup "$h" "$ns" 2>/dev/null | sed -n '/[Nn]ame:/,$p' \
+             | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort | head -n1)
+        [ -n "$ip" ] && { printf '%s' "$ip"; return; }
+    done
+    printf '%s' "$h"   # resolution failed → keep the domain (xray resolves at runtime)
+}
+
 generate_xray_config() {
     local servers_file="$1" server_idx="$2" config_file="$3" xport="${4:-1080}"
 
@@ -54,6 +77,10 @@ generate_xray_config() {
     local protocol host port_s
     protocol=$(echo "$server" | jq -r '.protocol // "vless"')
     host=$(echo "$server" | jq -r '.host')
+    # Dial the exit by IP, not by domain — see _resolve_server_ip. The SNI/Host
+    # (built from $sni below) keeps the original domain, so TLS/Reality/CDN-front
+    # are unaffected; only the TCP destination becomes a fixed IP.
+    host=$(_resolve_server_ip "$host")
     port_s=$(echo "$server" | jq -r '.port')
 
     # The proxy outbound, built per-protocol. The rest of the config (SOCKS
