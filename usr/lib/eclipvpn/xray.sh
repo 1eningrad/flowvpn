@@ -218,8 +218,12 @@ start_xray() {
     # Busy-poll (netstat-paced) instead of `sleep 1` — xray binds its SOCKS
     # inbound in well under a second; the cold exit handshake happens later in
     # test_xray, not here. ~300-iter cap ~= the old 10s budget.
-    local tries=0
-    while [ "$tries" -lt 300 ]; do
+    # Wall-clock deadline (not an iteration cap) — same rationale as start_singbox:
+    # a cold/loaded boot can starve xray's startup so :1080 binds slower than the
+    # old ~10s iter budget, failing the bring-up and forcing a full init.d restart.
+    # 30s is generous for a cold bind; a warm switch still returns in ~0.3s.
+    local deadline; deadline=$(( $(date +%s) + 30 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
         if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
             rm -f "$pidfile"
             return 1
@@ -227,7 +231,6 @@ start_xray() {
         if netstat -tlnp 2>/dev/null | grep -q ":$xport "; then
             return 0
         fi
-        tries=$((tries + 1))
     done
     # Process alive but socks port never bound. Don't return success — the
     # caller would then apply nftables tproxy rules pointing at an unbound

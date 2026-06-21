@@ -485,11 +485,17 @@ start_singbox() {
     # second (~0.3s measured) — the old 1s granularity DOMINATED the switch gap.
     # The netstat call itself paces the loop; the ~300-iter cap bounds it to
     # roughly the old 10s budget for a genuinely slow start.
-    local tries=0
-    while [ "$tries" -lt 300 ]; do
+    # Wall-clock deadline, NOT an iteration cap: the netstat-paced loop's speed
+    # swings with system load, and on a COLD BOOT sing-box needs ~10-20s to bind
+    # :2154 (CPU-starved loading the .srs rule-sets while nft_tproxy / fw4 still
+    # settle). The old ~300-iter (~10s) cap gave up too early, so _tunnel_bringup
+    # failed and init.d re-ran the WHOLE start — stacking to a ~2min boot. 30s is
+    # ample for the slow cold bind; the happy path (warm switch) still returns the
+    # instant the port appears (~0.3s), so switches are unaffected.
+    local deadline; deadline=$(( $(date +%s) + 30 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
         kill -0 "$(cat /tmp/eclipvpn/singbox.pid)" 2>/dev/null || { rm -f /tmp/eclipvpn/singbox.pid; return 1; }
         netstat -tlnp 2>/dev/null | grep -q ":2154 " && return 0
-        tries=$((tries + 1))
     done
     # Process alive but tproxy port never bound. Caller (cmd_start) would
     # otherwise apply nftables rules redirecting LAN traffic to an unbound
