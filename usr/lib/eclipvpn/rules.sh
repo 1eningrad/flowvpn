@@ -593,11 +593,21 @@ EOF
 # mobile modem that blackholes their hosting subnets) but the VPN exit CAN —
 # so geosite-ru would strand them on the dead direct path. This preset force-
 # routes them through the VPN instead (works in both all_vpn and blocklist),
-# the override RU-direct cure for non-app services that don't geo-block a
-# foreign exit. Confirmed: direct=000, via-VPN=200. Bank *apps* are deliberately
-# NOT here — they geo-block a foreign IP, so the tunnel doesn't help them.
+# the override RU-direct cure. All confirmed direct=000 (or 403), via-VPN=2xx/3xx.
+# CAVEAT on banks: their WEBSITES load fine via the foreign exit, but their
+# APPS may still geo-block a foreign IP at login (app-layer, nothing routing can
+# fix) — the tunnel is just the only path that reaches them at all on this uplink.
+# Gazprombank is intentionally absent: it returns 403 even via VPN (geo-blocks
+# the foreign exit outright), so routing it through the tunnel changes nothing.
+# Payments
 yookassa.ru
 yoomoney.ru
+# Banks (websites reachable via VPN; apps may geo-block)
+sberbank.ru
+vtb.ru
+tbank.ru
+tinkoff.ru
+alfabank.ru
 EOF
             ;;
         *) return 1 ;;
