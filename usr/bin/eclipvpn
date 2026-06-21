@@ -414,6 +414,32 @@ _active_socks_port() {
     if [ "$(_selected_engine)" = "singbox" ]; then echo 1080; else _active_xray_port; fi
 }
 
+# THE single direct→tunnel fetch primitive. Every router-ORIGINATED download
+# (subscriptions, blocklist lists, .srs rule-sets) must go through this so none
+# can silently miss the fallback — the bug that left blocklist + RU-direct dead
+# (the router's own traffic bypasses tproxy/mark 0x8000 and exits the raw WAN,
+# which blackholes GitHub on some uplinks like MTS, while the VPN exit reaches
+# it fine). Fetch <url> → <dest> DIRECT; if that fails AND the tunnel is up,
+# retry through the live SOCKS exit. Always FILE-based (-o): binary-safe for the
+# .srs blobs and never buffers a multi-MB body in a shell var. Extra curl args
+# (auth headers, --dump-header) pass through via "$@"; --max-filesize caps RAM.
+# Short direct timeout (10s) so a blackholed WAN fails fast before the retry.
+# The CALLER validates the result file (parseable / line count / SRS magic) and
+# passes any per-fetch flags via "$@" — notably `-L` (follow redirects: the
+# blocklist IP lists 302 through github releases and NEED it; subscriptions
+# deliberately do NOT, to inspect a panel's landing-page redirect themselves).
+# This owns transport only. Returns the winning attempt's curl rc (0 = ok).
+_router_fetch() {
+    local url="$1" dest="$2"; shift 2
+    local rc
+    curl -fsS --max-time 10 --max-filesize 8000000 "$@" -o "$dest" "$url" 2>/dev/null; rc=$?
+    if [ "$rc" -ne 0 ] && _vpn_running 2>/dev/null; then
+        curl -fsS --max-time 40 --max-filesize 8000000 \
+            --socks5-hostname "127.0.0.1:$(_active_socks_port)" "$@" -o "$dest" "$url" 2>/dev/null; rc=$?
+    fi
+    return "$rc"
+}
+
 # The alternate xray port to STAGE a new exit on, given the current active xray
 # port and the OLD tunnel's engine. Old hysteria2 owns 1080 => stage on 1081;
 # otherwise whichever of 1080/1081 the live xray is not using.

@@ -73,30 +73,22 @@ _sub_curl() {
     [ -z "$model" ] && model=$(cat /tmp/sysinfo/board_name 2>/dev/null)
     [ -z "$model" ] && model="OpenWrt Router"
     local hwid; hwid=$(_get_hwid)
-    # NB: the body is buffered into $out (not streamed) so we can inspect the exit
-    # code and retry through SOCKS below. Fine for real subs (~100KB); --max-filesize
-    # 8M is the hard ceiling, so a pathological body can't blow up RAM unbounded.
-    local out rc
-    out=$(curl -fsS --max-time 15 --max-filesize 8000000 --proto '=http,https' \
+    # Fetch via the shared _router_fetch primitive (the ONE place the direct→
+    # tunnel fallback lives — so a vercel-hosted panel blocked from RU still
+    # loads through the live SOCKS exit). It's file-based, so stage the body in a
+    # temp and emit it; the device-identity headers + response-header dump ("$2")
+    # pass straight through. No -L: a panel's landing-page redirect is inspected
+    # by the caller, not auto-followed. --proto restricts to http/https.
+    local tmp="${ECLIPVPN_TMP:-/tmp/eclipvpn}/.subfetch.$$"
+    mkdir -p "${ECLIPVPN_TMP:-/tmp/eclipvpn}" 2>/dev/null
+    local rc
+    _router_fetch "$1" "$tmp" --proto '=http,https' \
         -A "EclipVPN/${ECLIPVPN_VERSION}" \
         -H "X-HWID: $hwid" -H "X-Device-OS: OpenWrt" \
         -H "X-Ver-OS: $os_ver" -H "X-Device-Model: $model" \
-        --dump-header "$2" "$1"); rc=$?
-    # If the panel host is unreachable DIRECTLY (e.g. a vercel-hosted sub blocked
-    # from RU) but the VPN tunnel is already up, retry through the live SOCKS exit
-    # so blocked panels still load. _vpn_running/_active_socks_port are core
-    # helpers (usr/bin/eclipvpn); on a cold boot the tunnel isn't up yet during
-    # cmd_start's first fetch, so the init.d boot loop re-runs `update` once the
-    # tunnel is live (which then takes this path).
-    if [ "$rc" -ne 0 ] && _vpn_running 2>/dev/null; then
-        out=$(curl -fsS --max-time 25 --max-filesize 8000000 --proto '=http,https' \
-            --socks5-hostname "127.0.0.1:$(_active_socks_port)" \
-            -A "EclipVPN/${ECLIPVPN_VERSION}" \
-            -H "X-HWID: $hwid" -H "X-Device-OS: OpenWrt" \
-            -H "X-Ver-OS: $os_ver" -H "X-Device-Model: $model" \
-            --dump-header "$2" "$1"); rc=$?
-    fi
-    printf '%s' "$out"
+        --dump-header "$2"; rc=$?
+    cat "$tmp" 2>/dev/null
+    rm -f "$tmp"
     return "$rc"
 }
 

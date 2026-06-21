@@ -109,30 +109,16 @@ _fetch_one_srs() {
         return 0
     fi
     local tmp="${dest}.tmp.$$"
-    local port; port=$(_active_socks_port 2>/dev/null); [ -z "$port" ] && port=1080
-    # Bounded cold-boot budget: 3 tries x ~11s = ~33s/file (~66s for both),
-    # down from 5x22s. This runs synchronously inside generate_singbox_config
-    # before sing-box launches, so a long retry loop looks like a hang during
-    # cmd_start and can blow past init.d/watchdog expectations.
+    # Bounded cold-boot budget: 3 tries. This runs synchronously inside
+    # generate_singbox_config before sing-box launches, so a long retry loop looks
+    # like a hang during cmd_start. Each try goes through _router_fetch (direct →
+    # tunnel fallback, the shared primitive) — file-based, so .srs stays binary-
+    # safe (a shell-var capture would corrupt it). _is_valid_srs (>1KB + "SRS"
+    # magic) rejects a 200-status CAPTCHA/intercept page so garbage never gets
+    # mv'd into the PERSISTENT /etc cache (which the cache-wins gate would pin).
     local i=0
     while [ "$i" -lt 3 ]; do
-        # Try DIRECT, then (if the tunnel is up) retry through the live SOCKS exit
-        # — the router's rule fetch exits the raw WAN, which blackholes GitHub on
-        # some uplinks (MTS) while the VPN exit reaches it. Unlike the text lists
-        # this stays on `curl -o` (NOT _rule_curl): .srs is BINARY and a shell-var
-        # capture would corrupt it. _is_valid_srs guards both: a real rule-set
-        # starts with magic bytes "SRS" (0x53 52 53) and is >1KB, so a 200-status
-        # CAPTCHA/intercept page never gets mv'd into the PERSISTENT /etc cache
-        # (which the cache-wins check would then pin, failing every later start).
-        if curl -fsSL --max-time 10 --max-filesize 8000000 -o "$tmp" "$url" 2>/dev/null \
-           && _is_valid_srs "$tmp"; then
-            mv "$tmp" "$dest"; return 0
-        fi
-        rm -f "$tmp"
-        if _vpn_running 2>/dev/null \
-           && curl -fsSL --max-time 25 --max-filesize 8000000 \
-                --socks5-hostname "127.0.0.1:$port" -o "$tmp" "$url" 2>/dev/null \
-           && _is_valid_srs "$tmp"; then
+        if _router_fetch "$url" "$tmp" -L && _is_valid_srs "$tmp"; then
             mv "$tmp" "$dest"; return 0
         fi
         rm -f "$tmp"
@@ -611,39 +597,16 @@ _preset_names() {
     echo "youtube spotify twitter instagram facebook tiktok reddit"
 }
 
-# Fetch a rules URL with a SOCKS-through-tunnel fallback. The router's OWN
-# traffic bypasses tproxy (mark 0x8000), so a rule fetch goes out the RAW WAN —
-# and on some uplinks (MTS mobile, observed 2026-06-21) raw.githubusercontent is
-# unreachable on that direct path (rc=000) while perfectly reachable via the VPN
-# exit (the LAN's tunneled traffic gets there fine, e.g. GitHub opens on a LAN
-# Mac). So: try direct, and if it fails AND the tunnel is up, retry through the
-# live SOCKS port. Mirrors subscriptions.sh::_sub_curl. Body → stdout, returns rc.
-# On a cold boot the tunnel isn't up during the first refresh; cmd_update re-runs
-# once it is (and blocklist mode's set-mode re-fetch then takes this path).
-_rule_curl() {
-    local url="$1"; shift
-    local out rc
-    # Short direct timeout (10s, not 30): on an uplink that blackholes GitHub
-    # (MTS) the direct attempt would otherwise hang the full 30s PER list — five
-    # lists = ~2.5min of dead wait before each SOCKS retry. 10s is plenty for a
-    # working direct fetch; the SOCKS retry keeps the generous 40s.
-    out=$(curl -fsSL --max-time 10 --max-filesize 8000000 "$@" "$url" 2>/dev/null); rc=$?
-    if [ "$rc" -ne 0 ] && _vpn_running 2>/dev/null; then
-        out=$(curl -fsSL --max-time 40 --max-filesize 8000000 \
-            --socks5-hostname "127.0.0.1:$(_active_socks_port)" "$@" "$url" 2>/dev/null); rc=$?
-    fi
-    printf '%s' "$out"
-    return "$rc"
-}
-
-# Fetch <url> into <dest>, but swap in only a NON-EMPTY body (direct→SOCKS
-# fallback via _rule_curl) so a blocked/failed fetch never clobbers a good
-# cached list with an empty file.
+# Fetch <url> into <dest>, swapping in only a NON-EMPTY body so a blocked/failed
+# fetch never clobbers a good cached list with an empty file. Built on the shared
+# _router_fetch primitive (the ONE place the direct→tunnel fallback lives), so
+# these lists load even when the router's direct path can't reach GitHub. -L:
+# the github.com/.../releases/latest/download URLs 302 to objects.githubusercontent
+# — without it curl writes the empty redirect body and the IP-CIDR rules never load.
 _rule_fetch_to() {
     local dest="$1" url="$2"
     local tmp="$dest.new.$$"
-    _rule_curl "$url" > "$tmp"
-    if [ -s "$tmp" ]; then mv "$tmp" "$dest"; else rm -f "$tmp"; fi
+    if _router_fetch "$url" "$tmp" -L && [ -s "$tmp" ]; then mv "$tmp" "$dest"; else rm -f "$tmp"; fi
 }
 
 _fetch_blocklist_domains() {
@@ -675,9 +638,13 @@ _fetch_blocklist_domains() {
     # the line count, swap only on success. -fsS also drops HTTP error pages
     # (>50-line CAPTCHA/block pages would otherwise pass the count gate).
     local tmp_dl="$SR_RULES_DIR/domains.list.new"
-    _rule_curl "$url" | \
+    local tmp_raw="$SR_RULES_DIR/domains.raw.$$"
+    : > "$tmp_dl"
+    if _router_fetch "$url" "$tmp_raw"; then
         awk 'NF && !/^#/ && !/^!/ {gsub(/[[:space:]]+/, "", $0); if(length($0)) print "DOMAIN-SUFFIX," $0}' \
-        > "$tmp_dl"
+            "$tmp_raw" > "$tmp_dl"
+    fi
+    rm -f "$tmp_raw"
     local cnt=$(wc -l < "$tmp_dl" 2>/dev/null)
     [ -z "$cnt" ] && cnt=0
     if [ "$cnt" -ge 50 ]; then
@@ -690,11 +657,11 @@ _fetch_blocklist_domains() {
     # Telegram + Discord lists supplement domain-based routing for these
     # specific apps (their domain routing alone is unreliable due to
     # CDN sharding). Both are well-maintained.
-    # Same direct→SOCKS fallback (via _rule_fetch_to) so these load on an uplink
-    # where the router's direct path can't reach GitHub. _rule_curl already
-    # passes -L, so the github.com/.../releases/latest/download/ → objects.github
-    # 302 is followed (without it curl writes the empty redirect body and the
-    # Meta/Telegram IP-CIDR bypass rules silently never load).
+    # Same direct→tunnel fallback (via _rule_fetch_to → _router_fetch) so these
+    # load on an uplink where the router's direct path can't reach GitHub.
+    # _rule_fetch_to passes -L, so the github.com/.../releases/latest/download/ →
+    # objects.github 302 is followed (without it curl writes the empty redirect
+    # body and the Meta/Telegram IP-CIDR bypass rules silently never load).
     _rule_fetch_to "$SR_RULES_DIR/telegram.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Telegram/Telegram.list"
     _rule_fetch_to "$SR_RULES_DIR/discord.list" \
