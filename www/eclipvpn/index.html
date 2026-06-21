@@ -1368,14 +1368,14 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="vpnCardBody">
             <div>
               <div class="card-title">Принудительно через VPN</div>
-              <p class="card-desc" style="margin:3px 0 0">Всегда шифровать эти сайты, даже если они в списке РФ</p>
+              <p class="card-desc" style="margin:3px 0 0">Всегда через VPN, даже если сайт в списке РФ. Сюда же добавляй РФ-сайты, которые не открываются напрямую (банк, оплата)</p>
             </div>
             <div class="stat-num" id="vpnCount" style="color:var(--accent);font-size:13px">0</div>
           </div>
           <div class="card-collapsible-body" id="vpnCardBody">
             <div class="domains" id="vpnDomains"></div>
             <div class="flex mt">
-              <input class="input flex-1" id="addVpnInput" placeholder="например: chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
+              <input class="input flex-1" id="addVpnInput" placeholder="например: sberbank.ru или chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
               <button class="btn btn-ghost btn-sm" onclick="addDomain('vpn')">Добавить</button>
             </div>
           </div>
