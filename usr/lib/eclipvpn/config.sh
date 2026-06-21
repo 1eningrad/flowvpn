@@ -331,15 +331,7 @@ cmd_set_device_route() {
         echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
     fi
     update_config '.device_rules[$id] = $r' --arg id "$id" --arg r "$route"
-    # Rebuild nftables if running
-    if is_singbox_running; then
-        local iface=$(get_config_val interface "br-lan")
-        # Serialize the nft delete+rebuild against a watchdog failover (cmd_start
-        # also rebuilds the table) — two concurrent rebuilds leave a half-built
-        # table. The rule is already saved; if the op-lock is held, skip the
-        # in-place rebuild (it applies on the next (re)start) rather than race.
-        if _op_begin; then setup_network 2154 32768 "$iface"; _op_end; fi
-    fi
+    _apply_device_rules
     echo "{\"status\":\"device route set\",\"id\":\"$id\",\"route\":\"$route\"}"
 }
 cmd_remove_device_route() {
@@ -352,15 +344,27 @@ cmd_remove_device_route() {
         echo '{"error":"id must be a valid IPv4 or MAC address"}'; return 1
     fi
     update_config 'del(.device_rules[$id])' --arg id "$id"
-    if is_singbox_running; then
-        local iface=$(get_config_val interface "br-lan")
-        # Serialize the nft delete+rebuild against a watchdog failover (cmd_start
-        # also rebuilds the table) — two concurrent rebuilds leave a half-built
-        # table. The rule is already saved; if the op-lock is held, skip the
-        # in-place rebuild (it applies on the next (re)start) rather than race.
-        if _op_begin; then setup_network 2154 32768 "$iface"; _op_end; fi
-    fi
+    _apply_device_rules
     echo "{\"status\":\"device route removed\",\"id\":\"$id\"}"
+}
+
+# Apply a device_rules change to BOTH layers it touches. A `direct` rule is an
+# nftables tproxy-bypass (setup_network); a `vpn` rule (force a device through
+# the tunnel even toward geoip-ru destinations — e.g. a Hik-Connect camera whose
+# P2P node geo-resolves as RU) is a singbox source_ip_cidr→default route rule,
+# regenerated only when the config is rebuilt. The old path rebuilt nft ONLY, so
+# `vpn` device rules silently never took effect until a manual restart (the
+# camera "not showing" bug, 2026-06-21). Rebuild nft for `direct`, then soft-
+# restart so singbox.json picks up `vpn`. No-op when the tunnel is down — both
+# layers are rebuilt from config on the next start anyway.
+_apply_device_rules() {
+    _vpn_running || return 0
+    local iface; iface=$(get_config_val interface "br-lan")
+    # Serialize the nft delete+rebuild against a watchdog failover; if the op-lock
+    # is held, skip the in-place rebuild (it applies on the next (re)start).
+    if _op_begin; then setup_network 2154 32768 "$iface"; _op_end; fi
+    # Regenerate singbox.json so a `vpn` source_ip_cidr rule takes effect now.
+    cmd_restart >/dev/null 2>&1
 }
 cmd_set_wifi() {
     local ssid="$1" password="$2"
