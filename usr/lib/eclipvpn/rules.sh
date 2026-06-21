@@ -588,13 +588,25 @@ redditmedia.com
 redditstatic.com
 EOF
             ;;
+        ru_vpn) cat <<'EOF'
+# RU services that the DIRECT path can't reach on a broken uplink (e.g. an MTS
+# mobile modem that blackholes their hosting subnets) but the VPN exit CAN —
+# so geosite-ru would strand them on the dead direct path. This preset force-
+# routes them through the VPN instead (works in both all_vpn and blocklist),
+# the override RU-direct cure for non-app services that don't geo-block a
+# foreign exit. Confirmed: direct=000, via-VPN=200. Bank *apps* are deliberately
+# NOT here — they geo-block a foreign IP, so the tunnel doesn't help them.
+yookassa.ru
+yoomoney.ru
+EOF
+            ;;
         *) return 1 ;;
     esac
 }
 
 # Authoritative preset name list. Order = display order in UI.
 _preset_names() {
-    echo "youtube spotify twitter instagram facebook tiktok reddit"
+    echo "youtube spotify twitter instagram facebook tiktok reddit ru_vpn"
 }
 
 # Fetch <url> into <dest>, swapping in only a NON-EMPTY body so a blocked/failed
