@@ -86,6 +86,16 @@ _fetch_rule_sets() {
     _fetch_one_srs "$RULESET_DIR/ru.srs"                  "$GEOIP_RU_URL"   "$force" || return 1
 }
 
+# A freshly-FETCHED .srs is valid only if it's >1KB AND starts with the magic
+# bytes "SRS" (0x53 0x52 0x53) — rejects a 200-status CAPTCHA/intercept page.
+# NB: this is stricter than the cache-wins gate in _fetch_one_srs, which
+# deliberately accepts the ~17-byte EMPTY fallback (magic bytes only, no size
+# floor) so a degraded-but-valid cache still wins over a re-fetch.
+_is_valid_srs() {
+    [ -s "$1" ] && [ "$(wc -c < "$1")" -gt 1024 ] \
+        && [ "$(dd if="$1" bs=1 count=3 2>/dev/null)" = "SRS" ]
+}
+
 _fetch_one_srs() {
     local dest="$1" url="$2" force="$3"
     # An existing VALID cache wins unless the caller forces a refresh. Gate on the
@@ -99,22 +109,31 @@ _fetch_one_srs() {
         return 0
     fi
     local tmp="${dest}.tmp.$$"
+    local port; port=$(_active_socks_port 2>/dev/null); [ -z "$port" ] && port=1080
     # Bounded cold-boot budget: 3 tries x ~11s = ~33s/file (~66s for both),
     # down from 5x22s. This runs synchronously inside generate_singbox_config
     # before sing-box launches, so a long retry loop looks like a hang during
     # cmd_start and can blow past init.d/watchdog expectations.
     local i=0
     while [ "$i" -lt 3 ]; do
-        # Validate it's actually a sing-box rule-set, not a 200-status
-        # interception/CAPTCHA page >1KB: every .srs starts with the magic
-        # bytes "SRS" (0x53 0x52 0x53). Without this a garbage page gets mv'd
-        # into the PERSISTENT /etc cache, the cache-wins check then pins it,
-        # and sing-box fails rule-set load on every start until manual deletion.
+        # Try DIRECT, then (if the tunnel is up) retry through the live SOCKS exit
+        # — the router's rule fetch exits the raw WAN, which blackholes GitHub on
+        # some uplinks (MTS) while the VPN exit reaches it. Unlike the text lists
+        # this stays on `curl -o` (NOT _rule_curl): .srs is BINARY and a shell-var
+        # capture would corrupt it. _is_valid_srs guards both: a real rule-set
+        # starts with magic bytes "SRS" (0x53 52 53) and is >1KB, so a 200-status
+        # CAPTCHA/intercept page never gets mv'd into the PERSISTENT /etc cache
+        # (which the cache-wins check would then pin, failing every later start).
         if curl -fsSL --max-time 10 --max-filesize 8000000 -o "$tmp" "$url" 2>/dev/null \
-           && [ -s "$tmp" ] && [ "$(wc -c < "$tmp")" -gt 1024 ] \
-           && [ "$(dd if="$tmp" bs=1 count=3 2>/dev/null)" = "SRS" ]; then
-            mv "$tmp" "$dest"
-            return 0
+           && _is_valid_srs "$tmp"; then
+            mv "$tmp" "$dest"; return 0
+        fi
+        rm -f "$tmp"
+        if _vpn_running 2>/dev/null \
+           && curl -fsSL --max-time 25 --max-filesize 8000000 \
+                --socks5-hostname "127.0.0.1:$port" -o "$tmp" "$url" 2>/dev/null \
+           && _is_valid_srs "$tmp"; then
+            mv "$tmp" "$dest"; return 0
         fi
         rm -f "$tmp"
         i=$((i + 1))
