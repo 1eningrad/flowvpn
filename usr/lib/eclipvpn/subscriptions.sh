@@ -303,14 +303,7 @@ update_subscription() {
     # LAST-known servers survive a reboot and the fetch-then-swap "keep previous
     # cache" path has something to keep. Periodic/manual updates still refresh them
     # (through the live tunnel via _sub_curl's SOCKS fallback when direct is blocked).
-    local _scache; _scache="$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/subcache"
-    mkdir -p "$_scache" 2>/dev/null
-    local _pf _bn
-    for _pf in "$_scache"/sub.*.servers.json; do
-        [ -e "$_pf" ] || continue
-        _bn=$(basename "$_pf")
-        [ -s "/tmp/eclipvpn/$_bn" ] || { cp "$_pf" "/tmp/eclipvpn/$_bn" 2>/dev/null; chmod 600 "/tmp/eclipvpn/$_bn" 2>/dev/null; }
-    done
+    _restore_subcache
 
     # Enabled subscriptions, in config order. Back-compat: an un-migrated config
     # reaching here directly falls back to the single legacy subscription_url.
@@ -444,6 +437,23 @@ _apply_server_filter() {
     else
         printf '%s' "$input"
     fi
+}
+
+# Restore the PERSISTENT /etc subcache into /tmp (wiped on reboot) so the offline
+# merge and the fetch-then-swap "keep previous cache" path have the last-known
+# per-sub servers to work with. Idempotent: only fills a MISSING /tmp copy, never
+# clobbers a fresher one. No network. Called at the top of update_subscription
+# AND directly by cmd_start for the cold-boot offline path.
+_restore_subcache() {
+    local scache; scache="$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/subcache"
+    local tmp="${ECLIPVPN_TMP:-/tmp/eclipvpn}"
+    mkdir -p "$scache" "$tmp" 2>/dev/null
+    local pf bn
+    for pf in "$scache"/sub.*.servers.json; do
+        [ -e "$pf" ] || continue
+        bn=$(basename "$pf")
+        [ -s "$tmp/$bn" ] || { cp "$pf" "$tmp/$bn" 2>/dev/null; chmod 600 "$tmp/$bn" 2>/dev/null; }
+    done
 }
 
 # Re-merge the enabled subs' EXISTING per-sub caches into servers.json with NO

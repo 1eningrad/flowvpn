@@ -111,10 +111,19 @@ cmd_start() {
     fi
     flog "Starting EclipVPN (mode=$mode)"
 
-    # Step 1: Fetch servers
+    # Step 1: Fetch servers. Cold boot wiped /tmp/servers.json. Prefer an OFFLINE
+    # restore (subcache → merge, no network) over update_subscription's fetch:
+    # at boot the tunnel isn't up yet, so a direct fetch to the panel can't
+    # succeed (blocked WAN, no SOCKS fallback) and just burns ~60s of timeouts
+    # before falling back to the same cache anyway. The fresh fetch is deferred to
+    # the post-boot `update` (auto-update / manual / watchdog), which runs once the
+    # tunnel can reach the panel through SOCKS. First install (no cache) → the
+    # merge yields 0 servers → fall back to the online fetch, which must succeed.
     if [ ! -f "$ECLIPVPN_TMP/servers.json" ]; then
         local count
-        count=$(update_subscription "$ECLIPVPN_CONFIG")
+        _restore_subcache
+        count=$(_merge_sub_pool "$ECLIPVPN_CONFIG")
+        [ "${count:-0}" -gt 0 ] 2>/dev/null || count=$(update_subscription "$ECLIPVPN_CONFIG")
         [ "$count" -gt 0 ] 2>/dev/null || { echo '{"error":"subscription failed"}'; return 1; }
     fi
 
