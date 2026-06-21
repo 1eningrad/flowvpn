@@ -72,13 +72,32 @@ _sub_curl() {
     model=$(cat /tmp/sysinfo/model 2>/dev/null | sed 's/ *(.*$//; s/[[:space:]]*$//')
     [ -z "$model" ] && model=$(cat /tmp/sysinfo/board_name 2>/dev/null)
     [ -z "$model" ] && model="OpenWrt Router"
-    curl -fsS --max-time 15 --max-filesize 8000000 --proto '=http,https' \
+    local hwid; hwid=$(_get_hwid)
+    # NB: the body is buffered into $out (not streamed) so we can inspect the exit
+    # code and retry through SOCKS below. Fine for real subs (~100KB); --max-filesize
+    # 8M is the hard ceiling, so a pathological body can't blow up RAM unbounded.
+    local out rc
+    out=$(curl -fsS --max-time 15 --max-filesize 8000000 --proto '=http,https' \
         -A "EclipVPN/${ECLIPVPN_VERSION}" \
-        -H "X-HWID: $(_get_hwid)" \
-        -H "X-Device-OS: OpenWrt" \
-        -H "X-Ver-OS: $os_ver" \
-        -H "X-Device-Model: $model" \
-        --dump-header "$2" "$1"
+        -H "X-HWID: $hwid" -H "X-Device-OS: OpenWrt" \
+        -H "X-Ver-OS: $os_ver" -H "X-Device-Model: $model" \
+        --dump-header "$2" "$1"); rc=$?
+    # If the panel host is unreachable DIRECTLY (e.g. a vercel-hosted sub blocked
+    # from RU) but the VPN tunnel is already up, retry through the live SOCKS exit
+    # so blocked panels still load. _vpn_running/_active_socks_port are core
+    # helpers (usr/bin/eclipvpn); on a cold boot the tunnel isn't up yet during
+    # cmd_start's first fetch, so the init.d boot loop re-runs `update` once the
+    # tunnel is live (which then takes this path).
+    if [ "$rc" -ne 0 ] && _vpn_running 2>/dev/null; then
+        out=$(curl -fsS --max-time 25 --max-filesize 8000000 --proto '=http,https' \
+            --socks5-hostname "127.0.0.1:$(_active_socks_port)" \
+            -A "EclipVPN/${ECLIPVPN_VERSION}" \
+            -H "X-HWID: $hwid" -H "X-Device-OS: OpenWrt" \
+            -H "X-Ver-OS: $os_ver" -H "X-Device-Model: $model" \
+            --dump-header "$2" "$1"); rc=$?
+    fi
+    printf '%s' "$out"
+    return "$rc"
 }
 
 fetch_subscription() {
@@ -285,6 +304,22 @@ update_subscription() {
     local config="$1"
     mkdir -p /tmp/eclipvpn
 
+    # Persistent server-cache. /tmp is wiped on every reboot, so a subscription
+    # whose panel host can't be fetched DIRECTLY (e.g. a vercel-hosted sub blocked
+    # from RU) would come back EMPTY after a power-cycle. We mirror each parsed
+    # per-sub cache to /etc (below) and restore any missing /tmp copy here, so the
+    # LAST-known servers survive a reboot and the fetch-then-swap "keep previous
+    # cache" path has something to keep. Periodic/manual updates still refresh them
+    # (through the live tunnel via _sub_curl's SOCKS fallback when direct is blocked).
+    local _scache; _scache="$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/subcache"
+    mkdir -p "$_scache" 2>/dev/null
+    local _pf _bn
+    for _pf in "$_scache"/sub.*.servers.json; do
+        [ -e "$_pf" ] || continue
+        _bn=$(basename "$_pf")
+        [ -s "/tmp/eclipvpn/$_bn" ] || { cp "$_pf" "/tmp/eclipvpn/$_bn" 2>/dev/null; chmod 600 "/tmp/eclipvpn/$_bn" 2>/dev/null; }
+    done
+
     # Enabled subscriptions, in config order. Back-compat: an un-migrated config
     # reaching here directly falls back to the single legacy subscription_url.
     local subs
@@ -349,6 +384,8 @@ update_subscription() {
                     'map(. + {sub_id:$sid, sub_name:$sname})' "$newc" > "$cache.tmp" ) \
                     && mv "$cache.tmp" "$cache" || rm -f "$cache.tmp"
                 chmod 600 "$cache" 2>/dev/null
+                # Mirror to the persistent cache so these servers survive a reboot.
+                [ -s "$cache" ] && { cp "$cache" "$_scache/" 2>/dev/null; chmod 600 "$_scache/$(basename "$cache")" 2>/dev/null; }
             else
                 logger -t eclipvpn "Subscription[$sname]: parsed 0 servers — keeping previous cache"
             fi
@@ -513,6 +550,11 @@ cmd_sub() {
                  | .subscription_url = ((.subscriptions[0].url) // "")' \
                 --arg id "$id" || { echo '{"error":"save failed"}'; return 1; }
             rm -f "$ECLIPVPN_TMP/sub.$id.servers.json" "$ECLIPVPN_TMP/sub.$id.servers.json.tmp" "$ECLIPVPN_TMP/sub.$id.body" "$ECLIPVPN_TMP/sub.$id.servers.new"
+            # Drop the PERSISTENT mirror too (see update_subscription's subcache):
+            # otherwise the removed provider's last servers survive a reboot in
+            # /etc/.../subcache, get restored into /tmp, and a later re-add of the
+            # same URL (same id) briefly shows stale nodes before the fresh fetch.
+            rm -f "$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/subcache/sub.$id.servers.json"
             # Prune the provider's keyed metadata too, so removed subs don't leak
             # dead entries in subscription_meta.json (atomic write).
             local mf="$ECLIPVPN_TMP/subscription_meta.json"
