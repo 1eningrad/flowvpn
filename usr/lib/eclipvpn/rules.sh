@@ -592,6 +592,37 @@ _preset_names() {
     echo "youtube spotify twitter instagram facebook tiktok reddit"
 }
 
+# Fetch a rules URL with a SOCKS-through-tunnel fallback. The router's OWN
+# traffic bypasses tproxy (mark 0x8000), so a rule fetch goes out the RAW WAN —
+# and on some uplinks (MTS mobile, observed 2026-06-21) raw.githubusercontent is
+# unreachable on that direct path (rc=000) while perfectly reachable via the VPN
+# exit (the LAN's tunneled traffic gets there fine, e.g. GitHub opens on a LAN
+# Mac). So: try direct, and if it fails AND the tunnel is up, retry through the
+# live SOCKS port. Mirrors subscriptions.sh::_sub_curl. Body → stdout, returns rc.
+# On a cold boot the tunnel isn't up during the first refresh; cmd_update re-runs
+# once it is (and blocklist mode's set-mode re-fetch then takes this path).
+_rule_curl() {
+    local url="$1"; shift
+    local out rc
+    out=$(curl -fsSL --max-time 30 --max-filesize 8000000 "$@" "$url" 2>/dev/null); rc=$?
+    if [ "$rc" -ne 0 ] && _vpn_running 2>/dev/null; then
+        out=$(curl -fsSL --max-time 40 --max-filesize 8000000 \
+            --socks5-hostname "127.0.0.1:$(_active_socks_port)" "$@" "$url" 2>/dev/null); rc=$?
+    fi
+    printf '%s' "$out"
+    return "$rc"
+}
+
+# Fetch <url> into <dest>, but swap in only a NON-EMPTY body (direct→SOCKS
+# fallback via _rule_curl) so a blocked/failed fetch never clobbers a good
+# cached list with an empty file.
+_rule_fetch_to() {
+    local dest="$1" url="$2"
+    local tmp="$dest.new.$$"
+    _rule_curl "$url" > "$tmp"
+    if [ -s "$tmp" ]; then mv "$tmp" "$dest"; else rm -f "$tmp"; fi
+}
+
 _fetch_blocklist_domains() {
     # Source choice: a curated "actually-needs-bypass" list works better for
     # Russia than dumping the full RKN registry — RKN includes lots of
@@ -621,7 +652,7 @@ _fetch_blocklist_domains() {
     # the line count, swap only on success. -fsS also drops HTTP error pages
     # (>50-line CAPTCHA/block pages would otherwise pass the count gate).
     local tmp_dl="$SR_RULES_DIR/domains.list.new"
-    curl -fsS --max-time 30 --max-filesize 8000000 "$url" 2>/dev/null | \
+    _rule_curl "$url" | \
         awk 'NF && !/^#/ && !/^!/ {gsub(/[[:space:]]+/, "", $0); if(length($0)) print "DOMAIN-SUFFIX," $0}' \
         > "$tmp_dl"
     local cnt=$(wc -l < "$tmp_dl" 2>/dev/null)
@@ -636,16 +667,17 @@ _fetch_blocklist_domains() {
     # Telegram + Discord lists supplement domain-based routing for these
     # specific apps (their domain routing alone is unreliable due to
     # CDN sharding). Both are well-maintained.
-    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/telegram.list" \
+    # Same direct→SOCKS fallback (via _rule_fetch_to) so these load on an uplink
+    # where the router's direct path can't reach GitHub. _rule_curl already
+    # passes -L, so the github.com/.../releases/latest/download/ → objects.github
+    # 302 is followed (without it curl writes the empty redirect body and the
+    # Meta/Telegram IP-CIDR bypass rules silently never load).
+    _rule_fetch_to "$SR_RULES_DIR/telegram.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Telegram/Telegram.list"
-    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/discord.list" \
+    _rule_fetch_to "$SR_RULES_DIR/discord.list" \
         "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Shadowrocket/Discord/Discord.list"
-    # github.com/.../releases/latest/download/ ALWAYS 302-redirects to
-    # objects.githubusercontent.com — WITHOUT -L curl writes the empty redirect
-    # body, convert_ip_list emits nothing, and the Meta/Telegram IP-CIDR bypass
-    # rules silently never load. -f also drops error pages instead of caching them.
-    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/meta_ips.list" \
+    _rule_fetch_to "$SR_RULES_DIR/meta_ips.list" \
         "https://github.com/toneywhitez/zkeen_rules/releases/latest/download/meta_ips.list"
-    curl -fsSL --max-time 15 --max-filesize 8000000 -o "$SR_RULES_DIR/telegram_ips.list" \
+    _rule_fetch_to "$SR_RULES_DIR/telegram_ips.list" \
         "https://github.com/toneywhitez/zkeen_rules/releases/latest/download/telegram_ips.list"
 }
