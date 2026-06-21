@@ -604,7 +604,11 @@ _preset_names() {
 _rule_curl() {
     local url="$1"; shift
     local out rc
-    out=$(curl -fsSL --max-time 30 --max-filesize 8000000 "$@" "$url" 2>/dev/null); rc=$?
+    # Short direct timeout (10s, not 30): on an uplink that blackholes GitHub
+    # (MTS) the direct attempt would otherwise hang the full 30s PER list — five
+    # lists = ~2.5min of dead wait before each SOCKS retry. 10s is plenty for a
+    # working direct fetch; the SOCKS retry keeps the generous 40s.
+    out=$(curl -fsSL --max-time 10 --max-filesize 8000000 "$@" "$url" 2>/dev/null); rc=$?
     if [ "$rc" -ne 0 ] && _vpn_running 2>/dev/null; then
         out=$(curl -fsSL --max-time 40 --max-filesize 8000000 \
             --socks5-hostname "127.0.0.1:$(_active_socks_port)" "$@" "$url" 2>/dev/null); rc=$?
