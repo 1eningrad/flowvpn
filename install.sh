@@ -101,8 +101,26 @@ else
 fi
 # curl is a hard runtime dependency (subscription fetch, all probes, Clash
 # API, rule-set downloads) and is NOT in busybox base — it was missing here.
-$PKG_INSTALL jq curl ca-bundle coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed|Installed" || true
+# libcurl4 is listed EXPLICITLY (opkg only): the RouteRich 24.10.5 feed once
+# shipped curl 8.19 while leaving libcurl4 at 8.12, and opkg upgraded the
+# binary WITHOUT its lib — curl then died at load with `Error relocating ...
+# curl_multi_notify_enable: symbol not found`, and EVERY fetch failed silently
+# (subscription parsed to 0 servers). Naming libcurl4 forces the matching lib.
+CURL_LIB=""
+[ "$PKG_INSTALL" = "opkg install" ] && CURL_LIB="libcurl4"
+$PKG_INSTALL jq curl $CURL_LIB ca-bundle coreutils-base64 kmod-nft-tproxy sing-box 2>&1 | grep -E "Installing|installed|Installed" || true
 # Hard-verify mandatory binaries — the grep above can swallow a failed install.
+# NB: `command -v curl` is NOT enough — it passes even when the binary can't
+# load (broken lib). Actually RUN it, and self-heal a curl/libcurl version skew.
+if ! curl --version >/dev/null 2>&1; then
+    echo "  curl fails to load (curl/libcurl version skew?) — reinstalling libcurl4+curl"
+    if [ "$PKG_INSTALL" = "opkg install" ]; then
+        opkg install --force-reinstall libcurl4 curl >/dev/null 2>&1 || true
+    else
+        $PKG_INSTALL libcurl curl >/dev/null 2>&1 || true
+    fi
+    curl --version >/dev/null 2>&1 || { echo "ERROR: curl still cannot run after libcurl reinstall"; exit 1; }
+fi
 for b in jq curl sing-box; do
     command -v "$b" >/dev/null 2>&1 || { echo "ERROR: required dependency '$b' missing after install ($PKG_INSTALL)"; exit 1; }
 done

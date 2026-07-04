@@ -126,7 +126,22 @@ echo "[1/5] package deps (apk or opkg)"
 if command -v apk >/dev/null 2>&1; then PKG_INSTALL="apk add"; apk update >/dev/null 2>&1 || true
 elif command -v opkg >/dev/null 2>&1; then PKG_INSTALL="opkg install"; opkg update >/dev/null 2>&1 || true
 else echo "ERROR: no package manager (apk/opkg)"; exit 1; fi
-$PKG_INSTALL jq curl ca-bundle coreutils-base64 kmod-nft-tproxy sing-box unzip 2>&1 | grep -E "Installing|installed|Installed" || true
+# libcurl4 is named EXPLICITLY (opkg only): the RouteRich 24.10.5 feed once
+# shipped curl 8.19 with libcurl4 still at 8.12, and opkg upgraded the binary
+# WITHOUT its lib — curl then died at load (`Error relocating ...
+# curl_multi_notify_enable: symbol not found`) and EVERY fetch failed silently
+# (subscription parsed to 0 servers). Naming libcurl4 forces the matching lib.
+CURL_LIB=""
+[ "$PKG_INSTALL" = "opkg install" ] && CURL_LIB="libcurl4"
+$PKG_INSTALL jq curl $CURL_LIB ca-bundle coreutils-base64 kmod-nft-tproxy sing-box unzip 2>&1 | grep -E "Installing|installed|Installed" || true
+# `command -v curl` passes even when the binary can't load (broken lib) — RUN
+# it, and self-heal a curl/libcurl version skew before trusting the install.
+if ! curl --version >/dev/null 2>&1; then
+    echo "  curl fails to load (curl/libcurl version skew?) — reinstalling libcurl4+curl"
+    if [ "$PKG_INSTALL" = "opkg install" ]; then opkg install --force-reinstall libcurl4 curl >/dev/null 2>&1 || true
+    else $PKG_INSTALL libcurl curl >/dev/null 2>&1 || true; fi
+    curl --version >/dev/null 2>&1 || { echo "ERROR: curl still cannot run after libcurl reinstall"; exit 1; }
+fi
 for b in jq curl sing-box; do command -v "$b" >/dev/null 2>&1 || { echo "ERROR: dependency '$b' missing after install"; exit 1; }; done
 
 echo "[2/5] xray 26.4.17"
