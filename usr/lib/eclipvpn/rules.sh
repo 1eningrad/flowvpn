@@ -408,6 +408,21 @@ DOMAIN-SUFFIX,mindbox.cloud
 DOMAIN-SUFFIX,carrotquest.io
 # Office
 DOMAIN-SUFFIX,myoffice.ru
+# Steam (not an RU service, but fully reachable direct in RU — none of its
+# domains are in the RKN registry, verified vs itdoginfo/allow-domains
+# 2026-07-07 — and SteamPipe downloads have RU CDN nodes, so direct is far
+# faster than dragging multi-GB downloads through the VPN exit. dns-direct
+# (Yandex) resolution is what hands out those nearby CDN endpoints.)
+DOMAIN-SUFFIX,steampowered.com
+DOMAIN-SUFFIX,steamcommunity.com
+DOMAIN-SUFFIX,steamstatic.com
+DOMAIN-SUFFIX,steamcontent.com
+DOMAIN-SUFFIX,steamusercontent.com
+DOMAIN-SUFFIX,steamserver.net
+DOMAIN-SUFFIX,steam-chat.com
+DOMAIN-SUFFIX,steamgames.com
+DOMAIN-SUFFIX,s.team
+DOMAIN-SUFFIX,valvesoftware.com
 RUEOF
     } > "$SR_RULES_DIR/ru_domains.list"
 
