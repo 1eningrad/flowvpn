@@ -19,6 +19,39 @@ _sub_id_for_url() {
     printf '%s' "$1" | md5sum 2>/dev/null | cut -c1-8
 }
 
+# A "manual server" subscription: the entry's url IS a single proxy URI
+# (vless://…), not a fetchable panel URL. It rides the whole subscriptions[]
+# machinery (id, enable/disable/remove, merge, remap, UI) but is parsed locally
+# by parse_proxy_url — never fetched. Scheme set = parse_proxy_url's dispatcher.
+_is_proxy_uri() {
+    case "$1" in
+        vless://*|vmess://*|trojan://*|ss://*|hysteria2://*|hy2://*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# (Re)build the per-sub cache for a manual-server subscription: parse the URI,
+# tag sub_id/sub_name, write the cache atomically and mirror it to the
+# persistent subcache (same contract as update_subscription's fetch path, so
+# merge / reboot-restore treat manual and fetched subs identically). No network.
+# $1=sub id, $2=proxy URI, $3=sub name. Returns 1 if the URI doesn't parse.
+_manual_sub_cache() {
+    local sid="$1" uri="$2" sname="$3"
+    local tmp="${ECLIPVPN_TMP:-/tmp/eclipvpn}"
+    local scache; scache="$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/subcache"
+    mkdir -p "$tmp" "$scache" 2>/dev/null
+    local srv; srv=$(parse_proxy_url "$uri") || return 1
+    [ -z "$srv" ] && return 1
+    local cache="$tmp/sub.$sid.servers.json"
+    ( umask 077; printf '%s' "$srv" \
+        | jq -c --arg sid "$sid" --arg sname "$sname" '[ . + {sub_id:$sid, sub_name:$sname} ]' \
+        > "$cache.tmp" 2>/dev/null ) && [ -s "$cache.tmp" ] || { rm -f "$cache.tmp"; return 1; }
+    mv "$cache.tmp" "$cache"
+    chmod 600 "$cache" 2>/dev/null
+    cp "$cache" "$scache/" 2>/dev/null && chmod 600 "$scache/$(basename "$cache")" 2>/dev/null
+    return 0
+}
+
 # One-time migration: synthesize config.subscriptions[] from a legacy single
 # subscription_url. Idempotent — returns immediately once subscriptions[] is an
 # array, so it's cheap to call at every init. Runs before the dispatch case so
@@ -304,6 +337,10 @@ update_subscription() {
     # cache" path has something to keep. Periodic/manual updates still refresh them
     # (through the live tunnel via _sub_curl's SOCKS fallback when direct is blocked).
     _restore_subcache
+    # Mirror destination for freshly-parsed caches (regressed once: the refactor
+    # into _restore_subcache dropped this definition and the mirror cp silently
+    # targeted "/" — nothing survived a reboot).
+    local _scache; _scache="$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/subcache"
 
     # Enabled subscriptions, in config order. Back-compat: an un-migrated config
     # reaching here directly falls back to the single legacy subscription_url.
@@ -343,6 +380,14 @@ update_subscription() {
         i=$((i + 1))
         { [ -z "$sid" ] || [ "$sid" = "null" ] || [ -z "$surl" ] || [ "$surl" = "null" ]; } && continue
         surl=$(printf '%s' "$surl" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        # Manual-server sub: no fetch, no headers/meta — re-parse the URI locally
+        # (cheap + deterministic; also self-heals a wiped /tmp cache). A parse
+        # failure keeps the previous cache, same contract as a failed fetch.
+        if _is_proxy_uri "$surl"; then
+            _manual_sub_cache "$sid" "$surl" "$sname" \
+                || logger -t eclipvpn "Subscription[$sname]: manual server URI failed to parse — keeping previous cache"
+            continue
+        fi
         local body="/tmp/eclipvpn/sub.$sid.body"
         local cache="/tmp/eclipvpn/sub.$sid.servers.json"
         local newc="/tmp/eclipvpn/sub.$sid.servers.new"
@@ -479,9 +524,19 @@ _merge_sub_pool() {
     fi
     local merged="[]" i=0
     while [ "$i" -lt "$n" ]; do
-        local sid; sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id'); i=$((i + 1))
+        local sid surl
+        sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id')
+        surl=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].url // ""')
+        i=$((i + 1))
         { [ -z "$sid" ] || [ "$sid" = "null" ]; } && continue
         local cache="$tmp/sub.$sid.servers.json"
+        # A manual-server sub carries its whole "subscription" in the url — a
+        # missing cache (fresh /tmp, no subcache mirror) is rebuilt right here,
+        # offline, so manual servers can never vanish from the pool.
+        if [ ! -s "$cache" ] && _is_proxy_uri "$surl"; then
+            local sname; sname=$(printf '%s' "$subs" | jq -r --argjson i "$((i - 1))" '.[$i].name // ""')
+            _manual_sub_cache "$sid" "$surl" "$sname" || true
+        fi
         if [ -s "$cache" ] && jq -e 'type=="array"' "$cache" >/dev/null 2>&1; then
             local _m; _m=$(printf '%s' "$merged" | jq -c --slurpfile add "$cache" '. + $add[0]' 2>/dev/null)
             [ -n "$_m" ] && merged="$_m"
@@ -506,7 +561,7 @@ _merge_sub_pool() {
 # changes (re-fetch + soft restart; the fast path no-ops if the selected
 # server's config is unchanged, so adding a 2nd provider doesn't drop the tunnel).
 cmd_sub() {
-    local op="${1:-list}" arg2="$2" arg3="$3"
+    local op="${1:-list}" arg2="${2:-}" arg3="${3:-}"
     case "$op" in
         list)
             local meta='{}' counts='{}'
@@ -523,13 +578,31 @@ cmd_sub() {
         add)
             local url="$arg2" name="$arg3"
             [ -z "$url" ] && { echo '{"error":"url required"}'; return 1; }
-            case "$url" in https://*|http://*) ;; *) echo '{"error":"url must start with http:// or https://"}'; return 1 ;; esac
             url=$(printf '%s' "$url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            local manual=0
+            case "$url" in
+                https://*|http://*) ;;
+                *) _is_proxy_uri "$url" && manual=1 \
+                       || { echo '{"error":"url must start with http(s):// or be a vless/vmess/trojan/ss/hysteria2 server URI"}'; return 1; }
+                   ;;
+            esac
             local id; id=$(_sub_id_for_url "$url")
             [ -z "$id" ] && { echo '{"error":"could not derive id"}'; return 1; }
+            # Manual server: parse BEFORE saving anything, so a broken URI fails
+            # fast instead of leaving a dead entry. Default name = the server's
+            # own #fragment name; name_auto=false always (there is no panel
+            # title to adopt later).
+            local srv=""
+            if [ "$manual" = "1" ]; then
+                srv=$(parse_proxy_url "$url") && [ -n "$srv" ] \
+                    || { echo '{"error":"could not parse server URI — check the link"}'; return 1; }
+                [ -z "$name" ] && name=$(printf '%s' "$srv" | jq -r '.name // ""' 2>/dev/null)
+            fi
             # Idempotent by id. A user-supplied name pins name_auto=false (never
             # overridden by the panel title); no name ⇒ a placeholder + name_auto
             # =true, so update_subscription adopts the Profile-Title on fetch.
+            # subscription_url (legacy mirror) tracks the first FETCHABLE sub —
+            # a manual vless:// URI is not a subscription URL for old consumers.
             update_config '
                 .subscriptions = ((.subscriptions // []) as $s
                     | if ($s | map(.id) | index($id)) then
@@ -539,17 +612,29 @@ cmd_sub() {
                       else
                         ($s + [{id:$id,
                                 name:(if $name!="" then $name else "Подписка \(($s|length)+1)" end),
-                                url:$url, enabled:true, name_auto:($name=="")}])
+                                url:$url, enabled:true,
+                                name_auto:($name=="" and $manual=="0"),
+                                manual:($manual=="1")}])
                       end)
-                | .subscription_url = ((.subscriptions[0].url) // "")' \
-                --arg id "$id" --arg url "$url" --arg name "$name" || { echo '{"error":"save failed"}'; return 1; }
-            cmd_update >/dev/null 2>&1
-            jq -n --arg id "$id" '{status:"added", id:$id}'
+                | .subscription_url = (([.subscriptions[] | select((.url // "") | startswith("http"))] | .[0].url) // "")' \
+                --arg id "$id" --arg url "$url" --arg name "$name" --arg manual "$manual" \
+                || { echo '{"error":"save failed"}'; return 1; }
+            if [ "$manual" = "1" ]; then
+                # No fetch needed — build the single-server cache locally and
+                # re-merge offline (same cheap path as enable/remove).
+                _manual_sub_cache "$id" "$url" "$name" || { echo '{"error":"could not parse server URI — check the link"}'; return 1; }
+                local newc; newc=$(_merge_sub_pool "$ECLIPVPN_CONFIG")
+                [ "${newc:-0}" -gt 0 ] 2>/dev/null && _vpn_running && cmd_restart >/dev/null 2>&1
+            else
+                cmd_update >/dev/null 2>&1
+            fi
+            jq -n --arg id "$id" --argjson m "$([ "$manual" = "1" ] && echo true || echo false)" \
+                '{status:"added", id:$id, manual:$m}'
             ;;
         remove)
             local id="$arg2"; [ -z "$id" ] && { echo '{"error":"id required"}'; return 1; }
             update_config '.subscriptions = ((.subscriptions // []) | map(select(.id != $id)))
-                 | .subscription_url = ((.subscriptions[0].url) // "")' \
+                 | .subscription_url = (([.subscriptions[] | select((.url // "") | startswith("http"))] | .[0].url) // "")' \
                 --arg id "$id" || { echo '{"error":"save failed"}'; return 1; }
             rm -f "$ECLIPVPN_TMP/sub.$id.servers.json" "$ECLIPVPN_TMP/sub.$id.servers.json.tmp" "$ECLIPVPN_TMP/sub.$id.body" "$ECLIPVPN_TMP/sub.$id.servers.new"
             # Drop the PERSISTENT mirror too (see update_subscription's subcache):

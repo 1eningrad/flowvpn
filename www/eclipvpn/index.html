@@ -1507,7 +1507,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           <p class="card-desc">Можно добавить несколько провайдеров — серверы со всех включённых подписок объединяются в один список.</p>
           <div id="subList"></div>
           <div class="flex" style="margin-top:10px">
-            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://… ссылка на подписку" aria-label="URL подписки на серверы" onkeydown="if(event.key==='Enter')addSubscription()">
+            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://… подписка или vless:// сервер" aria-label="URL подписки или ссылка на сервер" onkeydown="if(event.key==='Enter')addSubscription()">
             <button class="btn btn-primary btn-sm" onclick="addSubscription()">Добавить</button>
           </div>
           <input class="input" id="subName" type="text" maxlength="40" placeholder="Название (пусто — возьмём из подписки)" aria-label="Название подписки" style="margin-top:8px" onkeydown="if(event.key==='Enter')addSubscription()">
@@ -1623,7 +1623,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
     <div class="onboard-body">
       <div class="onboard-pane active" id="onboardStep1">
         <h2 id="onboardTitle">Добро пожаловать в EclipVPN</h2>
-        <p>Вставьте ссылку на подписку от вашего VPN-провайдера. Это URL, который заканчивается на <code>/sub</code> или содержит <code>?id=</code>.</p>
+        <p>Вставьте ссылку на подписку от вашего VPN-провайдера — или ссылку на отдельный сервер (<code>vless://…</code>, <code>ss://…</code> и т.п.).</p>
         <input class="input" id="onboardSubUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://example.com/api/sub/…" aria-label="URL подписки">
         <div class="onboard-hint">Где взять ссылку? В панели вашего VPN-провайдера (Remnawave, Marzban, x-ui) — раздел «Подписка» / «Subscription».</div>
         <div class="onboard-actions">
@@ -1759,6 +1759,10 @@ function fmtBytes(b){b=+b||0;if(b<1024)return b.toFixed(0)+' B';if(b<1048576)ret
 // hide the credential middle (the path token IS the panel credential).
 function maskUrl(u){
   if(!u)return '';
+  // A manual-server URI carries credentials (uuid/password) before the @ —
+  // show only scheme + host:port, never a prefix slice of the secret.
+  const p=String(u).match(/^(vless|vmess|trojan|ss|hysteria2|hy2):\/\//i);
+  if(p){const h=String(u).match(/^[a-z0-9]+:\/\/[^@\s]*@([^/?#\s]*)/i);return p[1]+'://…'+(h?('@'+h[1]):'');}
   const m=String(u).match(/^https?:\/\/([^/]+)(\/.*)?$/i);
   if(!m)return u.length>30?u.slice(0,26)+'…':u;
   const host=m[1], path=(m[2]||'').replace(/\/+$/,'');
@@ -2455,8 +2459,8 @@ async function addSubscription(){
   const nameInp=document.getElementById('subName');
   const u=inp.value.trim();
   const nm=nameInp?nameInp.value.trim():'';
-  if(!u){_showInputError(inp,'Вставьте ссылку на подписку');inp.focus();return}
-  if(!/^https?:\/\//i.test(u)){_showInputError(inp,'Ссылка должна начинаться с http:// или https://');inp.focus();return}
+  if(!u){_showInputError(inp,'Вставьте ссылку на подписку или сервер');inp.focus();return}
+  if(!/^(https?|vless|vmess|trojan|ss|hysteria2|hy2):\/\//i.test(u)){_showInputError(inp,'Нужна http(s)-ссылка на подписку или vless:// / vmess:// / trojan:// / ss:// / hysteria2:// сервер');inp.focus();return}
   if(_subActionPending)return;   // a subscription op is already in flight — ignore double-click
   _subActionPending=true;
   const tid=toast.loading('Добавляем подписку, загружаем серверы…');
@@ -3567,7 +3571,7 @@ function setOnboardStep(n){
 async function onboardNext1(){
   const url=document.getElementById('onboardSubUrl').value.trim();
   if(!url){toast.error('Вставьте ссылку');return}
-  if(!/^https?:\/\//.test(url)){toast.error('Ссылка должна начинаться с http:// или https://');return}
+  if(!/^(https?|vless|vmess|trojan|ss|hysteria2|hy2):\/\//i.test(url)){toast.error('Нужна http(s)-ссылка на подписку или vless:// / vmess:// / trojan:// / ss:// / hysteria2:// сервер');return}
   setOnboardStep(2);
   try{
     // POST sub add — the panel token travels in the body, not the query string
@@ -3602,7 +3606,10 @@ function finishOnboard(){
 }
 function maybeShowOnboard(){
   if(localStorage.getItem('eclipvpn-onboarded')==='1')return;
-  if(!state||!state.subscription_url)showOnboard();
+  // Configured = any subscription entry (incl. a manual vless:// server, whose
+  // legacy subscription_url mirror is deliberately empty), not just the mirror.
+  const configured=state&&(state.subscription_url||((state.subscriptions||[]).length>0));
+  if(!configured)showOnboard();
   else localStorage.setItem('eclipvpn-onboarded','1');
 }
 
