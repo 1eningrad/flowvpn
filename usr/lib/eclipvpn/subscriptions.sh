@@ -415,7 +415,19 @@ update_subscription() {
                     && mv "$cache.tmp" "$cache" || rm -f "$cache.tmp"
                 chmod 600 "$cache" 2>/dev/null
                 # Mirror to the persistent cache so these servers survive a reboot.
-                [ -s "$cache" ] && { cp "$cache" "$_scache/" 2>/dev/null; chmod 600 "$_scache/$(basename "$cache")" 2>/dev/null; }
+                # Atomic (.tmp + mv + sync): this mirror is the ONLY copy that
+                # survives a power cut, so a cut mid-copy must not leave a
+                # truncated file where the last-known server list used to be.
+                if [ -s "$cache" ]; then
+                    local _mbn; _mbn=$(basename "$cache")
+                    if cp "$cache" "$_scache/$_mbn.tmp" 2>/dev/null \
+                       && mv "$_scache/$_mbn.tmp" "$_scache/$_mbn" 2>/dev/null; then
+                        chmod 600 "$_scache/$_mbn" 2>/dev/null
+                        sync
+                    else
+                        rm -f "$_scache/$_mbn.tmp"
+                    fi
+                fi
             else
                 logger -t eclipvpn "Subscription[$sname]: parsed 0 servers — keeping previous cache"
             fi

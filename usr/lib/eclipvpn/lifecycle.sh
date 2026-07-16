@@ -475,6 +475,13 @@ cmd_status() {
     fi
 
     local servers_raw='[]'
+    # Self-heal an empty pool. After a cold boot with no WAN, init.d skips
+    # autostart entirely ("Network not ready"), so cmd_start's offline restore
+    # (subcache → merge) never ran and the UI would show subscriptions with
+    # ZERO servers until the next start/update — which can't fetch anyway on a
+    # whitelist-only uplink. Rebuild the pool from the persistent mirrors right
+    # here: offline, no fetch, and a no-op whenever servers.json already exists.
+    [ -s "$ECLIPVPN_TMP/servers.json" ] || { _restore_subcache; _merge_sub_pool "$ECLIPVPN_CONFIG" >/dev/null 2>&1; }
     [ -f "$ECLIPVPN_TMP/servers.json" ] && servers_raw=$(cat "$ECLIPVPN_TMP/servers.json")
 
     local device_count=0
