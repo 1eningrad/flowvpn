@@ -54,6 +54,7 @@ update                                   refresh ALL enabled subscriptions (merg
 auto-select | auto-eval                  pick fastest server by probe / re-evaluate live server health
 ping | real-ping                         TCP probe (with ICMP fallback) / VLESS-Reality probe
 diagnose | healthcheck                   quick metrics / full check (DNS, leaks, processes)
+net-check                                classify the DIRECT uplink: full / whitelist (only Yandex answers — «белые списки») / none
 system-info                              firmware + xray/sing-box versions, uptime, resources
 add-domain DOM vpn|direct                add to user override list
 remove-domain DOM vpn|direct             remove from user override list

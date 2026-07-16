@@ -607,6 +607,7 @@ case "$1" in
         ;;
     diagnose)       cmd_diagnose ;;
     healthcheck)    cmd_healthcheck ;;
+    net-check)      cmd_net_check ;;
     system-info)    cmd_system_info ;;
     watchdog)       cmd_watchdog "$2" ;;
     ensure-watchdog) cmd_ensure_watchdog ;;

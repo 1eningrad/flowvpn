@@ -95,7 +95,7 @@ esac
 #    actions are exempt so plain curl/monitoring still works (their responses
 #    aren't readable cross-site, so reading them via CSRF gains nothing).
 case "$action" in
-    status|ping|real-ping|healthcheck|diagnose|system-info|backup|traffic-poll|get-*) ;;
+    status|ping|real-ping|healthcheck|diagnose|system-info|backup|traffic-poll|net-check|get-*) ;;
     *)
         _src="${HTTP_ORIGIN:-$HTTP_REFERER}"
         [ -z "$_src" ] && { echo '{"error":"forbidden: missing Origin/Referer"}'; exit 0; }
@@ -152,6 +152,7 @@ case "$action" in
     clear-log)      /usr/bin/eclipvpn clear-log ;;
     diagnose)       /usr/bin/eclipvpn diagnose ;;
     healthcheck)    /usr/bin/eclipvpn healthcheck ;;
+    net-check)      /usr/bin/eclipvpn net-check ;;
     system-info)    /usr/bin/eclipvpn system-info ;;
     get-traffic)    /usr/bin/eclipvpn get-traffic ;;
     traffic-poll)   /usr/bin/eclipvpn traffic-poll ;;

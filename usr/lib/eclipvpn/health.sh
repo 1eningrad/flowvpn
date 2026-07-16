@@ -596,3 +596,51 @@ cmd_healthcheck() {
 
     echo "$results" | jq '.'
 }
+
+# --- net-check: classify the DIRECT uplink's internet access -----------------
+# For the UI indicator:
+#   full      — both anchors reachable (normal internet)
+#   whitelist — only the RU anchor answers: the uplink passes whitelisted/RU
+#               hosts only (SIM with "белые списки", filtered corporate WAN…) —
+#               the VPN handshake to a foreign exit will fail, and so will any
+#               subscription/rules fetch; the UI should say WHY instead of
+#               showing a generic "не подключается".
+#   none      — neither answers: WAN itself is down.
+# Anchors are IPs (no DNS — when the tunnel is down, dnsmasq→sing-box DoH is
+# dead too): Yandex DNS 77.88.8.8 = RU anchor (reachable on any RU uplink incl.
+# CGNAT), Google DNS 8.8.8.8 = foreign anchor. ICMP first, TCP :443 fallback —
+# some uplinks filter foreign ICMP but pass TCP (the init.d WAN gate learned
+# that the hard way; see _eclip_net_ready). -k because we only need the
+# connect, not a cert chain. Router-own traffic bypasses tproxy (mark 0x8000
+# is for the daemons; plain ping/curl from the CLI exits the raw WAN), so this
+# measures the UPLINK, not the tunnel — deliberately.
+_net_anchor_ok() {
+    ping -c 1 -W 2 "$1" >/dev/null 2>&1 && return 0
+    curl -sSk --max-time 4 --connect-timeout 4 -o /dev/null "https://$1/" 2>/dev/null && return 0
+    return 1
+}
+
+cmd_net_check() {
+    mkdir -p "$ECLIPVPN_TMP"
+    # Probe both anchors in parallel — offline worst case stays ~6s, not 12.
+    local yf="$ECLIPVPN_TMP/.net_ya.$$" gf="$ECLIPVPN_TMP/.net_gg.$$"
+    ( _net_anchor_ok 77.88.8.8 && touch "$yf" ) &
+    local yp=$!
+    ( _net_anchor_ok 8.8.8.8 && touch "$gf" ) &
+    local gp=$!
+    wait "$yp" "$gp" 2>/dev/null
+    local ya=false gg=false verdict
+    [ -f "$yf" ] && ya=true
+    [ -f "$gf" ] && gg=true
+    rm -f "$yf" "$gf"
+    if [ "$gg" = "true" ]; then verdict="full"
+    elif [ "$ya" = "true" ]; then verdict="whitelist"
+    else verdict="none"; fi
+    local out
+    out=$(jq -n --argjson ya "$ya" --argjson gg "$gg" --arg v "$verdict" \
+        '{internet:$v, yandex:$ya, google:$gg, ts:(now|floor)}')
+    # Cache the last verdict so other readers (healthcheck, future status
+    # embeds) can show it without re-probing.
+    printf '%s\n' "$out" > "$ECLIPVPN_TMP/net_check.json" 2>/dev/null
+    printf '%s\n' "$out"
+}

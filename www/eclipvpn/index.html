@@ -115,6 +115,21 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   color:var(--text-muted)
 }
 .header-info b{color:var(--text);font-weight:600;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11.5px}
+/* Uplink (direct WAN) state — full / whitelist-only / none. Independent of
+   the VPN state: it answers "is the PROVIDER's internet working, and is it
+   whitelist-filtered" (only Yandex reachable, Google not). */
+.net-badge{
+  display:none;align-items:center;gap:6px;margin-top:8px;
+  font-size:11.5px;font-weight:500;padding:4px 10px;border-radius:999px;
+  border:1px solid var(--border);color:var(--text-muted);width:fit-content;cursor:default
+}
+.net-badge .nb-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.net-badge.full{background:rgba(52,211,153,0.07);border-color:rgba(52,211,153,0.18)}
+.net-badge.full .nb-dot{background:var(--green,#34d399)}
+.net-badge.whitelist{background:rgba(251,191,36,0.08);border-color:rgba(251,191,36,0.25);color:var(--text)}
+.net-badge.whitelist .nb-dot{background:#fbbf24}
+.net-badge.none{background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.25);color:var(--text)}
+.net-badge.none .nb-dot{background:var(--red,#f87171)}
 .header-mini-toggle{
   width:42px;height:24px;position:relative;cursor:pointer;
   display:none;align-items:center;flex-shrink:0
@@ -1249,6 +1264,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           <div class="meta" id="statusMeta">
             <span>Нажмите, чтобы подключиться</span>
           </div>
+          <div class="net-badge" id="netBadge"><span class="nb-dot"></span><span id="netBadgeText"></span></div>
         </div>
       </div>
       <label class="toggle" title="Вкл/Выкл VPN">
@@ -3647,14 +3663,39 @@ document.addEventListener('keydown',(e)=>{
   }
 });
 
-restoreCollapsibles();fetchStatus();loadDomains();loadPresets();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();
+// Uplink internet indicator: probes the RAW WAN (Yandex + Google anchors)
+// server-side via net-check. "whitelist" = only Yandex answers — the uplink
+// passes whitelisted hosts only, which explains a failing VPN handshake.
+// The probe takes up to ~6s offline, so it runs on its own slow cadence and
+// never blocks the 5s status poll.
+async function loadNetCheck(){
+  try{
+    const r=await fetch(API+'?action=net-check');
+    const d=await r.json();
+    const b=document.getElementById('netBadge');
+    if(!b)return;
+    const m={
+      full:['full','Интернет: есть','Прямой канал работает: Яндекс и Google доступны'],
+      whitelist:['whitelist','Интернет: только белые списки','Google напрямую недоступен, Яндекс отвечает — провайдер пропускает только «белые» сайты. Зарубежные VPN-серверы и обновление подписок напрямую могут не работать.'],
+      none:['none','Нет интернета','Ни Яндекс, ни Google не отвечают — канал провайдера не работает']
+    }[d.internet];
+    if(!m){b.style.display='none';return}
+    b.className='net-badge '+m[0];
+    b.style.display='inline-flex';
+    document.getElementById('netBadgeText').textContent=m[1];
+    b.title=m[2];
+  }catch(e){}
+}
+restoreCollapsibles();fetchStatus();loadDomains();loadPresets();loadSchedule();loadAutoUpdate();loadIncidents();startSpeedMonitor();loadNetCheck();
 // Skip polling when tab is hidden (battery-friendly).
 setInterval(()=>{if(!document.hidden)fetchStatus()},5000);
 // Incidents change rarely — refresh every 30s instead of 5s.
 setInterval(()=>{if(!document.hidden)loadIncidents()},30000);
+// Uplink state changes rarely too — 30s keeps the worst-case 6s probe cheap.
+setInterval(()=>{if(!document.hidden)loadNetCheck()},30000);
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){ stopSpeedMonitor(); return; }
-  fetchStatus(); loadTraffic(); loadIncidents();
+  fetchStatus(); loadTraffic(); loadIncidents(); loadNetCheck();
   // Restart the polling loop with a fresh tick on tab return — otherwise
   // the speed widgets show stale numbers for up to 1s.
   startSpeedMonitor();
