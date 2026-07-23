@@ -100,7 +100,7 @@
 
 \begin{center}
 \small Лёгкий VPN-менеджер для OpenWrt \\
-VLESS+XHTTP+Reality · sing-box tproxy · Веб-интерфейс
+VLESS / VMess / Trojan / Shadowsocks / Hysteria2 · sing-box tproxy · Веб-интерфейс
 \end{center}
 
 \vspace{2cm}
@@ -110,16 +110,20 @@ VLESS+XHTTP+Reality · sing-box tproxy · Веб-интерфейс
 
 \section{Введение}
 
-EclipVPN направляет трафик домашней сети через VPN-сервер с поддержкой VLESS+XHTTP+Reality (xray-core). Российские сайты идут напрямую благодаря geosite-ru/geoip-ru. Управление через веб-интерфейс на самом роутере.
+EclipVPN направляет трафик домашней сети через VPN-сервер. Поддерживаются протоколы VLESS (Reality и TLS; транспорты XHTTP / TCP+Vision / WS / gRPC), VMess, Trojan, Shadowsocks — через xray-core, и Hysteria2 — нативным outbound'ом sing-box (QUIC). Российские сайты идут напрямую благодаря geosite-ru/geoip-ru. Управление через веб-интерфейс на самом роутере.
 
 \subsection{Основные возможности}
 
 \begin{itemize}
-\item \textbf{Два режима маршрутизации}: всё через VPN (с прямым доступом к RU) или только заблокированные сайты
-\item \textbf{VLESS+XHTTP+Reality} через xray-core 26.4.17+
+\item \textbf{Два режима маршрутизации}: всё через VPN (с прямым доступом к RU) или только заблокированные сайты; \texttt{full\_tunnel} отключает RU-исключения целиком
+\item \textbf{Пять протоколов}: VLESS/VMess/Trojan/Shadowsocks (xray-core 26.4.17+) и Hysteria2 (sing-box с \texttt{with\_quic}); нужный движок поднимается автоматически по протоколу выбранного сервера
+\item \textbf{Несколько подписок сразу}: серверы всех включённых провайдеров сливаются в один список; одиночный сервер добавляется голой ссылкой \texttt{vless://…}
 \item \textbf{Защита DNS}: перехват DNS, блокировка DoT/QUIC от подмены провайдером
 \item \textbf{Без утечек}: при перезапуске nftables и dnsmasq остаются на месте
-\item \textbf{Авто-переключение}: watchdog заменяет упавший сервер (без тарифицируемых операторов)
+\item \textbf{Авто-переключение}: watchdog заменяет упавший сервер (без тарифицируемых операторов) и реагирует на троттлинг — замеряет реальную скорость туннеля, переподключается или меняет сервер
+\item \textbf{Живучесть}: кэш серверов переживает перезагрузку (восстановление офлайн), выход набирается по IP, подписки и правила докачиваются через туннель при блокировке GitHub/панели
+\item \textbf{Сервисные пресеты}: YouTube, Spotify, Twitter/X, Instagram, Facebook, TikTok, Reddit — через VPN одним переключателем; \texttt{ru\_vpn} — РФ-банки через VPN, когда прямой путь к ним сломан
+\item \textbf{Индикатор аплинка} (\texttt{net-check}): полный интернет / только «белые списки» / сети нет
 \item \textbf{Маршрутизация по устройствам}: VPN или Direct для каждого клиента
 \item \textbf{Скорость в реальном времени}: через Clash API WebSocket
 \item \textbf{Диагностика}: 25 автоматических проверок
@@ -136,7 +140,7 @@ EclipVPN направляет трафик домашней сети через 
 \item Роутер с OpenWrt 24.10+ (проверено на Routerich AX3000, aarch64)
 \item 256\,МБ ОЗУ, 40\,МБ свободной flash-памяти
 \item SSH-доступ как root
-\item Подписка на VLESS+Reality серверы (Remnawave или аналог)
+\item Подписка (Remnawave или аналог; VLESS/VMess/Trojan/Shadowsocks/Hysteria2) --- либо просто ссылка \texttt{vless://…} на один сервер
 \end{itemize}
 
 \subsection{Зависимости}
@@ -166,24 +170,22 @@ ssh root@192.168.1.1 "/usr/bin/xray version"
 
 \subsection{Деплой файлов EclipVPN}
 
-\begin{lstlisting}
-ssh root@192.168.1.1 "mkdir -p /usr/lib/eclipvpn /www/flowvpn /etc/eclipvpn /tmp/eclipvpn"
+Полный список файлов задаётся манифестом \texttt{packaging/ship-files} в репозитории; вручную его переносить не нужно --- есть три готовых пути:
 
-for f in usr/bin/eclipvpn usr/lib/eclipvpn/parse.sh usr/lib/eclipvpn/xray.sh \
-         usr/lib/eclipvpn/singbox.sh usr/lib/eclipvpn/network.sh \
-         www/cgi-bin/eclipvpn www/eclipvpn/index.html etc/init.d/eclipvpn; do
-    cat "$f" | ssh root@192.168.1.1 "cat > /$f && chmod +x /$f"
-done
-\end{lstlisting}
+\begin{itemize}
+\item \texttt{install.sh} --- запускается \emph{на роутере}, ставит зависимости, скачивает xray и раскладывает файлы;
+\item \texttt{install-from-mac.sh} --- первичная установка \emph{с компьютера} по SSH из локальной копии репозитория (не требует доступа к GitHub с роутера);
+\item \texttt{deploy.sh} --- обновление уже установленного роутера из рабочего дерева.
+\end{itemize}
 
 \subsection{Первый запуск}
 
 \begin{lstlisting}
-# Указать ссылку на подписку
-eclipvpn set-config subscription_url "https://example.com/api/sub/xxx"
+# Добавить подписку — серверы скачаются сами, имя возьмётся из Profile-Title
+eclipvpn sub add "https://example.com/api/sub/xxx"
 
-# Загрузить серверы и правила маршрутизации
-eclipvpn update
+# Либо одиночный сервер голой ссылкой:
+eclipvpn sub add "vless://uuid@host:443?..." "Мой сервер"
 
 # Запустить
 eclipvpn start
@@ -216,12 +218,12 @@ SHA-256: 9d5563a5844c3bf7daf2ee8396c2b9470604dc8137f7c0054b208eba4693f1ec
 \toprule
 \textbf{Вкладка} & \textbf{Описание} \\
 \midrule
-Маршрут & Главная: переключатель VPN, выбор сервера, режим, скорость \\
-Серверы & Список серверов из подписки, пинг, тарифицируемые помечены «Тариф» \\
+Главная & Переключатель VPN, выбор сервера (группировка по провайдерам, пинг, бейджи протокола и сбоев), режим, скорость, индикатор аплинка \\
+Маршрутизация & Режим работы, списки доменов (direct/VPN), сервисные пресеты \\
 Устройства & Подключённые клиенты, переключение VPN/Direct для каждого \\
-Журнал & Соединения с фильтрами (VPN/Direct/DNS/Ошибки/EclipVPN/xray) \\
-Диагностика & 25 автоматических проверок системы \\
-Настройки & Подписка, расписание, автообновление, бэкап \\
+Журнал & Соединения с фильтрами (Все/VPN/Direct/Ошибки/Сбои/DNS/EclipVPN) \\
+Диагностика & Быстрые метрики + healthcheck (процессы, DNS, утечки, ресурсы) \\
+Настройки & Подписки (несколько + одиночные серверы), расписание, автообновление, бэкап \\
 \bottomrule
 \end{tabularx}
 
@@ -248,23 +250,52 @@ eclipvpn restart                  # Soft restart — без утечек DNS
 eclipvpn update                   # Обновить подписку и правила
 \end{lstlisting}
 
+\subsection{Подписки}
+
+\begin{lstlisting}
+eclipvpn sub list                 # Список подписок (ID, имя, статус)
+eclipvpn sub add URL ИМЯ          # Добавить подписку — имя опционально
+eclipvpn sub add vless://...      # Добавить одиночный сервер ссылкой
+eclipvpn sub enable ID            # Включить, disable — выключить; мгновенно
+eclipvpn sub rename ID ИМЯ        # Переименовать
+eclipvpn sub remove ID            # Удалить
+\end{lstlisting}
+
+Серверы всех включённых подписок сливаются в один список; у каждого видно, от какого провайдера он пришёл. Включение/выключение/удаление подписки не лезут в сеть --- список пересобирается из кэша мгновенно.
+
 \subsection{Серверы и режим}
 
 \begin{lstlisting}
 eclipvpn set-server 0             # Выбрать сервер по индексу
+eclipvpn auto-select              # Выбрать самый быстрый по пробе
 eclipvpn set-mode all_vpn         # Режим маршрутизации
 eclipvpn set-mode blocklist
 eclipvpn ping                     # Пинг всех серверов
+eclipvpn net-check                # Интернет на аплинке: full / whitelist / none
 \end{lstlisting}
 
-\subsection{Домены}
+\subsection{Домены и пресеты}
 
 \begin{lstlisting}
 eclipvpn add-domain youtube.com vpn       # Принудительно через VPN
 eclipvpn add-domain rutube.ru direct      # Принудительно напрямую
 eclipvpn remove-domain youtube.com vpn
 eclipvpn get-domains                      # Список текущих
+eclipvpn preset list                      # Пресеты сервисов
+eclipvpn preset enable ru_vpn             # Включить (disable — выключить)
 \end{lstlisting}
+
+Пресеты: \texttt{youtube}, \texttt{spotify}, \texttt{twitter}, \texttt{instagram}, \texttt{facebook}, \texttt{tiktok}, \texttt{reddit} --- сервис целиком через VPN; \texttt{ru\_vpn} --- наоборот, гонит РФ-банки (Сбер, ВТБ, Т-Банк, Альфа, ЮKassa/ЮMoney) через VPN --- для аплинков, где прямой путь к ним не работает.
+
+\subsection{Тонкая настройка}
+
+\begin{lstlisting}
+eclipvpn set-config full_tunnel true      # Всё через VPN, включая российские сайты
+eclipvpn set-config server_filter WL      # Пул только из серверов с "WL" в имени
+eclipvpn set-config server_filter off     # Снять фильтр
+\end{lstlisting}
+
+\texttt{full\_tunnel} нужен, когда прямой путь до РФ-сервисов сломан на самом аплинке (например, оператор не маршрутизирует подсети банков) --- тогда RU-исключения только мешают. \texttt{server\_filter} полезен, если провайдер отдаёт сотни серверов, а работает лишь помеченная часть: авто-переключение перестаёт перебирать мёртвые узлы. Фильтр без единого совпадения игнорируется.
 
 \subsection{Диагностика и журнал}
 
@@ -297,7 +328,7 @@ cat eclipvpn-backup.json | eclipvpn restore
 \toprule
 \textbf{Порт} & \textbf{Процесс} & \textbf{Назначение} \\
 \midrule
-1080 & xray & SOCKS-прокси для sing-box \\
+1080/1081 & xray & SOCKS-прокси для sing-box (порт чередуется при смене сервера: новый xray прогревается на соседнем порту, и только потом sing-box переключается --- без разрыва). Для Hysteria2 xray не запускается: sing-box набирает сервер сам и держит :1080 \\
 2154 & sing-box & tproxy inbound \\
 5354 & sing-box & DNS inbound (от dnsmasq) \\
 9090 & sing-box & Clash API + WebSocket трафика \\
@@ -316,9 +347,10 @@ cat eclipvpn-backup.json | eclipvpn restore
 
 \begin{itemize}
 \item dnsmasq → \texttt{127.0.0.1\#5354} (sing-box DNS)
-\item DNS заблокированных доменов → через VPN (\texttt{tls://1.1.1.1})
-\item DNS остальных → напрямую (\texttt{udp://1.1.1.1})
+\item DNS заблокированных доменов → через VPN (DoH \texttt{https://1.1.1.1})
+\item DNS RU-доменов → напрямую на Яндекс \texttt{77.88.8.8} (UDP). Не Cloudflare: тот отдаёт SERVFAIL для ВТБ и ряда других банков --- их авторитетные NS отказывают иностранным резолверам
 \item DoT (порт 853) и QUIC (UDP 443) блокируются — приложения переключаются на TCP
+\item Адрес самого VPN-сервера резолвится один раз при генерации конфига через прямые резолверы --- xray набирает выход по IP, чтобы переподключение не зависело от DNS, идущего через упавший туннель
 \end{itemize}
 
 \section{Безопасность}
@@ -354,18 +386,23 @@ POST body ограничен 64\,КБ. Восстановление бэкапа
 \begin{enumerate}
 \item Перебирает следующие серверы из подписки
 \item Пропускает тарифицируемых операторов (МТС, Т2, Билайн, Мегафон) — белые списки потеряют смысл при переключении
-\item Пробует каждого через probe xray на уникальном порту
+\item Пробует каждого через probe на отдельном порту
 \item Первый рабочий — \texttt{soft restart} с новым сервером
 \item Спит \texttt{interval}\,×\,3 для стабилизации, чтобы не вызвать каскадный failover
 \end{enumerate}
 
-Защита от двух экземпляров через лок-файл \texttt{/tmp/eclipvpn/watchdog.lock}.
+Отдельно работает \textbf{защита от троттлинга}: провайдерский полисер может душить туннель до 60--90\,КБ/с, при этом пинги остаются быстрыми. Watchdog периодически замеряет реальную скорость через туннель и после серии медленных замеров действует в два шага: сначала переподключается к \emph{тому же} серверу свежим соединением (полисер душит каждое TCP-соединение отдельно, свежий поток часто проскакивает), и только если это не помогло --- бенчмаркает остальные серверы по скорости и переключается на явно более быстрый. Порог задаётся ключом \texttt{tput\_min\_kbps} (по умолчанию 500), выключается \texttt{set-config tput\_guard false}.
+
+Если оба фейла совпали с падением самого WAN, перебор серверов не запускается --- смена сервера не чинит мёртвый аплинк. Авто-переключение можно отключить целиком (\texttt{set-config auto\_failover false}) --- проверки и оживление процессов при этом остаются.
+
+Защита от двух экземпляров --- атомарный \texttt{mkdir /tmp/eclipvpn/watchdog.lockdir}; сам watchdog дополнительно присматривается cron-строкой каждые 5 минут и оживает после внезапной смерти (например, OOM).
 
 \section{Устранение неполадок}
 
 \subsection{VPN не подключается}
 
 \begin{enumerate}
+\item \texttt{eclipvpn net-check} — что с интернетом на аплинке. \texttt{whitelist} означает, что провайдер пускает только «белые списки» (отвечает лишь Яндекс) — до иностранного VPN-сервера не достучаться в принципе, менять сервер бесполезно. \texttt{none} — WAN лежит
 \item \texttt{eclipvpn diagnose} — должно быть «xray работает» и «VPN IP получен»
 \item \texttt{eclipvpn ping} — какой сервер отвечает
 \item \texttt{logread -e eclipvpn | tail -20} — последние события
@@ -423,17 +460,17 @@ CPU & ${\sim}0\%$ idle, всплески при handshake \\
 \toprule
 \textbf{Путь} & \textbf{Назначение} \\
 \midrule
-\texttt{/usr/bin/eclipvpn} & Главный CLI-скрипт \\
-\texttt{/usr/lib/eclipvpn/parse.sh} & Парсер VLESS-подписки \\
-\texttt{/usr/lib/eclipvpn/xray.sh} & Генерация xray SOCKS-конфига \\
-\texttt{/usr/lib/eclipvpn/singbox.sh} & Генерация sing-box-конфига \\
-\texttt{/usr/lib/eclipvpn/network.sh} & nftables tproxy + dnsmasq \\
+\texttt{/usr/bin/eclipvpn} & Главный CLI-скрипт (диспетчер) \\
+\texttt{/usr/lib/eclipvpn/*.sh} & Библиотеки: парсеры подписок, подписки, xray/sing-box конфиги, правила маршрутизации, nftables+dnsmasq, watchdog, lifecycle, серверы, домены, трафик, health, config \\
 \texttt{/www/cgi-bin/eclipvpn} & CGI API \\
-\texttt{/www/flowvpn/index.html} & Веб-интерфейс \\
-\texttt{/etc/eclipvpn/config.json} & Конфигурация \\
+\texttt{/www/eclipvpn/index.html} & Веб-интерфейс \\
+\texttt{/etc/eclipvpn/config.json} & Конфигурация (+ 3 ротируемых бэкапа \texttt{.1..3}) \\
 \texttt{/etc/eclipvpn/clash\_secret} & Случайный секрет Clash API \\
+\texttt{/etc/eclipvpn/subcache/} & Кэш серверов по подпискам --- переживает перезагрузку \\
+\texttt{/etc/eclipvpn/rules/} & Кэш скомпилированных правил (.srs) \\
+\texttt{/etc/eclipvpn/build} & Билд задеплоенного кода (SHA + дата) \\
 \texttt{/etc/init.d/eclipvpn} & Автозапуск \\
-\texttt{/tmp/eclipvpn/} & Состояние, логи, кэш \\
+\texttt{/tmp/eclipvpn/} & Состояние, логи, кэш (очищается при перезагрузке) \\
 \bottomrule
 \end{tabularx}
 
