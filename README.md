@@ -67,7 +67,7 @@ curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
 
 - **Релиз**: [`v2026.06`](https://github.com/1eningrad/flowvpn/releases/tag/v2026.06)
 - **Файл**: `EclipVPN-Installer.exe` (~31 МБ, aarch64)
-- **SHA-256**: `9d5563a5844c3bf7daf2ee8396c2b9470604dc8137f7c0054b208eba4693f1ec`
+- **SHA-256**: `5f468d133654d32ee7061e92c38def771967992823c0598adafffdf72946beb0`
 
 > Поскольку репозиторий приватный, ассет качается **только с авторизацией** в GitHub: открой страницу релиза в браузере, где ты залогинен, и нажми на файл (прямая ссылка `releases/download/...` без авторизации отдаёт 404). Либо из CLI с доступом: `gh release download v2026.06 -R 1eningrad/flowvpn`.
 
@@ -103,7 +103,7 @@ eclipvpn start                                     # (sub add сам скачи�
 
 ## Веб-интерфейс
 
-Откройте `http://router-ip/eclipvpn/`. Старая ссылка `/eclipvpn/` отдаёт meta-refresh redirect.
+Откройте `http://router-ip/eclipvpn/`. Старая ссылка `/flowvpn/` отдаёт meta-refresh redirect.
 
 ### Вкладки
 
