@@ -367,7 +367,7 @@ EOF
     local sf="$ECLIPVPN_TMP/auto_state.json"
     local oplock="$ECLIPVPN_TMP/auto.lock"
     (
-        if command -v flock >/dev/null 2>&1; then flock -w 5 -x 200 || exit 1; fi
+        if command -v flock >/dev/null 2>&1; then flock -w 5 -x 9 || exit 1; fi
         update_config '.selected_server = $idx' --argjson idx "$best_idx"
         # _vpn_live, not _vpn_running — see cmd_set_server: selected_server was
         # just changed, so an engine-aware check could miss a live other-engine
@@ -385,7 +385,7 @@ EOF
         [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
         local now=$(date +%s)
         jq --argjson t "$now" '.last_eval = $t | .last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
-    ) 200>"$oplock"
+    ) 9>"$oplock"
     local rc=$?
     case "$rc" in
         0) ;;
@@ -424,7 +424,7 @@ cmd_auto_eval() {
     # user-triggered cmd_auto_select is running, we silently skip this tick
     # rather than queue up a redundant eval behind it.
     (
-        if command -v flock >/dev/null 2>&1; then flock -n -x 200 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }; fi
+        if command -v flock >/dev/null 2>&1; then flock -n -x 9 || { flog "Auto-eval: another auto op in progress, skipping"; exit 0; }; fi
 
         [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
 
@@ -528,5 +528,5 @@ cmd_auto_eval() {
             ( cmd_restart ) >/dev/null 2>&1
             flog "Auto-mode: restart failed, rolled back"
         fi
-    ) 200>"$oplock"
+    ) 9>"$oplock"
 }

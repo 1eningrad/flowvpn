@@ -44,7 +44,7 @@ cmd_get_traffic() {
     mkdir -p "$ECLIPVPN_TMP"
     local state_file="$ECLIPVPN_TMP/traffic_state.json"
     (
-        command -v flock >/dev/null 2>&1 && flock -x 200
+        command -v flock >/dev/null 2>&1 && flock -x 9
         [ -f "$state_file" ] || \
             printf '%s\n' '{"vpn_dl":0,"vpn_ul":0,"dir_dl":0,"dir_ul":0,"started":0,"seen":{}}' > "$state_file"
 
@@ -117,7 +117,7 @@ cmd_get_traffic() {
                 direct_conns: ([$conns.connections[]? | select(.chains | index("direct"))] | length),
                 api_ok: true
             }'
-    ) 200>"$state_file.lock"
+    ) 9>"$state_file.lock"
 }
 cmd_real_ping() {
     # Real end-to-end latency through VLESS+Reality+XHTTP, not just TCP RTT
@@ -155,7 +155,7 @@ cmd_reset_traffic() {
     local state_file="$ECLIPVPN_TMP/traffic_state.json"
     mkdir -p "$ECLIPVPN_TMP"
     (
-        command -v flock >/dev/null 2>&1 && flock -x 200
+        command -v flock >/dev/null 2>&1 && flock -x 9
         local now=$(date +%s)
         local seen='{}'
         if [ -f "$state_file" ]; then
@@ -164,6 +164,6 @@ cmd_reset_traffic() {
         jq -n --argjson seen "$seen" --argjson ts "$now" \
             '{vpn_dl:0, vpn_ul:0, dir_dl:0, dir_ul:0, started:$ts, seen:$seen}' \
             > "$state_file.tmp" && mv "$state_file.tmp" "$state_file"
-    ) 200>"$state_file.lock"
+    ) 9>"$state_file.lock"
     echo "{\"status\":\"reset\",\"started\":$(date +%s)}"
 }
