@@ -480,12 +480,6 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;
   padding:2px 7px;border-radius:6px;font-weight:500;min-width:52px;text-align:center
 }
-.server-meter{
-  font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;
-  padding:2px 6px;border-radius:6px;flex-shrink:0;
-  background:rgba(251,191,36,0.12);color:var(--yellow);
-  border:1px solid rgba(251,191,36,0.25)
-}
 .server-proto{
   font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;
   padding:2px 6px;border-radius:6px;flex-shrink:0;
@@ -2029,8 +2023,10 @@ function renderServers(servers,sel,switchingIdx){
     const name=flagMatch?flagMatch[2]:s.name;
     const flagBadge=flagHTML(s.name);
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
+    // metered still drives the row tint (.server-metered) — the "Тариф" badge it
+    // used to render was dropped as noise; the tooltip on the row and the tint
+    // carry it.
     const metered=isMeteredServer(s.name);
-    const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
     // s.muted comes from /status (computed server-side against muted_servers) —
     // NOT recomputed here. isMeteredServer above already duplicates backend
     // logic in JS and that duplication has drifted before; don't add a second.
@@ -2049,7 +2045,6 @@ function renderServers(servers,sel,switchingIdx){
       ${flagBadge}
       <span class="server-name">${esc(name)}</span>
       ${protoTag}
-      ${meterTag}
       ${failTag}
       ${muteBtn}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>
