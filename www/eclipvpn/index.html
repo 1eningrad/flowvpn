@@ -521,7 +521,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .server-muted .server-name{opacity:0.55}
 .server-muted.active .server-name{opacity:1}
 .server-mute{
-  font-size:12px;line-height:1;flex-shrink:0;
+  display:inline-flex;align-items:center;line-height:0;flex-shrink:0;
   padding:3px 5px;border-radius:6px;cursor:pointer;
   background:transparent;border:1px solid transparent;color:var(--text-dim);
   opacity:0;transition:opacity .15s ease,background .15s ease
@@ -1250,6 +1250,16 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   <symbol id="i-doorbell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V10a6 6 0 0112 0v6"/><path d="M4 16h16v3H4zM10 21h4"/></symbol>
   <symbol id="i-tablet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M11 18h2"/></symbol>
   <symbol id="i-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 010 18z" fill="currentColor" stroke="none"/></symbol>
+  <!-- Server auto-eligibility (the mute toggle). Deliberately NOT a speaker
+       glyph: what is toggled is automatic switching, not sound.
+       ONE symbol for both states — colour carries the state, the glyph carries
+       the meaning: dim on hover over a normal row = the ACTION ("exclude"),
+       solid yellow and always visible on a muted row = the STATE ("excluded").
+       A struck-through bolt was tried first and rejected: at the 12px this
+       renders at, the slash collides with the bolt's interior and turns into an
+       unreadable blob (verified by rendering it). The plain ban circle stays
+       legible down to 12px. -->
+  <symbol id="i-no-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></symbol>
 </svg>
 
 <div class="app">
@@ -2026,8 +2036,8 @@ function renderServers(servers,sel,switchingIdx){
     // logic in JS and that duplication has drifted before; don't add a second.
     const muted=!!s.muted;
     const muteBtn=`<span class="server-mute" onclick="toggleMute(event,${i},${muted})" role="button" tabindex="0"
-      title="${muted?'Сервер замьючен: не выбирается автоматически. Нажмите, чтобы снять мьют.':'Замьютить: исключить из авто-выбора и авто-переключения (вручную останется доступен).'}"
-      aria-label="${muted?'Снять мьют':'Замьютить'}">${muted?'🔇':'🔈'}</span>`;
+      title="${muted?'Замьючен: не участвует в авто-переключении. Нажмите, чтобы снять мьют.':'Замьютить: исключить из авто-выбора и авто-переключения (вручную останется доступен).'}"
+      aria-label="${muted?'Снять мьют':'Замьютить'}"><svg class="icon icon-sm"><use href="#i-no-auto"/></svg></span>`;
     const protoLabels={vless:'VLESS',vmess:'VMess',trojan:'Trojan',shadowsocks:'SS',hysteria2:'HY2'};
     const proto=(s.protocol||'vless');
     const protoTag=`<span class="server-proto" title="Протокол: ${esc(proto)}">${protoLabels[proto]||esc(proto)}</span>`;
