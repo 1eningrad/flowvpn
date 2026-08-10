@@ -157,7 +157,7 @@ _watchdog_probe_candidate() {
     if [ -n "$value" ]; then echo "ok $value"; else echo "fail ${code:-none}"; fi
 }
 
-# Pick best non-metered, non-current candidate. metric=latency (default)
+# Pick best eligible, non-current candidate. metric=latency (default)
 # selects lowest probe latency; metric=throughput measures actual tunnel
 # speed per candidate and selects highest KB/s — used by the throughput
 # guard, since a peak-shaped server pings fast but moves no data, so latency
@@ -165,15 +165,29 @@ _watchdog_probe_candidate() {
 # (value = ms for latency, KB/s for throughput) or empty if none answered.
 # Spawns a probe-xray per candidate sequentially; throughput mode adds one
 # small download per candidate (only runs on a real degradation event).
+#
+# scope=normal (default) skips metered AND user-muted servers.
+# scope=muted_only probes ONLY the muted ones — the emergency second pass the
+# failover path runs when nothing un-muted answered. It is a separate scope
+# rather than a "try everything" flag on purpose: the normal pass has already
+# probed every un-muted candidate at ~13s each, and re-probing them would
+# double an outage's worth of scan time for no new information. Metered stays
+# excluded in BOTH scopes (a Russian IP is not a working VPN).
 _watchdog_pick_best() {
-    local current="$1" total="$2" probe_port="$3" metric="${4:-latency}"
+    local current="$1" total="$2" probe_port="$3" metric="${4:-latency}" scope="${5:-normal}"
     local servers_json="$ECLIPVPN_TMP/servers.json"
     local best_idx="" best_ms=99999 best_kbps=-1
     local i=0 consec_fail=0
+    local muted; muted=$(_muted_tokens)
     while [ "$i" -lt "$total" ]; do
         if [ "$i" -eq "$current" ]; then i=$((i+1)); continue; fi
         local cand_name=$(jq -r ".[$i].name" "$servers_json" 2>/dev/null)
         if _is_metered_server "$cand_name"; then
+            i=$((i+1)); continue
+        fi
+        if [ "$scope" = "muted_only" ]; then
+            _name_has_token "$cand_name" "$muted" || { i=$((i+1)); continue; }
+        elif _name_has_token "$cand_name" "$muted"; then
             i=$((i+1)); continue
         fi
         local res=$(_watchdog_probe_candidate "$i" "$probe_port" "$metric")
@@ -464,6 +478,13 @@ cmd_watchdog() {
                         if [ "$did_redial" -eq 0 ]; then
                         logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — benchmarking servers"
                         if [ -n "$total" ] && [ "$total" -gt 1 ]; then
+                            # scope stays `normal` — muted servers are NOT an
+                            # emergency fallback here. This branch fires on
+                            # "everything is slow", and slow is not an outage:
+                            # silently migrating a throttled evening onto a
+                            # billed exit is exactly the surprise the mute list
+                            # exists to prevent. Only the connectivity failover
+                            # path above lifts the mute.
                             local pick=$(_watchdog_pick_best "$cur_idx" "$total" "$probe_port" throughput)
                             if [ -n "$pick" ]; then
                                 local sel="${pick%% *}" cand_kbps="${pick##* }"
@@ -569,19 +590,37 @@ cmd_watchdog() {
             local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
             [ -z "$total" ] && continue
 
-            # Probe ALL non-metered, non-current candidates and pick the one
+            # Probe ALL eligible, non-current candidates and pick the one
             # with lowest latency — not the first one that happens to answer.
             # Old round-robin from current+1 caused USA to win whenever
             # Germany failed (next index) even though Finland & Netherlands
             # were both noticeably faster.
             local pick=$(_watchdog_pick_best "$current" "$total" "$probe_port")
+            # Emergency second pass: not one un-muted server answered, so the
+            # choice is a billed exit or no internet at all. Take the billed one
+            # and record a DISTINCT incident type — the user muted these to keep
+            # costs down and must be able to see, in the journal, exactly when
+            # automation overrode that.
+            local _emerg=0
+            if [ -z "$pick" ]; then
+                local _muted_now; _muted_now=$(_muted_tokens)
+                if [ -n "$_muted_now" ]; then
+                    logger -t eclipvpn "Watchdog: no un-muted candidate answered — trying muted servers"
+                    pick=$(_watchdog_pick_best "$current" "$total" "$probe_port" latency muted_only)
+                    [ -n "$pick" ] && _emerg=1
+                fi
+            fi
             if [ -n "$pick" ]; then
                 local selected="${pick% *}" best_ms="${pick##* }"
                 local cand_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
                 local _cand_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                 local _from_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
                 logger -t eclipvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
-                _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
+                if [ "$_emerg" = 1 ]; then
+                    _log_incident "emergency_muted" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name не ответил ни один не-замьюченный сервер → аварийно на замьюченный (тарифицируемый), ${best_ms}мс ($why)"
+                else
+                    _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
+                fi
                 _record_switch "$current" "$selected" "failover"
                 update_config '.selected_server = $idx' --argjson idx "$selected" || flog "WARN: failover save_config failed (will retry next tick)"
                 # Subshell so cmd_restart's EXIT trap releases the op-lock —

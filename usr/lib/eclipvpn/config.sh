@@ -8,7 +8,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|full_tunnel|auto_failover) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|muted_servers|full_tunnel|auto_failover) ;;
         *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
@@ -59,6 +59,27 @@ cmd_set_config() {
         case "$_nc" in ''|*[!0-9]*) _nc=0 ;; esac
         jq -n --arg k "$key" --arg v "$value" --argjson n "$_nc" \
             '{status:"saved", key:$k, value:$v, pool:$n}'
+        return 0
+    fi
+    # muted_servers: comma-separated case-sensitive NAME substrings, same matcher
+    # as server_filter but a very different effect — server_filter REMOVES nodes
+    # from the pool, mute only hides them from the AUTOMATIC pickers
+    # (auto-select / auto-eval / watchdog failover) while leaving them one click
+    # away in the UI. Motivating case: the CDN-fronted "Обход" relays are billed
+    # per traffic and must not be switched on unattended.
+    #
+    # No re-merge here (unlike server_filter): the pool is unchanged, only who
+    # may pick from it. off/none/- clears the list. Same defensive char gate and
+    # a length cap, since this key is CGI-reachable; stored via --arg (jq-safe).
+    if [ "$key" = "muted_servers" ]; then
+        case "$value" in off|none|-) value="" ;; esac
+        case "$value" in
+            *\"*|*\\*|*\`*|*\$*) _err "muted_servers: must not contain \" \\ \` or \$"; return 1 ;;
+        esac
+        [ "${#value}" -gt 400 ] && { _err "muted_servers: too long (max 400 chars)"; return 1; }
+        update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+        jq -n --arg k "$key" --arg v "$value" --argjson n "$(_muted_count "$value")" \
+            '{status:"saved", key:$k, value:$v, muted_count:$n}'
         return 0
     fi
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,

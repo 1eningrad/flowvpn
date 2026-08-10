@@ -507,6 +507,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .incident.t-check_fail{border-left-color:#fbbf24}
 .incident.t-auto_switch{border-left-color:var(--accent)}
 .incident.t-switch_failed{border-left-color:#ef4444}
+.incident.t-emergency_muted{border-left-color:#fbbf24}
 .incident-row{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:2px}
 .incident-type{font-size:11px;font-weight:700;letter-spacing:0.03em;text-transform:uppercase;color:var(--text)}
 .incident-time{font-size:11px;color:var(--text-dim);font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
@@ -514,6 +515,20 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .incident-detail{font-size:11.5px;color:var(--text-muted);line-height:1.35}
 .incident-empty{color:var(--text-dim);font-size:12px;padding:16px;text-align:center}
 .server-metered.active{background:linear-gradient(135deg, rgba(251,191,36,0.08), rgba(251,191,36,0.02));border-color:rgba(251,191,36,0.3)}
+/* Muted = excluded from auto-select / failover, still selectable by hand.
+   Dim the NAME only, never the whole row: the ping and the mute button must
+   stay readable, and an active-but-muted server has to look active. */
+.server-muted .server-name{opacity:0.55}
+.server-muted.active .server-name{opacity:1}
+.server-mute{
+  font-size:12px;line-height:1;flex-shrink:0;
+  padding:3px 5px;border-radius:6px;cursor:pointer;
+  background:transparent;border:1px solid transparent;color:var(--text-dim);
+  opacity:0;transition:opacity .15s ease,background .15s ease
+}
+.server:hover .server-mute,.server-muted .server-mute,.server-mute:focus-visible{opacity:1}
+.server-mute:hover{background:rgba(255,255,255,0.08);color:var(--text)}
+.server-muted .server-mute{color:var(--yellow)}
 .ping-good .server-ping{color:var(--green);background:rgba(52,211,153,0.1)}
 .ping-mid .server-ping{color:var(--yellow);background:rgba(251,191,36,0.1)}
 .ping-bad .server-ping{color:var(--red);background:rgba(248,113,113,0.1)}
@@ -1092,6 +1107,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 }
 .toast.success::before{background:var(--green)}
 .toast.error::before{background:var(--red)}
+.toast.warning::before{background:var(--yellow)}
 .toast.info::before{background:var(--accent-cool)}
 .toast.loading::before{background:var(--yellow)}
 .toast-icon{
@@ -1101,6 +1117,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .toast-icon svg{width:18px;height:18px}
 .toast.success .toast-icon{color:var(--green)}
 .toast.error .toast-icon{color:var(--red)}
+.toast.warning .toast-icon{color:var(--yellow)}
 .toast.info .toast-icon{color:var(--accent-cool)}
 .toast.loading .toast-icon{color:var(--yellow)}
 .toast-icon.spin{animation:spin 1s linear infinite}
@@ -1694,6 +1711,7 @@ const TOAST_ICONS={
   success:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
   error:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>',
   info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>',
+  warning:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2 20h20L12 3z"/><path d="M12 10v4M12 17h.01"/></svg>',
   loading:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-dasharray="40 16"/></svg>'
 };
 const TOAST_CLOSE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M6 18L18 6"/></svg>';
@@ -2003,6 +2021,13 @@ function renderServers(servers,sel,switchingIdx){
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     const metered=isMeteredServer(s.name);
     const meterTag=metered?'<span class="server-meter" title="Безлимитный тариф оператора · не участвует в авто-переключении">Тариф</span>':'';
+    // s.muted comes from /status (computed server-side against muted_servers) —
+    // NOT recomputed here. isMeteredServer above already duplicates backend
+    // logic in JS and that duplication has drifted before; don't add a second.
+    const muted=!!s.muted;
+    const muteBtn=`<span class="server-mute" onclick="toggleMute(event,${i},${muted})" role="button" tabindex="0"
+      title="${muted?'Сервер замьючен: не выбирается автоматически. Нажмите, чтобы снять мьют.':'Замьютить: исключить из авто-выбора и авто-переключения (вручную останется доступен).'}"
+      aria-label="${muted?'Снять мьют':'Замьютить'}">${muted?'🔇':'🔈'}</span>`;
     const protoLabels={vless:'VLESS',vmess:'VMess',trojan:'Trojan',shadowsocks:'SS',hysteria2:'HY2'};
     const proto=(s.protocol||'vless');
     const protoTag=`<span class="server-proto" title="Протокол: ${esc(proto)}">${protoLabels[proto]||esc(proto)}</span>`;
@@ -2010,12 +2035,13 @@ function renderServers(servers,sel,switchingIdx){
     const failTag=inc&&inc.count_24h>0
       ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Откройте «История сбоев» ниже.">⚠ ${inc.count_24h}</span>`
       :'';
-    html+=`<div class="server${a}${sw}${metered?' server-metered':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
+    html+=`<div class="server${a}${sw}${metered?' server-metered':''}${muted?' server-muted':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${muted?', замьючен':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
       ${flagBadge}
       <span class="server-name">${esc(name)}</span>
       ${protoTag}
       ${meterTag}
       ${failTag}
+      ${muteBtn}
       <span class="server-ping-box ${cls}" title="TCP RTT до сервера. Реальная задержка через VLESS+Reality немного выше.">${bars}<span class="server-ping">${pingStr}</span></span>
     </div>`;
   });
@@ -2030,7 +2056,8 @@ const INCIDENT_LABEL={
   slow_redial:'Низкая скорость — переподключение',
   slow_noalt:'Низкая скорость везде',
   wan_down:'Провайдер недоступен',
-  wan_recovered:'Интернет восстановлен'
+  wan_recovered:'Интернет восстановлен',
+  emergency_muted:'Аварийно на замьюченный'
 };
 function fmtIncidentTime(ts){
   const d=new Date(ts*1000);
@@ -2251,6 +2278,42 @@ async function toggleVPN(){
   scheduleStatus(2000);
 }
 
+// Mute / un-mute a server: it stops being a candidate for auto-select,
+// auto-eval and watchdog failover, but stays selectable by hand and keeps
+// running if it's the one currently connected. Used for the billed CDN
+// ("Обход") relays, which must never switch themselves on unattended.
+//
+// stopPropagation is load-bearing: the button lives INSIDE the row whose
+// onclick is selectServer, so without it a mute click also switches server.
+let _mutePending=false;
+async function toggleMute(ev,i,isMuted){
+  ev.stopPropagation();
+  if(_mutePending)return;
+  if(!state.servers||!state.servers[i])return;
+  _mutePending=true;
+  const name=state.servers[i].name||'сервер';
+  try{
+    const r=await apiFetch(API+'?action='+(isMuted?'unmute-server':'mute-server')+'&index='+i,{timeoutMs:15000});
+    const d=await r.json();
+    if(d.error){toast.error(d.error);return;}
+    // Optimistic local flip so the icon reacts instantly; the next /status
+    // poll re-derives `muted` from the backend and wins if they disagree.
+    state.servers[i].muted=!isMuted;
+    renderServers(state.servers,state.selected);
+    if(d.status==='unmuted'){
+      // Un-muting through a FAMILY token ("Обход") frees the siblings too —
+      // say so, otherwise the extra servers silently rejoin auto-switching.
+      const freed=(d.muted_count!=null&&Array.isArray(d.removed_tokens)&&d.removed_tokens.length)
+        ? d.removed_tokens.join(', ') : '';
+      toast.success('Мьют снят: '+name+(freed?' (снят тег «'+freed+'» — вместе с похожими серверами)':''));
+    }else if(d.status==='muted'){
+      toast.success(name+' замьючен — не будет включаться автоматически'
+        +(d.muted_count>1?' (всего замьючено: '+d.muted_count+')':''));
+    }
+  }catch(e){toast.error('Не удалось изменить мьют');}
+  finally{_mutePending=false;scheduleStatus(1500);}
+}
+
 // Server switch is a 2-phase flow with optimistic UI:
 // 1. Pre-flight probe (3-5s) — verify the target works without touching prod
 // 2. Soft restart (5-7s) — actually switch
@@ -2364,6 +2427,7 @@ async function doPing(){
 // Maps backend status code to a short Russian phrase for the toast log.
 const _AUTO_STATUS_RU={
   skipped_metered:'тарифицируемый',
+  skipped_muted:'замьючен',
   unreachable:'нет связи',
   probe_failed:'VLESS не прошёл',
   already_active:'уже активен ✓',
@@ -2440,9 +2504,14 @@ async function doAutoSelect(){
       const err=new Error(d.error);err.attempts=d.attempts;throw err;
     }
     const log=_formatAttempts(d.attempts);
-    const summary=d.switched?(d.server+' · '+d.rtt_ms+' мс'):('Уже на лучшем: '+d.server);
+    let summary=d.switched?(d.server+' · '+d.rtt_ms+' мс'):('Уже на лучшем: '+d.server);
+    // d.emergency = every un-muted server was unreachable, so the picker fell
+    // back to a muted (billed) one. Never let that pass as a normal success —
+    // the whole point of the mute list is that it costs money.
+    if(d.emergency)summary='⚠ Свободных серверов нет — выбран замьюченный (тарифицируемый).\n'+summary;
     const desc=log?(summary+'\n\n'+log):summary;
-    tid=updateToast(tid,d.switched?'Переключено':'Без изменений',{type:'success',desc,duration:7000});
+    tid=updateToast(tid,d.switched?(d.emergency?'Переключено аварийно':'Переключено'):'Без изменений',
+      {type:d.emergency?'warning':'success',desc,duration:d.emergency?10000:7000});
     try{await fetchStatus()}catch(_){}
   }catch(e){
     const log=e.attempts?_formatAttempts(e.attempts):'';

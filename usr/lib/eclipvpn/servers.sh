@@ -294,16 +294,20 @@ cmd_auto_select() {
     total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
 
     # attempts collects an ordered audit trail of every server we considered:
-    # what status (skipped_metered / unreachable / probe_failed / selected /
-    # already_active) and its RTT. This is what powers the "why X and not Y"
-    # explanation in the UI toast.
+    # what status (skipped_metered / skipped_muted / unreachable / probe_failed /
+    # selected / already_active) and its RTT. This is what powers the "why X and
+    # not Y" explanation in the UI toast.
     local attempts="[]"
     local candidates=""
+    local muted; muted=$(_muted_tokens)
+    local emergency=false
     while [ "$i" -lt "$total" ]; do
         name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
         host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
         if _is_metered_server "$name"; then
             attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "skipped_metered")
+        elif _name_has_token "$name" "$muted"; then
+            attempts=$(_attempt_add "$attempts" "$name" "$i" -1 "skipped_muted")
         else
             ms=$(_reach_ms "$host" "$(_server_protocol "$i")")
             if [ "$ms" -gt 0 ] 2>/dev/null; then
@@ -314,6 +318,29 @@ cmd_auto_select() {
         fi
         i=$((i + 1))
     done
+
+    # Emergency pass: nothing un-muted answered, so lift the mute rather than
+    # leave the user with no exit at all. Metered stays excluded (a Russian IP
+    # is not a working VPN — see _is_auto_skipped). The `emergency` flag rides
+    # out in the response so the UI can say WHY a muted server was picked.
+    if [ -z "$candidates" ] && [ -n "$muted" ]; then
+        flog "Auto-select: no un-muted server answered — retrying muted ones"
+        i=0
+        while [ "$i" -lt "$total" ]; do
+            name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+            host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
+            if ! _is_metered_server "$name" && _name_has_token "$name" "$muted"; then
+                ms=$(_reach_ms "$host" "$(_server_protocol "$i")")
+                if [ "$ms" -gt 0 ] 2>/dev/null; then
+                    candidates="$candidates$ms $i\n"
+                    emergency=true
+                fi
+            fi
+            i=$((i + 1))
+        done
+        [ "$emergency" = true ] && \
+            _log_incident "emergency_muted" "" "" "ни один не-замьюченный сервер не ответил — выбираем из замьюченных (тарифицируемых)"
+    fi
 
     if [ -z "$candidates" ]; then
         jq -n --argjson att "$attempts" '{error:"no reachable servers", attempts:$att}'
@@ -330,8 +357,8 @@ cmd_auto_select() {
         name=$(jq -r --argjson i "$idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
         if [ "$idx" = "$cur" ] && _vpn_running && [ -n "$(test_xray "$(_active_socks_port)")" ]; then
             attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "already_active")
-            jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" \
-                '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
+            jq -n --arg n "$name" --argjson i "$idx" --argjson ms "$ms" --argjson att "$attempts" --argjson em "$emergency" \
+                '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, emergency:$em, attempts:$att}'
             return 0
         fi
         flog "Auto-select: probing $name (idx=$idx rtt=${ms}ms)"
@@ -355,8 +382,8 @@ EOF
 
     flog "Auto-select: chose $best_name idx=$best_idx rtt=${best_ms}ms"
     if [ "$cur" = "$best_idx" ]; then
-        jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
-            '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, attempts:$att}'
+        jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" --argjson em "$emergency" \
+            '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, emergency:$em, attempts:$att}'
         return 0
     fi
 
@@ -404,8 +431,8 @@ EOF
             ;;
     esac
 
-    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" \
-        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true, attempts:$att}'
+    jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" --argjson em "$emergency" \
+        '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:true, emergency:$em, attempts:$att}'
 }
 
 # Periodic re-evaluation invoked by the watchdog. Honours hysteresis so we
@@ -450,8 +477,10 @@ cmd_auto_eval() {
             exit 0
         fi
 
-        # Measure RTT for all non-metered servers; remember current's RTT for hysteresis.
+        # Measure RTT for all auto-eligible servers; remember current's RTT for
+        # hysteresis. Auto-eligible = not metered and not user-muted.
         local total i=0 name host ms current_idx current_rtt=-1 candidates=""
+        local muted; muted=$(_muted_tokens)
         total=$(jq 'length' "$ECLIPVPN_TMP/servers.json")
         current_idx=$(get_config_val selected_server 0)
         # Bounds-check: subscription may have shrunk while we were on a higher
@@ -464,7 +493,7 @@ cmd_auto_eval() {
         while [ "$i" -lt "$total" ]; do
             name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
             host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
-            if ! _is_metered_server "$name"; then
+            if ! _is_auto_skipped "$name" "$muted"; then
                 ms=$(_reach_ms "$host" "$(_server_protocol "$i")")
                 if [ "$ms" -gt 0 ] 2>/dev/null; then
                     candidates="$candidates$ms $i\n"
@@ -473,6 +502,29 @@ cmd_auto_eval() {
             fi
             i=$((i + 1))
         done
+
+        # Emergency pass — only when the current tunnel is actually BROKEN and
+        # no un-muted server answered. Auto-eval otherwise runs as an
+        # optimiser, and "everything else is a bit slow" must never be a reason
+        # to move onto a billed exit; a dead tunnel is.
+        if [ -z "$candidates" ] && [ "$current_broken" -eq 1 ] && [ -n "$muted" ]; then
+            flog "Auto-mode: current broken and no un-muted candidate — retrying muted ones"
+            i=0
+            while [ "$i" -lt "$total" ]; do
+                name=$(jq -r ".[$i].name" "$ECLIPVPN_TMP/servers.json")
+                host=$(jq -r ".[$i].host" "$ECLIPVPN_TMP/servers.json")
+                if ! _is_metered_server "$name" && _name_has_token "$name" "$muted"; then
+                    ms=$(_reach_ms "$host" "$(_server_protocol "$i")")
+                    if [ "$ms" -gt 0 ] 2>/dev/null; then
+                        candidates="$candidates$ms $i\n"
+                        [ "$i" = "$current_idx" ] && current_rtt="$ms"
+                    fi
+                fi
+                i=$((i + 1))
+            done
+            [ -n "$candidates" ] && \
+                _log_incident "emergency_muted" "" "" "текущий сервер не работает, свободных нет — переходим на замьюченный (тарифицируемый)"
+        fi
         [ -z "$candidates" ] && exit 0
 
         local best_line best_rtt best_idx
@@ -529,4 +581,104 @@ cmd_auto_eval() {
             flog "Auto-mode: restart failed, rolled back"
         fi
     ) 9>"$oplock"
+}
+
+# --- mute list management ---------------------------------------------------
+# `mute-server N` / `unmute-server N` toggle a server's NAME in the
+# `muted_servers` token list (matcher: _name_has_token in usr/bin/eclipvpn).
+#
+# The list stores NAME SUBSTRINGS, never indices. The merged pool is rebuilt on
+# every `update` and indices shift (that is the whole reason
+# _remap_selected_server exists), so an index-keyed mute would drift onto the
+# wrong server. A name token also mutes a whole family with one entry — a single
+# "Обход" token covers every CDN relay the panel adds later.
+#
+# The index argument is used ONLY to resolve the name at click time.
+
+# How many servers in the current pool a token list matches. Mirrors
+# _apply_server_filter's jq: contains(), never test() — no Oniguruma here.
+_muted_count() {
+    local toks="$1"
+    [ -n "$toks" ] || { echo 0; return 0; }
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { echo 0; return 0; }
+    jq --arg f "$toks" '
+        ($f | split(",") | map(select(length>0))) as $t
+        | [ .[] | . as $s | select($t | any(. as $k | ($s.name // "") | contains($k))) ]
+        | length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null || echo 0
+}
+
+# Resolve a pool index to a server name, with bounds + sanity checks.
+# Echoes the name; non-zero on any problem.
+#
+# CAREFUL: _err writes its {"error":...} to STDOUT, and callers run this in a
+# command substitution — so on failure the error JSON lands in the captured
+# variable, not on the wire. Callers must re-emit it (see _mute_name_or_fail);
+# swallowing it leaves the CGI returning an empty body and the UI showing a
+# generic "не удалось" with the real reason lost.
+_mute_resolve_name() {
+    local idx="$1" cmd="$2"
+    [ -f "$ECLIPVPN_TMP/servers.json" ] || { _err "$cmd: no servers (run update first)"; return 1; }
+    case "$idx" in ''|*[!0-9]*) _err "$cmd: index must be a number"; return 1 ;; esac
+    local total; total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+    case "$total" in ''|*[!0-9]*) total=0 ;; esac
+    [ "$idx" -lt "$total" ] || { _err "$cmd: index $idx out of range (pool=$total)"; return 1; }
+    local name; name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+    [ -n "$name" ] || { _err "$cmd: server $idx has no name"; return 1; }
+    # The list is comma-separated, so a name carrying a comma can never be a
+    # token. Provider names don't normally have one; fail loudly instead of
+    # silently storing a token that splits into two useless fragments.
+    case "$name" in *,*) _err "$cmd: name contains a comma — edit set-config muted_servers by hand"; return 1 ;; esac
+    printf '%s' "$name"
+}
+
+cmd_mute_server() {
+    local name rc
+    name=$(_mute_resolve_name "$1" "mute-server"); rc=$?
+    [ "$rc" -eq 0 ] || { printf '%s\n' "$name"; return 1; }
+    local muted; muted=$(_muted_tokens)
+    if _name_has_token "$name" "$muted"; then
+        jq -n --arg n "$name" --arg l "$muted" --argjson c "$(_muted_count "$muted")" \
+            '{status:"unchanged", server:$n, muted:true, muted_servers:$l, muted_count:$c}'
+        return 0
+    fi
+    local new="${muted:+$muted,}$name"
+    [ "${#new}" -gt 400 ] && { _err "mute-server: muted_servers would exceed 400 chars"; return 1; }
+    update_config '.muted_servers = $v' --arg v "$new" || { _err "mute-server: save failed"; return 1; }
+    flog "Muted server (excluded from auto-select/failover): $name"
+    jq -n --arg n "$name" --arg l "$new" --argjson c "$(_muted_count "$new")" \
+        '{status:"muted", server:$n, muted:true, muted_servers:$l, muted_count:$c}'
+}
+
+cmd_unmute_server() {
+    local name rc
+    name=$(_mute_resolve_name "$1" "unmute-server"); rc=$?
+    [ "$rc" -eq 0 ] || { printf '%s\n' "$name"; return 1; }
+    local muted; muted=$(_muted_tokens)
+    if ! _name_has_token "$name" "$muted"; then
+        jq -n --arg n "$name" --arg l "$muted" --argjson c "$(_muted_count "$muted")" \
+            '{status:"unchanged", server:$n, muted:false, muted_servers:$l, muted_count:$c}'
+        return 0
+    fi
+    # Drop EVERY token this name matches, not just an exact-name one: the server
+    # may be muted through a FAMILY token ("Обход"), and removing only an exact
+    # match would leave the button visibly doing nothing. `removed` rides out so
+    # the UI can warn that un-muting one CDN relay un-muted its siblings too.
+    local new="" removed="" tok rest
+    rest="$muted"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            *,*) tok="${rest%%,*}"; rest="${rest#*,}" ;;
+            *)   tok="$rest"; rest="" ;;
+        esac
+        [ -n "$tok" ] || continue
+        case "$name" in
+            *"$tok"*) removed="${removed:+$removed,}$tok"; continue ;;
+        esac
+        new="${new:+$new,}$tok"
+    done
+    update_config '.muted_servers = $v' --arg v "$new" || { _err "unmute-server: save failed"; return 1; }
+    flog "Unmuted server: $name (dropped tokens: $removed)"
+    jq -n --arg n "$name" --arg l "$new" --arg r "$removed" --argjson c "$(_muted_count "$new")" \
+        '{status:"unmuted", server:$n, muted:false, muted_servers:$l, muted_count:$c,
+          removed_tokens:($r | split(",") | map(select(length>0)))}'
 }

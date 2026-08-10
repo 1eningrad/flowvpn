@@ -116,6 +116,10 @@ case "$action" in
     update)         /usr/bin/eclipvpn update ;;
     set-server)     /usr/bin/eclipvpn set-server "$index" ;;
     probe-server)   /usr/bin/eclipvpn probe-server "$index" ;;
+    # Mutating — deliberately NOT in the read-only exempt arm of the
+    # Origin/Referer gate above.
+    mute-server)    /usr/bin/eclipvpn mute-server "$index" ;;
+    unmute-server)  /usr/bin/eclipvpn unmute-server "$index" ;;
     sub)
         # Multi-subscription manager. Free-text url/name come via the POST body
         # (JSON) — not argv/query — so a subscription token can't leak through a

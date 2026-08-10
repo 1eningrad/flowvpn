@@ -471,6 +471,56 @@ _is_metered_server() {
     return 1
 }
 
+# --- user mute list ---------------------------------------------------
+# `muted_servers` is a comma-separated list of case-sensitive NAME substrings
+# (same semantics as server_filter). A matching server is hidden from the
+# AUTOMATIC pickers only — auto-select, auto-eval and watchdog failover skip
+# it — while `set-server` still selects it by hand and an already-selected
+# muted server keeps running. Motivating case: the CDN-fronted "Обход" relays
+# are billed per traffic, so they must not be switched on behind the user's
+# back, but they still have to be one click away when the throttle bites.
+#
+# Empty by default: nothing is muted unless the user says so.
+#
+# Matching is `case` globbing with the token quoted (literal, no glob), never a
+# regex — this mirrors _apply_server_filter's jq `contains`, and the router's jq
+# has no Oniguruma (see parse.sh).
+#
+# The token list is passed IN rather than read from config here: every caller
+# loops over the whole pool, and a get_config_val per server would mean a jq
+# spawn per server (~50ms each on a 100+ node pool).
+_name_has_token() {
+    local name="$1" toks="$2" tok rest
+    [ -n "$toks" ] || return 1
+    rest="$toks"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            *,*) tok="${rest%%,*}"; rest="${rest#*,}" ;;
+            *)   tok="$rest"; rest="" ;;
+        esac
+        [ -n "$tok" ] || continue
+        case "$name" in *"$tok"*) return 0 ;; esac
+    done
+    return 1
+}
+
+# Read the mute token list once, before a scan loop.
+_muted_tokens() { get_config_val muted_servers ""; }
+
+# True when the automatic pickers must skip this server.
+# $1 = server name, $2 = muted token list (from _muted_tokens).
+#
+# NB metered and muted are NOT the same skip. Metered (МТС/Т2/…) is a
+# CORRECTNESS skip — those exits hand back a Russian IP and defeat the VPN, so
+# they are never auto-picked, not even in the emergency pass. Muted is a COST
+# skip, and the emergency pass in cmd_auto_select / cmd_auto_eval /
+# _watchdog_pick_best deliberately lifts it when nothing else answers: no
+# connection at all is worse than a billed one.
+_is_auto_skipped() {
+    _is_metered_server "$1" && return 0
+    _name_has_token "$1" "$2"
+}
+
 _record_switch() {
     local from_idx="$1" to_idx="$2" reason="$3"
     local from_name=$(jq -r ".[$from_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
@@ -584,6 +634,8 @@ case "$1" in
     status)         cmd_status ;;
     set-server)     cmd_set_server "$2" ;;
     probe-server)   cmd_probe_server "$2" ;;
+    mute-server)    cmd_mute_server "$2" ;;
+    unmute-server)  cmd_unmute_server "$2" ;;
     sub)            cmd_sub "$2" "$3" "$4" ;;
     update)         cmd_update ;;
     ping)           cmd_ping ;;

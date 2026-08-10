@@ -512,12 +512,19 @@ cmd_status() {
         --argjson sub_meta "$sub_meta" \
         '$cfg[0] as $c |
          ($c.selected_server // 0) as $sel |
+         (($c.muted_servers // "") | split(",") | map(select(length>0))) as $mtoks |
          {running:$running,
           server: (if $running then ($srv[$sel].name // "") else "" end),
           uptime:$uptime,
           selected: $sel,
-          servers: ($srv | map({name, host, port, protocol:(.protocol // "vless"),
-                                sub_id:(.sub_id // ""), sub_name:(.sub_name // "")})),
+          # muted is computed HERE, server-side, not mirrored in the UI the way
+          # isMeteredServer() mirrors _is_metered_server — that duplication is
+          # already a standing bug source, and this list is user data that only
+          # the router has. contains(), never test(): no Oniguruma on the router.
+          servers: ($srv | map(. as $s | {name, host, port, protocol:(.protocol // "vless"),
+                                sub_id:(.sub_id // ""), sub_name:(.sub_name // ""),
+                                muted: ($mtoks | any(. as $t | ($s.name // "") | contains($t)))})),
+          muted_servers: ($c.muted_servers // ""),
           subscription_url: ($c.subscription_url // ""),
           subscriptions: ($c.subscriptions // []),
           vpn_ip:$vpn_ip,
