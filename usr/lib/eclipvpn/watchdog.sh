@@ -521,7 +521,21 @@ cmd_watchdog() {
                                 logger -t eclipvpn "Watchdog: fresh flow to $cur_name also slow (${fresh_kbps:-0}KB/s)"
                             fi
                         fi
-                        if [ "$did_redial" -eq 0 ]; then
+                        # auto_failover gates EVERY automatic change of the selected
+                        # server, and a throughput switch is one of them — but this
+                        # path used to be gated only by tput_guard, so a user who
+                        # turned failover off to stop surprise switches still got
+                        # them here. Bail BEFORE the benchmark: probing the pool
+                        # costs ~13s/server and the result could not be acted on
+                        # anyway. The re-dial above stays allowed on purpose — it
+                        # re-opens a flow to the SAME server, changing no selection.
+                        if [ "$did_redial" -eq 0 ] && [ "$(get_config_val auto_failover true)" != "true" ]; then
+                        logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — auto_failover off, staying put"
+                        _log_incident "slow_noswitch" "$cur_host" "$cur_name" "низкая скорость (${kbps}КБ/с), автопереключение отключено — сервер оставлен"
+                        last_tput_switch=$(date +%s)
+                        tput_switch_helped=0
+                        slow_count=0
+                        elif [ "$did_redial" -eq 0 ]; then
                         logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — benchmarking servers"
                         if [ -n "$total" ] && [ "$total" -gt 1 ]; then
                             # scope stays `normal` — muted servers are NOT an
