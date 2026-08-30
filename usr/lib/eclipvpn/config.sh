@@ -8,7 +8,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|muted_servers|full_tunnel|auto_failover) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|muted_servers|full_tunnel|auto_failover|dns_direct_servers|dns_overrides) ;;
         *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
@@ -80,6 +80,68 @@ cmd_set_config() {
         update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
         jq -n --arg k "$key" --arg v "$value" --argjson n "$(_muted_count "$value")" \
             '{status:"saved", key:$k, value:$v, muted_count:$n}'
+        return 0
+    fi
+    # dns_direct_servers: ordered fallback list for the direct-path resolver.
+    # Every entry must be a literal IPv4 — the value lands verbatim in the
+    # generated sing-box `dns.servers[].server` field, and this key is
+    # CGI-reachable. off/none/- restores the built-in Yandex pair. Only a
+    # restart regenerates singbox.json, so report restart_required instead of
+    # bouncing the tunnel from under a set-config call.
+    if [ "$key" = "dns_direct_servers" ]; then
+        case "$value" in off|none|-) value="" ;; esac
+        if [ -n "$value" ]; then
+            [ "${#value}" -gt 200 ] && { _err "dns_direct_servers: too long (max 200 chars)"; return 1; }
+            local _ip _n=0 _oif="$IFS"
+            IFS=,
+            for _ip in $value; do
+                IFS="$_oif"
+                _ip=$(printf '%s' "$_ip" | tr -d ' ')
+                if [ -n "$_ip" ]; then
+                    _validate_ipv4 "$_ip" || { _err "dns_direct_servers: '$_ip' is not a valid IPv4"; return 1; }
+                    _n=$((_n + 1))
+                fi
+                IFS=,
+            done
+            IFS="$_oif"
+            [ "$_n" -eq 0 ] && { _err "dns_direct_servers: no valid server in the list"; return 1; }
+        fi
+        update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+        jq -n --arg k "$key" --arg v "$value" --arg a "$(_active_dns_direct)" \
+            '{status:"saved", key:$k, value:$v, active:$a, restart_required:true}'
+        return 0
+    fi
+    # dns_overrides: "domain=ip" pairs, comma separated — pin ONE domain family
+    # to ONE resolver, ahead of every other DNS rule. Generalises the global
+    # Yandex hardcode (RU banks refuse foreign resolvers): the next such domain
+    # becomes a config line instead of a code change. Same defensive gate as the
+    # other CGI-reachable string keys.
+    if [ "$key" = "dns_overrides" ]; then
+        case "$value" in off|none|-) value="" ;; esac
+        if [ -n "$value" ]; then
+            [ "${#value}" -gt 400 ] && { _err "dns_overrides: too long (max 400 chars)"; return 1; }
+            local _pair _dom _dip _cnt=0 _oif2="$IFS"
+            IFS=,
+            for _pair in $value; do
+                IFS="$_oif2"
+                _pair=$(printf '%s' "$_pair" | tr -d ' ')
+                if [ -n "$_pair" ]; then
+                    case "$_pair" in *=*) ;; *) _err "dns_overrides: '$_pair' must be domain=ip"; return 1 ;; esac
+                    _dom=${_pair%%=*}; _dip=${_pair##*=}
+                    case "$_dom" in
+                        ''|*[!a-zA-Z0-9.-]*) _err "dns_overrides: '$_dom' is not a valid domain"; return 1 ;;
+                    esac
+                    _validate_ipv4 "$_dip" || { _err "dns_overrides: '$_dip' is not a valid IPv4"; return 1; }
+                    _cnt=$((_cnt + 1))
+                fi
+                IFS=,
+            done
+            IFS="$_oif2"
+            [ "$_cnt" -eq 0 ] && { _err "dns_overrides: no valid domain=ip pair"; return 1; }
+        fi
+        update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+        jq -n --arg k "$key" --arg v "$value" --argjson n "$(_dns_overrides_pairs | wc -l)" \
+            '{status:"saved", key:$k, value:$v, overrides:$n, restart_required:true}'
         return 0
     fi
     # Boolean keys: store as JSON true/false instead of "true"/"false" string,

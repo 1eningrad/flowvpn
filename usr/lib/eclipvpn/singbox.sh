@@ -202,6 +202,29 @@ generate_singbox_config() {
     local clash_secret
     clash_secret=$(_get_clash_secret)
 
+    # --- per-domain DNS overrides + the active direct resolver ---------------
+    # `dns_overrides` pins a domain family to one resolver AHEAD of every other
+    # DNS rule (force-VPN, geosite-ru, final) — it is the explicit user override,
+    # so it must win. Pairs are grouped BY RESOLVER via jq's group_by, which
+    # sorts: the emitted JSON is therefore identical for any ordering of the
+    # config string, which the cmd_restart unchanged-config fast path relies on.
+    local dns_direct_ip dns_ov dns_ov_servers dns_ov_rules
+    dns_direct_ip=$(_active_dns_direct)
+    dns_ov=$(_dns_overrides_pairs | jq -R -s -c '
+        [ split("\n")[] | select(length > 0) | split("\t") | {domain: .[0], ip: .[1]} ]
+        | group_by(.ip)
+        | to_entries
+        | map({ tag: ("dns-ov-" + (.key | tostring)),
+                ip: .value[0].ip,
+                domains: ([ .value[].domain ] | unique) })' 2>/dev/null)
+    [ -n "$dns_ov" ] || dns_ov='[]'
+    dns_ov_servers=$(printf '%s' "$dns_ov" | jq -c \
+        'map({tag: .tag, type: "udp", server: .ip, detour: "direct"})' 2>/dev/null)
+    dns_ov_rules=$(printf '%s' "$dns_ov" | jq -c \
+        'map({domain_suffix: .domains, action: "route", server: .tag})' 2>/dev/null)
+    [ -n "$dns_ov_servers" ] || dns_ov_servers='[]'
+    [ -n "$dns_ov_rules" ] || dns_ov_rules='[]'
+
     # Build full config.
     # Note on default_domain_resolver: sing-box 1.12+ requires an explicit
     # DNS resolver for outbound dial (else logs WARN, 1.14 refuses to start).
@@ -212,6 +235,9 @@ generate_singbox_config() {
     jq -n \
         --argjson rules "$rules" \
         --argjson dns_rules "$dns_rules" \
+        --argjson dns_ov_servers "$dns_ov_servers" \
+        --argjson dns_ov_rules "$dns_ov_rules" \
+        --arg dns_direct_ip "$dns_direct_ip" \
         --argjson proxy_outbound "$proxy_outbound" \
         --argjson socks_inbound "$socks_inbound" \
         --arg clash_secret "$clash_secret" \
@@ -225,17 +251,19 @@ generate_singbox_config() {
             clash_api: {external_controller: "127.0.0.1:9090", secret: $clash_secret}
         },
         dns: {
-            servers: [
+            servers: ([
                 {tag: "dns-proxy", type: "https", server: "1.1.1.1", server_port: 443, path: "/dns-query", detour: "default"},
                 # dns-direct uses Yandex DNS, not Cloudflare 1.1.1.1: VTB and some
                 # other RU banks have authoritative NS configured to refuse foreign
                 # resolvers, so 1.1.1.1 returns SERVFAIL for www.vtb.ru. Yandex
                 # also returns RU-locality CDN IPs for the same hostname, which
                 # resolves faster from inside RU than the foreign-pinned answer.
-                {tag: "dns-direct", type: "udp", server: "77.88.8.8", detour: "direct"},
+                {tag: "dns-direct", type: "udp", server: $dns_direct_ip, detour: "direct"},
                 {tag: "dns-block", type: "udp", server: "127.0.0.127"}
-            ],
-            rules: $dns_rules,
+            ] + $dns_ov_servers),
+            # User overrides FIRST — an explicit domain=resolver pin outranks the
+            # force-VPN / geosite-ru / final rules the mode builders emit.
+            rules: ($dns_ov_rules + $dns_rules),
             final: $final_dns,
             strategy: "ipv4_only"
         },

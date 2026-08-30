@@ -449,6 +449,82 @@ _stage_xray_port() {
     [ "$active" = "1081" ] && echo 1080 || echo 1081
 }
 
+# --- direct-path DNS: resolver list + bounded probe ---------------------------
+# `dns-direct` used to be one hardcoded server (Yandex 77.88.8.8). That is a
+# single point of failure for EVERY direct-path lookup: under a CGNAT that
+# hijacks UDP/53 (SevenSky) it dies, and with it resolution of all RU sites.
+# `dns_direct_servers` is an ordered fallback list; the watchdog promotes the
+# first one that answers and records it in $ECLIPVPN_TMP/dns_direct_active.
+#
+# Do NOT "modernize" the default to Cloudflare: VTB and a few other RU banks
+# run authoritative NS that refuse foreign resolvers, so 1.1.1.1 SERVFAILs
+# them. Both defaults are Yandex for that reason (.8 primary, .1 secondary).
+_dns_direct_list() {
+    local raw ip out=""
+    raw=$(get_config_val dns_direct_servers "")
+    [ -z "$raw" ] && { echo "77.88.8.8 77.88.8.1"; return; }
+    local IFS=,
+    for ip in $raw; do
+        ip=$(printf '%s' "$ip" | tr -d ' ')
+        [ -n "$ip" ] && out="$out $ip"
+    done
+    [ -n "$out" ] && echo "${out# }" || echo "77.88.8.8 77.88.8.1"
+}
+
+# The resolver the generator should emit as `dns-direct`. The persisted choice
+# wins ONLY while it is still a member of the configured list — otherwise an
+# edit to dns_direct_servers would be silently ignored until the next failover.
+_active_dns_direct() {
+    local saved list first
+    list=$(_dns_direct_list)
+    first=${list%% *}
+    saved=$(cat "$ECLIPVPN_TMP/dns_direct_active" 2>/dev/null)
+    [ -n "$saved" ] || { echo "$first"; return; }
+    local ip
+    for ip in $list; do
+        [ "$ip" = "$saved" ] && { echo "$saved"; return; }
+    done
+    echo "$first"
+}
+
+# Bounded "does this resolver answer" probe. There is NO `timeout` binary on
+# this busybox and NO sub-second sleep, and busybox `nslookup` against a
+# blackholed resolver hangs for far longer than a watchdog tick — so run it in
+# the background and reap it with the same netstat-paced busy-poll used by
+# start_singbox/stop_singbox (the netstat call is what paces the loop).
+# Args: RESOLVER_IP [MAX_ITERS=120 (~3-5s)]. Returns 0 when it answered.
+_dns_probe() {
+    local ip="$1" max="${2:-120}" pid n=0
+    [ -n "$ip" ] || return 1
+    nslookup ya.ru "$ip" >/dev/null 2>&1 &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        n=$((n + 1))
+        [ "$n" -ge "$max" ] && { kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; }
+        netstat -tn >/dev/null 2>&1
+    done
+    wait "$pid" 2>/dev/null
+}
+
+# Per-domain resolver overrides: `dns_overrides` is "domain=ip" pairs, comma
+# separated (e.g. "vtb.ru=77.88.8.8"). Emits one "domain<TAB>ip" line per pair.
+# Motivation: the global Yandex hardcode above exists to satisfy ONE class of
+# domains (RU banks). With overrides that becomes a config line instead of a
+# code change, and the global default is free to be whatever resolves best.
+_dns_overrides_pairs() {
+    local raw pair dom ip
+    raw=$(get_config_val dns_overrides "")
+    [ -z "$raw" ] && return 0
+    local IFS=,
+    for pair in $raw; do
+        pair=$(printf '%s' "$pair" | tr -d ' ')
+        case "$pair" in *=*) ;; *) continue ;; esac
+        dom=${pair%%=*}
+        ip=${pair##*=}
+        [ -n "$dom" ] && [ -n "$ip" ] && printf '%s\t%s\n' "$dom" "$ip"
+    done
+}
+
 # A server is "metered" (RU-safe, mobile-carrier) when its name contains
 # carrier markers. Such servers give a Russian IP, so watchdog must NEVER
 # auto-switch to them — doing so defeats the purpose of a VPN.

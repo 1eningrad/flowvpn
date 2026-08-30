@@ -235,6 +235,10 @@ cmd_watchdog() {
     # (no good reading since) has been spent — next gate is the full cooldown.
     local slow_count=0 last_tput_switch=0 tput_switch_helped=1
     local tput_redialed=0 tput_fast_retry_used=0
+    # Direct-path DNS health (see the dns_direct_servers guard below).
+    local dns_fail=0
+    local DNS_EVERY=15       # probe the direct resolver every ~5 min (15x20s)
+    local DNS_FAIL_MAX=2     # consecutive misses before promoting a fallback
     local TPUT_EVERY=6        # measure current-server speed every ~2 min (6×20s)
     local TPUT_SLOW_MAX=3     # consecutive low reads before acting (~6 min sustained)
     local TPUT_COOLDOWN=1200  # min seconds between throughput-driven switches (anti-flap)
@@ -295,6 +299,48 @@ cmd_watchdog() {
                 [ $((_fdn * 10)) -ge $((_fdl * 9)) ] && \
                     logger -t eclipvpn "Watchdog: $_fdname fd usage high: $_fdn/$_fdl"
             done
+        fi
+
+        # Direct-path DNS guard. `dns-direct` is a SINGLE resolver in the
+        # generated config, so if it stops answering, every direct-path lookup
+        # dies with it — under a CGNAT that hijacks UDP/53 that means all RU
+        # sites go dark while the tunnel itself looks perfectly healthy, and
+        # nothing else in the watchdog notices (the connectivity probe goes
+        # through the tunnel). Promote the first entry of dns_direct_servers
+        # that still answers, then soft-restart to regenerate singbox.json.
+        #
+        # Deliberately conservative, because the fix costs a tunnel bounce:
+        # DNS_FAIL_MAX consecutive misses, and only when the WAN itself is up —
+        # no resolver switch fixes a dead uplink, and probing the whole list
+        # against a dead WAN just burns the tick. There is NO auto-failback:
+        # the choice lives in $ECLIPVPN_TMP (wiped on reboot), so the primary
+        # comes back on the next boot instead of flapping every recovery.
+        if [ $((tick % DNS_EVERY)) -eq 0 ]; then
+            local _dns_active
+            _dns_active=$(_active_dns_direct)
+            if _dns_probe "$_dns_active"; then
+                dns_fail=0
+            else
+                dns_fail=$((dns_fail + 1))
+                flog "Watchdog: direct DNS $_dns_active did not answer ($dns_fail/$DNS_FAIL_MAX)"
+                if [ "$dns_fail" -ge "$DNS_FAIL_MAX" ] && _watchdog_check_wan; then
+                    local _cand _new=""
+                    for _cand in $(_dns_direct_list); do
+                        [ "$_cand" = "$_dns_active" ] && continue
+                        if _dns_probe "$_cand"; then _new="$_cand"; break; fi
+                    done
+                    if [ -n "$_new" ]; then
+                        echo "$_new" > "$ECLIPVPN_TMP/dns_direct_active"
+                        _log_incident "dns_failover" "$_dns_active" "" "direct DNS $_dns_active -> $_new"
+                        flog "Watchdog: direct DNS failover $_dns_active -> $_new, regenerating"
+                        dns_fail=0
+                        cmd_restart >/dev/null 2>&1
+                    else
+                        flog "Watchdog: no direct DNS in dns_direct_servers answered — keeping $_dns_active"
+                        dns_fail=0
+                    fi
+                fi
+            fi
         fi
 
         # Auto-mode periodic re-evaluation every ~20 minutes (60 ticks).
