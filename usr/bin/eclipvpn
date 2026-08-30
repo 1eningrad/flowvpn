@@ -627,15 +627,27 @@ _mirror_state() {
     return 0
 }
 
-# Refill MISSING /tmp copies from the persistent mirror — never clobber a
-# fresher /tmp file (same rule as _restore_subcache).
+# Reconcile /tmp and the persistent mirror, in whichever direction is missing:
+#   mirror present, /tmp gone   -> refill /tmp  (the reboot case)
+#   /tmp present, mirror gone   -> seed the mirror (the UPGRADE case)
+# Never clobber a file that already exists on either side — a fresher /tmp copy
+# wins (same rule as _restore_subcache), and an existing mirror is authoritative
+# history that a truncated /tmp must not overwrite.
+#
+# The seeding half matters exactly once per install, but it matters: without it
+# the journal that existed BEFORE this feature shipped would sit in /tmp
+# unmirrored and die at the next reboot — including the very incident that
+# motivated the mirror.
 _restore_state() {
     local dir bn
     dir=$(_state_mirror_dir)
     mkdir -p "$ECLIPVPN_TMP" 2>/dev/null
     for bn in incidents.json last_switch.json; do
-        [ -s "$dir/$bn" ] || continue
-        [ -s "$ECLIPVPN_TMP/$bn" ] || cp "$dir/$bn" "$ECLIPVPN_TMP/$bn" 2>/dev/null
+        if [ -s "$dir/$bn" ]; then
+            [ -s "$ECLIPVPN_TMP/$bn" ] || cp "$dir/$bn" "$ECLIPVPN_TMP/$bn" 2>/dev/null
+        elif [ -s "$ECLIPVPN_TMP/$bn" ]; then
+            _mirror_state "$bn"
+        fi
     done
 }
 

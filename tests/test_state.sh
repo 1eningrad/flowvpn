@@ -43,6 +43,19 @@ rm -rf "$MIRROR"; rm -f "$ECLIPVPN_TMP/last_switch.json"
 _restore_state
 assert_eq "restore-nomirror" "$([ -f "$ECLIPVPN_TMP/last_switch.json" ] && echo yes || echo no)" no
 
+# UPGRADE case: a journal already in /tmp with no mirror yet must be SEEDED,
+# not left to die at the next reboot. This is what preserves the history that
+# predates the feature — including the incident that motivated it.
+rm -rf "$MIRROR"
+echo '[{"ts":7,"type":"preexisting"}]' > "$ECLIPVPN_TMP/incidents.json"
+_restore_state
+assert_eq "seed-mirror" "$(jq -r '.[0].type' "$MIRROR/incidents.json" 2>/dev/null)" "preexisting"
+# an existing mirror is authoritative history: a truncated /tmp must not win
+echo '[{"ts":8,"type":"mirrored"}]' > "$MIRROR/incidents.json"
+echo '[]' > "$ECLIPVPN_TMP/incidents.json"
+_restore_state
+assert_eq "seed-no-overwrite" "$(jq -r '.[0].type' "$MIRROR/incidents.json" 2>/dev/null)" "mirrored"
+
 _t log_incident_mirrors
 rm -rf "$MIRROR"; rm -f "$ECLIPVPN_TMP/incidents.json" "$ECLIPVPN_TMP/op.in_progress"
 _log_incident "check_fail" "1.2.3.4" "srv" "boom"
