@@ -1286,6 +1286,10 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <span>Нажмите, чтобы подключиться</span>
           </div>
           <div class="net-badge" id="netBadge"><span class="nb-dot"></span><span id="netBadgeText"></span></div>
+          <!-- auto_failover=false makes the tunnel stop self-healing: a dead server
+               stays selected until the user switches by hand. That is a deliberate
+               choice, but an invisible one until this badge existed. -->
+          <div class="net-badge whitelist" id="failoverBadge" style="display:none" title="Watchdog не будет автоматически менять сервер при обрыве — переключитесь вручную. Включается в CLI: eclipvpn set-config auto_failover true"><span class="nb-dot"></span><span>Автопереключение выключено</span></div>
         </div>
       </div>
       <label class="toggle" title="Вкл/Выкл VPN">
@@ -2182,6 +2186,10 @@ async function fetchStatus(){
     if(ast && ast.checked !== astOn) ast.checked = astOn;
     const astS = document.getElementById('autoStartStatus');
     if(astS) astS.textContent = astOn ? 'Включено' : 'Выключено';
+    // auto_failover badge. Default TRUE, so only an explicit false lights it —
+    // an older backend that doesn't send the field must not show the warning.
+    const fb=document.getElementById('failoverBadge');
+    if(fb) fb.style.display = (state.auto_failover === false) ? '' : 'none';
     const hint=document.getElementById('autoModeHint');
     if(hint){
       if(state.auto_mode){

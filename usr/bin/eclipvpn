@@ -597,6 +597,48 @@ _is_auto_skipped() {
     _name_has_token "$1" "$2"
 }
 
+# --- persistent diagnostic state --------------------------------------------
+# incidents.json and last_switch.json are the failover JOURNAL — the only record
+# of why the tunnel moved and when. They live in $ECLIPVPN_TMP, which /tmp wipes
+# on every reboot, so a power cut erased exactly the evidence needed to explain
+# the outage that may have caused it (an emergency failover onto a RU exit was
+# diagnosed from these files on 2026-08-30 and would have been unreconstructible
+# after a reboot). Mirror them into /etc next to the subcache, same contract:
+# atomic .tmp + mv + sync, since this is the copy that must survive a power cut.
+#
+# Deliberately only these two. traffic_state.json is rewritten on EVERY traffic
+# poll — mirroring it would hammer the flash overlay for data that is worthless
+# after a reboot anyway. Incidents are written a handful of times a day.
+_state_mirror_dir() {
+    echo "$(dirname "${ECLIPVPN_CONFIG:-/etc/eclipvpn/config.json}")/state"
+}
+
+# Mirror one $ECLIPVPN_TMP state file to the persistent dir. Best-effort: a full
+# or read-only overlay must never break the caller (an incident write is the
+# LAST thing that should abort a failover).
+_mirror_state() {
+    local bn="$1" dir src
+    dir=$(_state_mirror_dir)
+    src="$ECLIPVPN_TMP/$bn"
+    [ -s "$src" ] || return 0
+    mkdir -p "$dir" 2>/dev/null || return 0
+    cp "$src" "$dir/$bn.tmp" 2>/dev/null && mv "$dir/$bn.tmp" "$dir/$bn" 2>/dev/null && sync 2>/dev/null
+    rm -f "$dir/$bn.tmp" 2>/dev/null
+    return 0
+}
+
+# Refill MISSING /tmp copies from the persistent mirror — never clobber a
+# fresher /tmp file (same rule as _restore_subcache).
+_restore_state() {
+    local dir bn
+    dir=$(_state_mirror_dir)
+    mkdir -p "$ECLIPVPN_TMP" 2>/dev/null
+    for bn in incidents.json last_switch.json; do
+        [ -s "$dir/$bn" ] || continue
+        [ -s "$ECLIPVPN_TMP/$bn" ] || cp "$dir/$bn" "$ECLIPVPN_TMP/$bn" 2>/dev/null
+    done
+}
+
 _record_switch() {
     local from_idx="$1" to_idx="$2" reason="$3"
     local from_name=$(jq -r ".[$from_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
@@ -605,6 +647,7 @@ _record_switch() {
         --argjson ts "$(date +%s)" \
         '{time:$ts, from:$from, to:$to, reason:$reason}' \
         > "$ECLIPVPN_TMP/last_switch.json" 2>/dev/null
+    _mirror_state last_switch.json
 }
 
 # Record a server-stability incident. Stored as a JSON array (last 200) keyed
@@ -638,6 +681,7 @@ _log_incident() {
        --argjson ts "$(date +%s)" \
        '. + [{ts:$ts, type:$type, host:$host, server:$name, detail:$detail}] | .[-200:]' \
        "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" || rm -f "$tmp"
+    _mirror_state incidents.json
 }
 
 

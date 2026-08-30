@@ -353,6 +353,8 @@ cmd_diagnose() {
     ' < "$rows"
 }
 cmd_get_incidents() {
+    # Self-heal after a reboot wiped /tmp: the journal lives in /etc too.
+    _restore_state
     local f="$ECLIPVPN_TMP/incidents.json"
     if [ ! -f "$f" ]; then echo '{"incidents":[],"stats":[]}'; return; fi
     local now=$(date +%s)

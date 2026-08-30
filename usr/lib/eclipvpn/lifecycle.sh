@@ -119,6 +119,10 @@ cmd_start() {
     # the post-boot `update` (auto-update / manual / watchdog), which runs once the
     # tunnel can reach the panel through SOCKS. First install (no cache) → the
     # merge yields 0 servers → fall back to the online fetch, which must succeed.
+    # Refill the failover journal from the persistent mirror before anything
+    # else touches /tmp — a reboot wiped incidents.json/last_switch.json, and
+    # their whole value is explaining what happened BEFORE the reboot.
+    _restore_state
     if [ ! -f "$ECLIPVPN_TMP/servers.json" ]; then
         local count
         _restore_subcache
@@ -482,6 +486,9 @@ cmd_status() {
     # whitelist-only uplink. Rebuild the pool from the persistent mirrors right
     # here: offline, no fetch, and a no-op whenever servers.json already exists.
     [ -s "$ECLIPVPN_TMP/servers.json" ] || { _restore_subcache; _merge_sub_pool "$ECLIPVPN_CONFIG" >/dev/null 2>&1; }
+    # /tmp was wiped by the reboot — refill the failover journal from the
+    # persistent mirror so the UI shows history instead of an empty list.
+    _restore_state
     [ -f "$ECLIPVPN_TMP/servers.json" ] && servers_raw=$(cat "$ECLIPVPN_TMP/servers.json")
 
     local device_count=0
@@ -532,6 +539,15 @@ cmd_status() {
           devices:$devices,
           auto_start: ($c.auto_start | if . == false then false else true end),
           auto_mode: ($c.auto_mode // false),
+          # Behaviour toggles the UI must be able to SHOW, not just store: a
+          # user who turns automatic failover off gets a tunnel that no longer
+          # self-heals, and until this was exposed nothing in /status or the UI
+          # said so. Defaults matter here — `// true` is WRONG for a key whose
+          # default is true, because jq treats false as falsy and would flip a
+          # deliberate false back to true (same trap as auto_start).
+          auto_failover: ($c.auto_failover | if . == false then false else true end),
+          tput_guard: ($c.tput_guard | if . == false then false else true end),
+          full_tunnel: ($c.full_tunnel // false),
           running_intent: ($c.running_intent // false),
           device_rules: ($c.device_rules // {}),
           last_switch:$last_switch,
