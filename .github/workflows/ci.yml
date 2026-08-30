@@ -20,9 +20,11 @@ jobs:
           set -eu
           files=$(grep -v '^#' packaging/ship-files | grep -v '^$')
           fail=0
-          for f in $files deploy.sh install.sh install-from-mac.sh \
-                   tests/run.sh tests/test_parse.sh tests/test_validators.sh \
-                   tests/test_locks.sh tests/test_config.sh tests/test_switch.sh; do
+          # tests/*.sh by GLOB, never a hardcoded list: test_subscriptions.sh was
+          # added and silently went un-syntax-checked for weeks because this list
+          # was not updated with it. A new suite must be covered on the commit
+          # that adds it, with no CI edit.
+          for f in $files deploy.sh install.sh install-from-mac.sh tests/*.sh; do
             sh -n "$f"          || { echo "sh -n FAIL:  $f"; fail=1; }
             busybox ash -n "$f" || { echo "ash -n FAIL: $f"; fail=1; }
           done
