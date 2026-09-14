@@ -478,7 +478,6 @@ cmd_status() {
         [ -f "$ECLIPVPN_TMP/vpn_ip" ] && vpn_ip=$(cat "$ECLIPVPN_TMP/vpn_ip")
     fi
 
-    local servers_raw='[]'
     # Self-heal an empty pool. After a cold boot with no WAN, init.d skips
     # autostart entirely ("Network not ready"), so cmd_start's offline restore
     # (subcache → merge) never ran and the UI would show subscriptions with
@@ -489,7 +488,20 @@ cmd_status() {
     # /tmp was wiped by the reboot — refill the failover journal from the
     # persistent mirror so the UI shows history instead of an empty list.
     _restore_state
-    [ -f "$ECLIPVPN_TMP/servers.json" ] && servers_raw=$(cat "$ECLIPVPN_TMP/servers.json")
+
+    # Read the pool via --slurpfile (a file path), NOT --argjson (a shell
+    # arg): the Linux kernel caps a single execve() argument at 128KiB
+    # (MAX_ARG_STRLEN), and a merged pool past ~150-200 servers blows through
+    # that — jq then dies with a silent-ish "Argument list too long" (E2BIG)
+    # on EVERY /status poll, so the UI shows zero servers even though the
+    # pool is fine on disk (hit live at 330 servers / 193KB, 2026-09-14).
+    # --slurpfile wraps the file's content in an array, hence $srv[0] below.
+    local srv_file="$ECLIPVPN_TMP/servers.json"
+    if [ ! -s "$srv_file" ]; then
+        srv_file="$ECLIPVPN_TMP/.status_servers_empty.json"
+        mkdir -p "$ECLIPVPN_TMP"
+        echo '[]' > "$srv_file"
+    fi
 
     local device_count=0
     [ -f /tmp/dhcp.leases ] && device_count=$(wc -l < /tmp/dhcp.leases)
@@ -509,15 +521,16 @@ cmd_status() {
 
     jq -n \
         --slurpfile cfg "$ECLIPVPN_CONFIG" \
+        --slurpfile srvfile "$srv_file" \
         --argjson running "$running" \
         --argjson uptime "$uptime" \
-        --argjson srv "$servers_raw" \
         --arg vpn_ip "$vpn_ip" \
         --argjson devices "$device_count" \
         --argjson last_switch "$last_switch" \
         --argjson last_update "$last_update" \
         --argjson sub_meta "$sub_meta" \
         '$cfg[0] as $c |
+         ($srvfile[0] // []) as $srv |
          ($c.selected_server // 0) as $sel |
          (($c.muted_servers // "") | split(",") | map(select(length>0))) as $mtoks |
          {running:$running,
