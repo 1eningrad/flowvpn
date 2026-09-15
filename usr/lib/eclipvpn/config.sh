@@ -8,7 +8,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|muted_servers|full_tunnel|auto_failover|dns_direct_servers|dns_overrides|net_check_switch) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|server_exclude|muted_servers|full_tunnel|auto_failover|dns_direct_servers|dns_overrides|net_check_switch) ;;
         *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
@@ -58,6 +58,29 @@ cmd_set_config() {
         local _nc; _nc=$(_merge_sub_pool "$ECLIPVPN_CONFIG" 2>/dev/null)
         case "$_nc" in ''|*[!0-9]*) _nc=0 ;; esac
         jq -n --arg k "$key" --arg v "$value" --argjson n "$_nc" \
+            '{status:"saved", key:$k, value:$v, pool:$n}'
+        return 0
+    fi
+    # server_exclude: comma-separated case-sensitive NAME substrings; the inverse
+    # of server_filter — a server whose name contains ANY token is DROPPED from
+    # the merged pool instead of kept. For permanently removing dead/confirmed-bad
+    # entries (a provider's Russia-hosted "exits" that never leave Russia, stale
+    # nodes that don't answer) so they stop coming back on every `update` — hand-
+    # deleting from servers.json doesn't survive the next merge, this does. Save,
+    # then re-merge the existing per-sub caches so it applies immediately (no
+    # re-fetch). off/none/- clears it. The merge ignores an exclude that would
+    # empty the pool (_apply_server_exclude), so a typo can't strand the tunnel.
+    # Same defensive char gate and length cap as server_filter (CGI-reachable).
+    if [ "$key" = "server_exclude" ]; then
+        case "$value" in off|none|-) value="" ;; esac
+        case "$value" in
+            *\"*|*\\*|*\`*|*\$*) _err "server_exclude: must not contain \" \\ \` or \$"; return 1 ;;
+        esac
+        [ "${#value}" -gt 400 ] && { _err "server_exclude: too long (max 400 chars)"; return 1; }
+        update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+        local _nx; _nx=$(_merge_sub_pool "$ECLIPVPN_CONFIG" 2>/dev/null)
+        case "$_nx" in ''|*[!0-9]*) _nx=0 ;; esac
+        jq -n --arg k "$key" --arg v "$value" --argjson n "$_nx" \
             '{status:"saved", key:$k, value:$v, pool:$n}'
         return 0
     fi

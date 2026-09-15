@@ -453,7 +453,7 @@ update_subscription() {
             [ -n "$_m" ] && merged="$_m"
         fi
     done
-    merged=$(printf '%s' "$merged" | _apply_server_filter)
+    merged=$(printf '%s' "$merged" | _apply_server_filter | _apply_server_exclude)
     local count; count=$(printf '%s' "$merged" | jq 'length' 2>/dev/null)
     case "$count" in ''|*[!0-9]*) count=0 ;; esac
 
@@ -488,6 +488,42 @@ _apply_server_filter() {
         ($f | split(",") | map(select(length>0))) as $toks
         | [ .[] | . as $s
             | select($toks | any(. as $t | ($s.name // "") | contains($t))) ]
+    ' 2>/dev/null)
+    if [ -n "$out" ] && [ "$(printf '%s' "$out" | jq 'length' 2>/dev/null)" -gt 0 ]; then
+        printf '%s' "$out"
+    else
+        printf '%s' "$input"
+    fi
+}
+
+# Drop servers matching the optional `server_exclude` config key — a
+# comma-separated list of case-sensitive NAME substrings; a server is DROPPED
+# if its name contains ANY token. The inverse of server_filter (which KEEPS
+# only matches): for permanently decluttering a subscription's dead entries
+# or confirmed-bad exits so they don't keep coming back on every `update` —
+# deleting them from servers.json by hand doesn't survive the next merge,
+# this does. Applied AFTER server_filter in the pipeline (filter narrows to a
+# labelled subset first, e.g. WL; exclude then removes specific named entries
+# from whatever's left).
+#   - A "Russia"-named server is NOT necessarily a Russian EXIT — some relay
+#     through a foreign host despite the name (e.g. measured 2026-09-15: one
+#     "Russia MSK6" node's egress geolocated to Poland). Deciding what goes in
+#     this list requires probing the actual egress IP (cmd_probe_server
+#     already returns it), never name alone — see CLAUDE.md.
+#   - contains(), not test() — same Oniguruma-less jq as everywhere else.
+#   - SAFETY: if excluding would empty the pool, it's IGNORED (same guard as
+#     server_filter) — a typo or an over-broad token can never silently
+#     strand the tunnel with 0 servers.
+# stdin: JSON array; stdout: filtered (or original) JSON array.
+_apply_server_exclude() {
+    local excl; excl=$(get_config_val server_exclude "")
+    [ -z "$excl" ] && { cat; return 0; }
+    local input; input=$(cat)
+    local out
+    out=$(printf '%s' "$input" | jq -c --arg f "$excl" '
+        ($f | split(",") | map(select(length>0))) as $toks
+        | [ .[] | . as $s
+            | select(($toks | any(. as $t | ($s.name // "") | contains($t))) | not) ]
     ' 2>/dev/null)
     if [ -n "$out" ] && [ "$(printf '%s' "$out" | jq 'length' 2>/dev/null)" -gt 0 ]; then
         printf '%s' "$out"
@@ -554,7 +590,7 @@ _merge_sub_pool() {
             [ -n "$_m" ] && merged="$_m"
         fi
     done
-    merged=$(printf '%s' "$merged" | _apply_server_filter)
+    merged=$(printf '%s' "$merged" | _apply_server_filter | _apply_server_exclude)
     local count; count=$(printf '%s' "$merged" | jq 'length' 2>/dev/null); case "$count" in ''|*[!0-9]*) count=0 ;; esac
     if [ "$count" -gt 0 ]; then
         _remap_selected_server "$config" "$merged"
