@@ -394,7 +394,16 @@ EOF
     local sf="$ECLIPVPN_TMP/auto_state.json"
     local oplock="$ECLIPVPN_TMP/auto.lock"
     (
-        if command -v flock >/dev/null 2>&1; then flock -w 5 -x 9 || exit 1; fi
+        # -n (non-blocking), not -w: busybox flock only implements [-sxun] —
+        # `-w SECONDS` is GNU-only and busybox rejects it as an unrecognized
+        # option, which made THIS LINE ITSELF fail every time and exit 1
+        # before ever reaching update_config below — auto-select logged
+        # "chose X" but the switch never committed, on every single call, on
+        # any router whose flock is busybox's (confirmed live 2026-09-15: the
+        # commit silently no-op'd through two full picks). cmd_auto_eval
+        # already uses -n correctly; match it here instead of reinventing a
+        # wait that busybox can't do.
+        if command -v flock >/dev/null 2>&1; then flock -n -x 9 || exit 1; fi
         update_config '.selected_server = $idx' --argjson idx "$best_idx"
         # _vpn_live, not _vpn_running — see cmd_set_server: selected_server was
         # just changed, so an engine-aware check could miss a live other-engine
