@@ -442,14 +442,18 @@ update_subscription() {
     local merged="[]"
     i=0
     while [ "$i" -lt "$n" ]; do
-        local sid; sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id'); i=$((i + 1))
+        local sid sfilt
+        sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id')
+        sfilt=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].filter // ""')
+        i=$((i + 1))
         { [ -z "$sid" ] || [ "$sid" = "null" ]; } && continue
         local cache="/tmp/eclipvpn/sub.$sid.servers.json"
         # Skip a missing/corrupt cache rather than let jq abort and collapse the
         # whole merge: validate it's a JSON array, merge into a temp, and adopt
         # only if jq produced output (else keep the prior merged value).
         if [ -s "$cache" ] && jq -e 'type=="array"' "$cache" >/dev/null 2>&1; then
-            local _m; _m=$(printf '%s' "$merged" | jq -c --slurpfile add "$cache" '. + $add[0]' 2>/dev/null)
+            local _piece; _piece=$(_apply_sub_filter "$sfilt" < "$cache")
+            local _m; _m=$(printf '%s' "$merged" | jq -c --argjson add "$_piece" '. + $add' 2>/dev/null)
             [ -n "$_m" ] && merged="$_m"
         fi
     done
@@ -532,6 +536,38 @@ _apply_server_exclude() {
     fi
 }
 
+# Narrow ONE subscription's parsed cache to servers whose name contains any of
+# the given tokens — the per-subscription counterpart to the GLOBAL
+# server_filter (which narrows the whole merged pool). Lets one provider be
+# restricted (e.g. "only its WL-labelled nodes") while other subscriptions in
+# the pool stay untouched — the motivating case: one provider's servers are
+# whitelist-uplink-compatible only under the "WL" label, but a second,
+# unrelated provider added specifically for normal (non-whitelist) conditions
+# must NOT be narrowed by the same rule. Applied per-sub in the merge loop,
+# BEFORE concatenation; the global server_filter/server_exclude still apply
+# to the merged result afterward, same as always.
+#   - contains(), not test() — same Oniguruma-less jq as everywhere else.
+#   - SAFETY: if the filter would empty THIS sub's contribution, it's IGNORED
+#     (same guard as server_filter) — a typo can't silently drop a whole
+#     provider's servers from the pool.
+# $1: comma-separated tokens (empty = no filtering). stdin/stdout: JSON array.
+_apply_sub_filter() {
+    local toks="$1"
+    [ -z "$toks" ] && { cat; return 0; }
+    local input; input=$(cat)
+    local out
+    out=$(printf '%s' "$input" | jq -c --arg f "$toks" '
+        ($f | split(",") | map(select(length>0))) as $toks
+        | [ .[] | . as $s
+            | select($toks | any(. as $t | ($s.name // "") | contains($t))) ]
+    ' 2>/dev/null)
+    if [ -n "$out" ] && [ "$(printf '%s' "$out" | jq 'length' 2>/dev/null)" -gt 0 ]; then
+        printf '%s' "$out"
+    else
+        printf '%s' "$input"
+    fi
+}
+
 # Restore the PERSISTENT /etc subcache into /tmp (wiped on reboot) so the offline
 # merge and the fetch-then-swap "keep previous cache" path have the last-known
 # per-sub servers to work with. Idempotent: only fills a MISSING /tmp copy, never
@@ -572,9 +608,10 @@ _merge_sub_pool() {
     fi
     local merged="[]" i=0
     while [ "$i" -lt "$n" ]; do
-        local sid surl
+        local sid surl sfilt
         sid=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].id')
         surl=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].url // ""')
+        sfilt=$(printf '%s' "$subs" | jq -r --argjson i "$i" '.[$i].filter // ""')
         i=$((i + 1))
         { [ -z "$sid" ] || [ "$sid" = "null" ]; } && continue
         local cache="$tmp/sub.$sid.servers.json"
@@ -586,7 +623,8 @@ _merge_sub_pool() {
             _manual_sub_cache "$sid" "$surl" "$sname" || true
         fi
         if [ -s "$cache" ] && jq -e 'type=="array"' "$cache" >/dev/null 2>&1; then
-            local _m; _m=$(printf '%s' "$merged" | jq -c --slurpfile add "$cache" '. + $add[0]' 2>/dev/null)
+            local _piece; _piece=$(_apply_sub_filter "$sfilt" < "$cache")
+            local _m; _m=$(printf '%s' "$merged" | jq -c --argjson add "$_piece" '. + $add' 2>/dev/null)
             [ -n "$_m" ] && merged="$_m"
         fi
     done
@@ -744,6 +782,28 @@ cmd_sub() {
             fi
             jq -n --arg id "$id" --arg n "$name" '{status:"renamed", id:$id, name:$n}'
             ;;
-        *) jq -n --arg op "$op" '{error:("unknown op: "+$op+" (use list/add/remove/enable/disable/rename)")}'; return 1 ;;
+        filter)
+            # Per-subscription NAME-substring filter — the scoped counterpart to
+            # the global `server_filter` set-config key. Use when one provider's
+            # servers must be narrowed (e.g. "only its WL nodes") without
+            # touching any OTHER subscription in the pool (see _apply_sub_filter).
+            local id="$arg2" toks="$arg3"
+            [ -z "$id" ] && { echo '{"error":"id required"}'; return 1; }
+            case "$toks" in off|none|-) toks="" ;; esac
+            case "$toks" in
+                *\"*|*\\*|*\`*|*\$*) echo '{"error":"filter: must not contain \" \\ ` or $"}'; return 1 ;;
+            esac
+            [ "${#toks}" -gt 200 ] && { echo '{"error":"filter: too long (max 200 chars)"}'; return 1; }
+            local _exists; _exists=$(jq --arg id "$id" '[.subscriptions[]?.id] | index($id)' "$ECLIPVPN_CONFIG" 2>/dev/null)
+            { [ -z "$_exists" ] || [ "$_exists" = "null" ]; } && { echo '{"error":"unknown subscription id"}'; return 1; }
+            update_config '.subscriptions = ((.subscriptions // []) | map(if .id==$id then .filter=$v else . end))' \
+                --arg id "$id" --arg v "$toks" || { echo '{"error":"save failed"}'; return 1; }
+            # Filter narrows an already-fetched cache — no network needed, same
+            # cheap offline re-merge as enable/disable/rename.
+            local newc; newc=$(_merge_sub_pool "$ECLIPVPN_CONFIG")
+            [ "${newc:-0}" -gt 0 ] 2>/dev/null && _vpn_running && cmd_restart >/dev/null 2>&1
+            jq -n --arg id "$id" --arg v "$toks" --argjson n "${newc:-0}" '{status:"saved", id:$id, filter:$v, pool:$n}'
+            ;;
+        *) jq -n --arg op "$op" '{error:("unknown op: "+$op+" (use list/add/remove/enable/disable/rename/filter)")}'; return 1 ;;
     esac
 }

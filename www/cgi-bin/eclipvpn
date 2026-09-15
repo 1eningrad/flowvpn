@@ -141,6 +141,12 @@ case "$action" in
                     /usr/bin/eclipvpn sub rename "$sub_id" "$b_name"
                 else echo '{"error":"no data"}'; fi
                 ;;
+            filter)
+                if [ -n "$body" ]; then
+                    b_filter=$(printf '%s' "$body" | jq -r '.filter // empty' 2>/dev/null)
+                    /usr/bin/eclipvpn sub filter "$sub_id" "$b_filter"
+                else echo '{"error":"no data"}'; fi
+                ;;
             *) echo '{"error":"unknown sub op"}' ;;
         esac
         ;;
