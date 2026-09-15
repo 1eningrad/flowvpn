@@ -225,6 +225,56 @@ _watchdog_pick_best() {
     fi
 }
 
+# Pick the best candidate whose name does/doesn't carry the "WL" token
+# (provider convention for mobile nodes that stay reachable on an uplink
+# restricted to whitelisted/RU hosts — see _apply_server_filter). Each
+# candidate is verified with a REAL request through a throwaway engine
+# (_watchdog_probe_candidate), not a ping — some nodes in this pool answer
+# ICMP/TCP but don't actually proxy, and a ping-only check would "confirm" a
+# switch onto a dead server. want_wl=1 keeps only WL-tagged names, want_wl=0
+# excludes them. Same metered/muted exclusion as every other auto picker
+# (_is_auto_skipped) — the net-check guard is not an emergency path, so a
+# muted/metered node is never an acceptable landing spot. Echoes "<idx> <ms>"
+# or empty if nothing in that half of the pool verified.
+_net_check_pick() {
+    local current="$1" total="$2" probe_port="$3" want_wl="$4"
+    local servers_json="$ECLIPVPN_TMP/servers.json"
+    local best_idx="" best_ms=99999 i=0
+    local muted; muted=$(_muted_tokens)
+    while [ "$i" -lt "$total" ]; do
+        if [ "$i" -eq "$current" ]; then i=$((i+1)); continue; fi
+        local cand_name; cand_name=$(jq -r ".[$i].name" "$servers_json" 2>/dev/null)
+        local has_wl=0
+        _name_has_token "$cand_name" "WL" && has_wl=1
+        if [ "$want_wl" = "1" ] && [ "$has_wl" -ne 1 ]; then i=$((i+1)); continue; fi
+        if [ "$want_wl" = "0" ] && [ "$has_wl" -eq 1 ]; then i=$((i+1)); continue; fi
+        _is_auto_skipped "$cand_name" "$muted" && { i=$((i+1)); continue; }
+        local res; res=$(_watchdog_probe_candidate "$i" "$probe_port" latency)
+        if [ "${res%% *}" = "ok" ]; then
+            local val="${res#ok }"
+            [ "$val" -lt "$best_ms" ] && { best_ms=$val; best_idx=$i; }
+        fi
+        i=$((i+1))
+    done
+    [ -n "$best_idx" ] && echo "$best_idx $best_ms"
+}
+
+# Find the current pool index of the server remembered in
+# $ECLIPVPN_TMP/net_check_prev.json (identity: protocol+host+port+name — a
+# raw index would drift across a subscription re-merge, same reasoning as
+# _remap_selected_server). Echoes the index, or nothing if that server is
+# gone from the pool (dropped by the provider, renamed, etc.).
+_net_check_prev_idx() {
+    local f="$ECLIPVPN_TMP/net_check_prev.json"
+    [ -f "$f" ] || return 0
+    local prev; prev=$(cat "$f" 2>/dev/null)
+    [ -n "$prev" ] || return 0
+    jq -r --argjson p "$prev" '
+        ([ .[] | (.protocol==($p.protocol) and .host==($p.host)
+                  and .port==($p.port) and .name==($p.name)) ] | index(true)) // empty
+    ' "$ECLIPVPN_TMP/servers.json" 2>/dev/null
+}
+
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=5 fail_count=0 tick=0 silent_fails=0
     # Throughput-guard state (see the guard block on the connectivity-OK path).
@@ -243,6 +293,10 @@ cmd_watchdog() {
     local TPUT_SLOW_MAX=3     # consecutive low reads before acting (~6 min sustained)
     local TPUT_COOLDOWN=1200  # min seconds between throughput-driven switches (anti-flap)
     local TPUT_COOLDOWN_FAST=300  # the single early retry after a flop comes this soon
+    # net-check guard state (see the whitelist/full switch below).
+    local net_wl_streak=0 net_full_streak=0
+    local NET_EVERY=15   # classify the direct uplink every ~5 min (15x20s)
+    local NET_STREAK=2   # consecutive matching reads before acting (~10 min sustained)
 
     # Single-instance via atomic mkdir. The earlier file-based lock was
     # unreliable: under the init.d/cmd_start spawn race the lock would end
@@ -409,6 +463,128 @@ cmd_watchdog() {
         # reconfigure can silently reset the interface to 1500 mid-session and
         # the PMTU-blackhole slowdown would creep back; this self-heals it.
         _apply_wan_mtu
+
+        # --- net-check guard --------------------------------------------------
+        # cmd_net_check classifies the DIRECT uplink (full / whitelist / none —
+        # see health.sh). "whitelist" means the SIM/uplink only passes
+        # RU/whitelisted hosts, so a foreign VPN exit can't even handshake —
+        # the fix is a server from the provider's "WL" pool (mobile nodes kept
+        # reachable on such uplinks, same convention server_filter=WL already
+        # uses). When the uplink goes back to "full", switch back to what was
+        # selected before, so a temporary whitelist window doesn't strand the
+        # user on a WL node once it's no longer needed.
+        #
+        # Independent of the tunnel-connectivity probe below (this measures the
+        # UPLINK, same as the DNS guard) and gated on auto_failover — that flag
+        # gates EVERY automatic change of selected_server (see fdb5018), and a
+        # net-check switch is one. net_check_switch is this guard's own on/off
+        # on top of that, mirroring tput_guard vs auto_failover.
+        #
+        # Hysteresis: NET_STREAK consecutive matching reads (~10 min) before
+        # acting, so one flaky classification doesn't trigger a switch — and
+        # the streak resets after every attempt (success or not) so a
+        # persistent whitelist window doesn't re-probe every single tick.
+        #
+        # Every candidate is verified with a REAL request through a throwaway
+        # engine (_net_check_pick → _watchdog_probe_candidate), not a ping —
+        # some nodes in this pool answer ICMP/TCP but don't actually proxy.
+        if [ $((tick % NET_EVERY)) -eq 0 ] \
+           && [ "$(get_config_val net_check_switch true)" = "true" ] \
+           && [ "$(get_config_val auto_failover true)" = "true" ]; then
+            local _nc_verdict
+            _nc_verdict=$(cmd_net_check 2>/dev/null | jq -r '.internet // "none"')
+            case "$_nc_verdict" in
+                whitelist)
+                    net_full_streak=0
+                    net_wl_streak=$((net_wl_streak + 1))
+                    if [ "$net_wl_streak" -ge "$NET_STREAK" ]; then
+                        net_wl_streak=0
+                        local _cur=$(get_config_val selected_server 0)
+                        local _cur_name=$(jq -r ".[$_cur].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                        if ! _name_has_token "$_cur_name" "WL"; then
+                            local _total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                            if [ -n "$_total" ]; then
+                                # Raw pass-through (no protocol default): must stay
+                                # symmetric with the plain equality match in
+                                # _net_check_prev_idx (mirrors _remap_selected_server,
+                                # which also compares raw fields) — a vless entry's
+                                # protocol key is typically ABSENT (null), and
+                                # defaulting only one side to "vless" here would
+                                # make null never match "vless" on restore.
+                                [ -f "$ECLIPVPN_TMP/net_check_prev.json" ] || \
+                                    jq -c ".[$_cur] | {protocol, host, port, name}" \
+                                    "$ECLIPVPN_TMP/servers.json" 2>/dev/null \
+                                    > "$ECLIPVPN_TMP/net_check_prev.json"
+                                local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 1)
+                                if [ -n "$pick" ]; then
+                                    local sel="${pick%% *}" sel_ms="${pick##* }"
+                                    local sel_name=$(jq -r ".[$sel].name" "$ECLIPVPN_TMP/servers.json")
+                                    local sel_host=$(jq -r ".[$sel].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                                    logger -t eclipvpn "Watchdog: uplink whitelisted — switching to $sel_name (${sel_ms}ms)"
+                                    _log_incident "net_check_switch" "$sel_host" "$sel_name" "аплинк в белых списках — переключение с $_cur_name на $sel_name (WL, ${sel_ms}мс)"
+                                    _record_switch "$_cur" "$sel" "net_check_whitelist"
+                                    update_config '.selected_server = $idx' --argjson idx "$sel" || flog "WARN: net-check whitelist switch save_config failed"
+                                    ( cmd_restart ) >/dev/null 2>&1
+                                    sleep $((interval * 3))
+                                else
+                                    logger -t eclipvpn "Watchdog: uplink whitelisted but no verified WL candidate — staying on $_cur_name"
+                                    _log_incident "net_check_noalt" "" "$_cur_name" "аплинк в белых списках, ни один WL-сервер не прошёл проверку — остаёмся на $_cur_name"
+                                fi
+                            fi
+                        fi
+                    fi
+                    ;;
+                full)
+                    net_wl_streak=0
+                    net_full_streak=$((net_full_streak + 1))
+                    if [ "$net_full_streak" -ge "$NET_STREAK" ]; then
+                        net_full_streak=0
+                        if [ -f "$ECLIPVPN_TMP/net_check_prev.json" ]; then
+                            local _cur=$(get_config_val selected_server 0)
+                            local _total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                            local _prev_idx; _prev_idx=$(_net_check_prev_idx)
+                            local _restored=""
+                            if [ -n "$_prev_idx" ] && [ "$_prev_idx" = "$_cur" ]; then
+                                # A manual switch (or an earlier tick) already put
+                                # us back on the remembered server — nothing to
+                                # do but retire the marker below, no probe/scan.
+                                _restored="$_cur"
+                            elif [ -n "$_prev_idx" ]; then
+                                local res=$(_watchdog_probe_candidate "$_prev_idx" "$probe_port" latency)
+                                [ "${res%% *}" = "ok" ] && _restored="$_prev_idx"
+                            fi
+                            if [ -z "$_restored" ] && [ -n "$_total" ]; then
+                                local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 0)
+                                [ -n "$pick" ] && _restored="${pick%% *}"
+                            fi
+                            if [ -n "$_restored" ] && [ "$_restored" != "$_cur" ]; then
+                                local _cur_name=$(jq -r ".[$_cur].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                                local _r_name=$(jq -r ".[$_restored].name" "$ECLIPVPN_TMP/servers.json")
+                                local _r_host=$(jq -r ".[$_restored].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                                logger -t eclipvpn "Watchdog: uplink back to full — switching back to $_r_name"
+                                _log_incident "net_check_restore" "$_r_host" "$_r_name" "аплинк снова обычный — переключение с $_cur_name на $_r_name"
+                                _record_switch "$_cur" "$_restored" "net_check_full"
+                                update_config '.selected_server = $idx' --argjson idx "$_restored" || flog "WARN: net-check restore save_config failed"
+                                ( cmd_restart ) >/dev/null 2>&1
+                                rm -f "$ECLIPVPN_TMP/net_check_prev.json"
+                                sleep $((interval * 3))
+                            elif [ -n "$_restored" ]; then
+                                # Already back on the remembered server (e.g. a
+                                # manual switch beat us to it) — just clear state.
+                                rm -f "$ECLIPVPN_TMP/net_check_prev.json"
+                            else
+                                logger -t eclipvpn "Watchdog: uplink back to full but no verified normal candidate yet — staying on WL server"
+                            fi
+                        fi
+                    fi
+                    ;;
+                *)
+                    net_wl_streak=0
+                    net_full_streak=0
+                    ;;
+            esac
+        fi
+        # --- end net-check guard ------------------------------------------------
 
         # Multi-endpoint VPN connectivity probe: try CF, gstatic, ipify in
         # order. Success on the first that responds 200/204. Reduces false

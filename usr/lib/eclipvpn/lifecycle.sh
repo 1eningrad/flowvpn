@@ -561,6 +561,7 @@ cmd_status() {
           auto_failover: ($c.auto_failover | if . == false then false else true end),
           tput_guard: ($c.tput_guard | if . == false then false else true end),
           full_tunnel: ($c.full_tunnel // false),
+          net_check_switch: ($c.net_check_switch | if . == false then false else true end),
           running_intent: ($c.running_intent // false),
           device_rules: ($c.device_rules // {}),
           last_switch:$last_switch,
