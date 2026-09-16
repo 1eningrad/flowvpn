@@ -540,7 +540,7 @@ _is_metered_server() {
     esac
     case "$name" in
         *МТС*|*мтс*|*MTS*|*mts*) return 0 ;;
-        *Т2*|*т2*|*Tele2*|*tele2*|*Би*) return 0 ;;
+        *Т2*|*т2*|*Tele2*|*tele2*) return 0 ;;
         *Билайн*|*билайн*|*Beeline*|*beeline*) return 0 ;;
         *Мегафон*|*мегафон*|*Megafon*|*megafon*) return 0 ;;
     esac

@@ -46,7 +46,11 @@ _tunnel_bringup() {
     start_xray "$ECLIPVPN_TMP/xray.1080.json" 1080 || return 1
     echo 1080 > "$ECLIPVPN_TMP/xray_port"
     ip=$(test_xray 1080)
-    [ -z "$ip" ] && { stop_xray 1080; return 2; }
+    # Cosmetic cleanup on failure (found in review 2026-09-16): xray_port
+    # already written above is harmless either way (absent ⇒ 1080, same
+    # value), since _vpn_running/_vpn_live gate on actual process liveness,
+    # not this file — but leave no stale state behind on a failed bring-up.
+    [ -z "$ip" ] && { stop_xray 1080; rm -f "$ECLIPVPN_TMP/xray_port"; return 2; }
     flog "xray connected, VPN IP: $ip"
     generate_singbox_config "$ECLIPVPN_TMP/singbox.json" "$mode" "$ECLIPVPN_TMP/servers.json" "$sel" 1080 \
         || { flog "ERROR: sing-box config generation failed"; stop_xray 1080; return 3; }
