@@ -50,10 +50,22 @@ cmd_set_server() {
         # make-before-break can REJECT the switch (new server unreachable) and
         # keep the OLD tunnel up. Roll selected_server back so status/UI don't
         # show a server we're not actually on.
-        [ "$_rc" -ne 0 ] && update_config '.selected_server = $old' --argjson old "$old_sel" >/dev/null 2>&1
+        if [ "$_rc" -ne 0 ]; then
+            update_config '.selected_server = $old' --argjson old "$old_sel" >/dev/null 2>&1
+        else
+            # A deliberate switch (manual, here) supersedes whatever the
+            # net-check guard remembered as "the server to restore to" once
+            # the uplink stops being whitelist-restricted — without this, a
+            # user who manually moves off a guard-picked WL server and stays
+            # there for days gets silently yanked back to the OLD pre-WL
+            # server the next time the uplink flips back to full. Found in
+            # review 2026-09-15. Best-effort: a missing file is a no-op.
+            rm -f "$ECLIPVPN_TMP/net_check_prev.json"
+        fi
         return "$_rc"
     else
         local name=$(jq -r ".[$idx].name" "$ECLIPVPN_TMP/servers.json")
+        rm -f "$ECLIPVPN_TMP/net_check_prev.json"
         jq -n --arg srv "$name" '{status:"server set",server:$srv}'
     fi
 }
@@ -381,7 +393,16 @@ EOF
     fi
 
     flog "Auto-select: chose $best_name idx=$best_idx rtt=${best_ms}ms"
-    if [ "$cur" = "$best_idx" ]; then
+    # cur can win this race even while the LIVE tunnel is dead: the candidate
+    # loop above probes EVERY server including cur, and a fresh throwaway probe
+    # to cur can succeed (proving the SERVER works) even though the actual
+    # running xray/sing-box is hung/crashed. Only report "nothing to do" when
+    # the live tunnel is independently confirmed healthy — otherwise fall
+    # through to the commit block below, which force-restarts (bypassing
+    # cmd_restart's unchanged-config fast path, which would otherwise see
+    # byte-identical config + a still-running process and silently no-op,
+    # leaving the broken tunnel exactly as it was). Found in review 2026-09-15.
+    if [ "$cur" = "$best_idx" ] && _vpn_running && [ -n "$(test_xray "$(_active_socks_port)")" ]; then
         jq -n --arg n "$best_name" --argjson i "$best_idx" --argjson ms "$best_ms" --argjson att "$attempts" --argjson em "$emergency" \
             '{status:"ok", server:$n, index:$i, rtt_ms:$ms, switched:false, emergency:$em, attempts:$att}'
         return 0
@@ -409,7 +430,14 @@ EOF
         # just changed, so an engine-aware check could miss a live other-engine
         # tunnel and skip the switch.
         if _vpn_live; then
-            if ! ( cmd_restart ) >/dev/null 2>&1; then
+            # best_idx == cur here means this is the "current was unhealthy but
+            # still won" case from above, not a real server change — force (1)
+            # past cmd_restart's unchanged-config fast path, or a same-server
+            # recovery would silently no-op (see the comment above). $_force
+            # deliberately unquoted: empty ⇒ no arg at all, "1" ⇒ force arg.
+            local _force=""
+            [ "$best_idx" = "$cur" ] && _force=1
+            if ! ( cmd_restart $_force ) >/dev/null 2>&1; then
                 update_config '.selected_server = $idx' --argjson idx "$cur"
                 # Subshell: the first cmd_restart's op-lock is only released when
                 # ITS subshell exits (trap EXIT), so the rollback restart must run
@@ -418,6 +446,10 @@ EOF
                 exit 2
             fi
         fi
+        # A deliberate re-pick (auto-select) supersedes the net-check guard's
+        # "restore to this server once whitelist ends" memory — see the same
+        # rationale in cmd_set_server above.
+        rm -f "$ECLIPVPN_TMP/net_check_prev.json"
         [ -f "$sf" ] || printf '%s\n' '{"last_eval":0,"last_switch":0}' > "$sf"
         local now=$(date +%s)
         jq --argjson t "$now" '.last_eval = $t | .last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
@@ -541,7 +573,13 @@ cmd_auto_eval() {
         best_rtt=$(echo "$best_line" | awk '{print $1}')
         best_idx=$(echo "$best_line" | awk '{print $2}')
 
-        [ "$best_idx" = "$current_idx" ] && exit 0   # already on best by RTT
+        # Don't exit early just because the RTT winner is the current server —
+        # if current_broken (test_xray came back empty a few lines above), the
+        # dead tunnel's own server can still have the lowest raw TCP RTT (it was
+        # presumably picked for being fast) and this would silently skip the
+        # self-heal forever, defeating auto_mode's whole purpose. Only skip when
+        # the winner is current AND current is confirmed alive.
+        [ "$best_idx" = "$current_idx" ] && [ "$current_broken" -eq 0 ] && exit 0   # already on best by RTT
 
         # Hysteresis. Three branches:
         #   - tunnel dead (test_xray empty)        → switch to anything working
@@ -578,9 +616,20 @@ cmd_auto_eval() {
         # its OWN subshell so the op-lock (released only on the restart's subshell
         # EXIT trap) doesn't make the rollback restart self-deadlock.
         update_config '.selected_server = $idx' --argjson idx "$best_idx"
-        if ( cmd_restart ) >/dev/null 2>&1; then
+        # best_idx == current_idx here means the "current was broken but still
+        # won on RTT" case — force (1) past cmd_restart's unchanged-config fast
+        # path, which would otherwise see byte-identical config + a still-alive
+        # process and no-op, leaving the broken tunnel untouched. Unquoted
+        # $_force on purpose: empty ⇒ no arg, "1" ⇒ force arg.
+        local _force=""
+        [ "$best_idx" = "$current_idx" ] && _force=1
+        if ( cmd_restart $_force ) >/dev/null 2>&1; then
             _record_switch "$current_idx" "$best_idx" "auto"
             jq --argjson t "$now" '.last_switch = $t' "$sf" > "${sf}.tmp" && mv "${sf}.tmp" "$sf"
+            # Same reasoning as cmd_set_server/cmd_auto_select: a deliberate
+            # re-pick supersedes the net-check guard's "restore to this once
+            # whitelist ends" memory.
+            rm -f "$ECLIPVPN_TMP/net_check_prev.json"
             local bn
             bn=$(jq -r --argjson i "$best_idx" '.[$i].name' "$ECLIPVPN_TMP/servers.json")
             flog "Auto-mode: switched to $bn"

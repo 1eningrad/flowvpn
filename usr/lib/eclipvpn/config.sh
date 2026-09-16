@@ -57,6 +57,14 @@ cmd_set_config() {
         update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
         local _nc; _nc=$(_merge_sub_pool "$ECLIPVPN_CONFIG" 2>/dev/null)
         case "$_nc" in ''|*[!0-9]*) _nc=0 ;; esac
+        # A tighter filter can drop the CURRENTLY SELECTED server from the pool —
+        # _merge_sub_pool's _remap_selected_server then resets selected_server to
+        # 0, but the LIVE xray/sing-box process keeps running the old (now
+        # unlisted) server's config until something restarts it. Without this,
+        # /status showed a server name the tunnel wasn't actually connected to
+        # (found in review 2026-09-15). _vpn_live, not _vpn_running: selected_server
+        # may have just changed to a different-engine server (see cmd_set_server).
+        [ "${_nc:-0}" -gt 0 ] 2>/dev/null && _vpn_live && cmd_restart >/dev/null 2>&1
         jq -n --arg k "$key" --arg v "$value" --argjson n "$_nc" \
             '{status:"saved", key:$k, value:$v, pool:$n}'
         return 0
@@ -80,6 +88,11 @@ cmd_set_config() {
         update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
         local _nx; _nx=$(_merge_sub_pool "$ECLIPVPN_CONFIG" 2>/dev/null)
         case "$_nx" in ''|*[!0-9]*) _nx=0 ;; esac
+        # Same reasoning as server_filter above: an exclude can drop the
+        # currently-selected server, and without a restart the live tunnel
+        # keeps running the now-unlisted server while /status shows something
+        # else. _vpn_live because selected_server may have just been remapped.
+        [ "${_nx:-0}" -gt 0 ] 2>/dev/null && _vpn_live && cmd_restart >/dev/null 2>&1
         jq -n --arg k "$key" --arg v "$value" --argjson n "$_nx" \
             '{status:"saved", key:$k, value:$v, pool:$n}'
         return 0

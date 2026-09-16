@@ -40,26 +40,30 @@ setup_network() {
     nft add rule ip eclipvpn prerouting ip daddr 224.0.0.0/4 return
     nft add rule ip eclipvpn prerouting ip daddr 255.255.255.255 return
 
-    # Skip VPN server IPs (resolve hostnames to IPs first)
+    # Skip VPN server IPs (resolve hostnames to IPs first). Reuses xray.sh's
+    # _resolve_server_ip — the SAME resolution xray actually dials by (direct
+    # resolvers 77.88.8.8/8.8.8.8, deterministic lowest-sorted A record) —
+    # instead of a second, independently-written lookup. The two used to
+    # disagree on a multi-A-record host: this loop queried the SYSTEM resolver
+    # and took the LAST address in nslookup's response-order output, while
+    # xray dials the lowest-sorted one; for a host where those differ, the nft
+    # bypass rule whitelisted an IP xray never actually connects to, and the
+    # real connection could get tproxied back onto itself (self-loop). This
+    # also fixes a second bug: `case "$host" in [0-9]*.*)` misclassified any
+    # digit-LEADING hostname (e.g. "1cdn.example.com") as "already an IP" and
+    # fed it straight to `nft ... ip daddr`, which silently fails to parse a
+    # non-IP string — no bypass rule was added for that server at all. Found
+    # in review 2026-09-15.
     if [ -f /tmp/eclipvpn/servers.json ]; then
         for host in $(jq -r '.[].host' /tmp/eclipvpn/servers.json 2>/dev/null | sort -u); do
-            # Check if it's already an IP or hostname
-            case "$host" in
-                [0-9]*.*)
-                    nft add rule ip eclipvpn prerouting ip daddr "$host" return 2>/dev/null
-                    ;;
-                *)
-                    # Resolve hostname to IPv4 only — busybox nslookup also
-                    # returns the resolver's own address and any IPv6 records.
-                    # Adding an IPv6 to an `ip` (v4) table fails silently and
-                    # leaves the VPN server without a bypass rule, so the
-                    # outbound connection ends up tproxied to itself (loop).
-                    local resolved
-                    resolved=$(nslookup "$host" 2>/dev/null | awk '/^Address/{print $NF}' | \
-                               grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | tail -1)
-                    [ -n "$resolved" ] && nft add rule ip eclipvpn prerouting ip daddr "$resolved" return 2>/dev/null
-                    ;;
-            esac
+            local resolved
+            resolved=$(_resolve_server_ip "$host")
+            # _resolve_server_ip returns the host VERBATIM when it isn't a
+            # digits-and-dots literal and resolution failed — validate before
+            # handing it to nft (an `ip daddr` value must be a literal IP), or
+            # an unresolved hostname would either be rejected (safe, just
+            # unbypassed) or, worse, misparsed.
+            _validate_ipv4 "$resolved" && nft add rule ip eclipvpn prerouting ip daddr "$resolved" return 2>/dev/null
         done
     fi
 
