@@ -104,6 +104,16 @@ fi
 ssh "$ROUTER" 'mkdir -p /www/eclipvpn && cat > /www/eclipvpn/index.html' < "$UITMP"
 rm -f "$UITMP"
 
+# Build the remote syntax-check list from the SAME manifest that decided what
+# to ship, instead of a second hardcoded glob (the router-side `for f in
+# /usr/bin/eclipvpn ... /usr/lib/eclipvpn/*.sh` below) — a future manifest
+# entry outside those fixed patterns (e.g. a new top-level script) would ship
+# fine but silently skip the pre-flight ash -n gate, only surfacing a syntax
+# error at runtime on the router. Same drift class CLAUDE.md already documents
+# for the test runner enumerating suites by glob (found in review 2026-09-16).
+# Prefix each manifest path with / to match where the tar unpacked it (root).
+SYNTAX_CHECK_LIST=$(printf '/%s ' $SHIP_FILES)
+
 echo "→ apply on router"
 ssh "$ROUTER" 'set -eu
 
@@ -167,9 +177,9 @@ fi
 chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn
 
 # Syntax check before touching live state — bail before stop if anything broke.
-# Glob the just-unpacked files — no second hardcoded list to drift from the
-# manifest (the tar wrote exactly the manifest set; this checks exactly that).
-for f in /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn /usr/lib/eclipvpn/*.sh; do
+# List spliced in from the LOCAL $SHIP_FILES (see SYNTAX_CHECK_LIST above) —
+# genuinely manifest-driven now, not a second hardcoded pattern.
+for f in '"$SYNTAX_CHECK_LIST"'; do
     ash -n "$f" || { echo "SYNTAX FAIL: $f" >&2; exit 1; }
 done
 

@@ -203,6 +203,21 @@ cmd_set_config() {
             fi
             update_config '.[$k] = $v' --arg k "$key" --argjson v "$value" || { _err "set-config save failed for $key"; return 1; }
             ;;
+        interface)
+            # Consumed verbatim by setup_network's `ip -4 addr show "$iface"`
+            # (config.sh::_apply_device_rules, lifecycle.sh) — no shell-injection
+            # risk (properly quoted throughout), but a bogus name makes `ip addr
+            # show` return nothing, and setup_network silently falls back to a
+            # hardcoded 192.168.1.0/24 with only a WARN log — every real LAN
+            # client stops being tproxied and leaks direct instead of through
+            # the VPN, with no error surfaced anywhere. Every other CGI-reachable
+            # string key got a defensive gate except this one (review 2026-09-15).
+            case "$value" in
+                ''|*[!a-zA-Z0-9._-]*) _err "interface: invalid name"; return 1 ;;
+            esac
+            [ "${#value}" -gt 15 ] && { _err "interface: too long (max 15 chars, kernel IFNAMSIZ limit)"; return 1; }
+            update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+            ;;
         *)
             update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
             ;;

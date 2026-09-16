@@ -27,14 +27,23 @@ start() {
     auto_start=$(jq -r '.auto_start | if . == false then "false" else "true" end' /etc/eclipvpn/config.json 2>/dev/null)
     [ "$auto_start" = "false" ] && return 0
 
-    # Wait up to 60s for WAN. Bumped from 30s after observing slow CGNAT
-    # providers (SevenSky and similar) where DHCP lease + initial CGN
-    # NAT-table entry took 35-45s. At 30s init script was occasionally
-    # giving up and leaving the LAN with no VPN until manual intervention.
-    local tries=0
-    while [ "$tries" -lt 60 ]; do
+    # Wait up to 60s (WALL-CLOCK, not iteration count) for WAN. Bumped from
+    # 30s after observing slow CGNAT providers (SevenSky and similar) where
+    # DHCP lease + initial CGN NAT-table entry took 35-45s. At 30s init
+    # script was occasionally giving up and leaving the LAN with no VPN
+    # until manual intervention.
+    #
+    # Bounded by elapsed time, not a tries counter: _eclip_net_ready itself
+    # can cost up to ~6s per call in the worst case (three sequential
+    # `ping -c1 -W2` anchors, each timing out) — a `tries -lt 60` loop that
+    # increments once per ITERATION could cost up to ~7s/iteration and run
+    # for ~7 minutes on a genuinely dead WAN instead of the documented 60s
+    # (found in review 2026-09-16, exactly the case this gate exists for).
+    local wan_start; wan_start=$(date +%s)
+    while :; do
         _eclip_net_ready && break
-        sleep 1; tries=$((tries + 1))
+        [ $(( $(date +%s) - wan_start )) -ge 60 ] && break
+        sleep 1
     done
 
     if ! _eclip_net_ready; then

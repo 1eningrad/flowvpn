@@ -488,7 +488,19 @@ cmd_watchdog() {
         # Every candidate is verified with a REAL request through a throwaway
         # engine (_net_check_pick → _watchdog_probe_candidate), not a ping —
         # some nodes in this pool answer ICMP/TCP but don't actually proxy.
-        if [ $((tick % NET_EVERY)) -eq 0 ] \
+        #
+        # Defer while a user-initiated lifecycle op is in flight — same reason
+        # the auto-recovery block above does (cmd_restart's brief stop_xray
+        # window would otherwise trick this into acting mid-op and racing it).
+        # This guard was missing that check entirely (found in review
+        # 2026-09-16); the streak counters simply don't advance this tick and
+        # pick back up once the op clears.
+        local _nc_op_busy=0
+        if [ -f "$ECLIPVPN_TMP/op.in_progress" ]; then
+            local _nc_op_pid; _nc_op_pid=$(cat "$ECLIPVPN_TMP/op.in_progress" 2>/dev/null)
+            [ -n "$_nc_op_pid" ] && kill -0 "$_nc_op_pid" 2>/dev/null && _nc_op_busy=1
+        fi
+        if [ "$_nc_op_busy" -eq 0 ] && [ $((tick % NET_EVERY)) -eq 0 ] \
            && [ "$(get_config_val net_check_switch true)" = "true" ] \
            && [ "$(get_config_val auto_failover true)" = "true" ]; then
             local _nc_verdict
@@ -511,10 +523,19 @@ cmd_watchdog() {
                                 # protocol key is typically ABSENT (null), and
                                 # defaulting only one side to "vless" here would
                                 # make null never match "vless" on restore.
-                                [ -f "$ECLIPVPN_TMP/net_check_prev.json" ] || \
+                                # Atomic (.tmp + mv), matching every other stateful
+                                # file in this codebase (servers.json, config.json,
+                                # incidents.json...) — a plain `jq > file` here was
+                                # the one exception (found in review 2026-09-16); a
+                                # crash mid-write would leave truncated/invalid JSON
+                                # that _net_check_prev_idx's --argjson then rejects.
+                                if [ ! -f "$ECLIPVPN_TMP/net_check_prev.json" ]; then
                                     jq -c ".[$_cur] | {protocol, host, port, name}" \
-                                    "$ECLIPVPN_TMP/servers.json" 2>/dev/null \
-                                    > "$ECLIPVPN_TMP/net_check_prev.json"
+                                        "$ECLIPVPN_TMP/servers.json" 2>/dev/null \
+                                        > "$ECLIPVPN_TMP/net_check_prev.json.tmp" \
+                                    && mv "$ECLIPVPN_TMP/net_check_prev.json.tmp" "$ECLIPVPN_TMP/net_check_prev.json" \
+                                    || rm -f "$ECLIPVPN_TMP/net_check_prev.json.tmp"
+                                fi
                                 local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 1)
                                 if [ -n "$pick" ]; then
                                     local sel="${pick%% *}" sel_ms="${pick##* }"
