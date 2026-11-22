@@ -167,7 +167,7 @@ The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`:
 - Repo forces LF (`.gitattributes`); CRLF breaks ash.
 
 **Automatic server switching**
-- `auto_failover` (default true) gates EVERY automatic `selected_server` change (failover incl. emergency pass, throughput switch, net-check guard); bail before benchmarking when off.
+- `auto_failover` (default true) gates EVERY automatic `selected_server` change (failover incl. emergency pass, throughput switch, net-check guard, the `auto_mode` periodic `cmd_auto_eval`); a user's explicit auto-select is not gated; bail before benchmarking when off.
 - `muted_servers` hides servers from automation only (name tokens, never indices); metered ≠ muted. Emergency pass lifts the mute only for connectivity, never for speed (not in the throughput guard).
 - Emergency pass ranks by latency ⇒ from RU the nearest is often a RU exit; name matching can't tell RU exits from RU entries.
 - `blocked_exit_countries` (default `RU`) vetoes auto-picked candidates by MEASURED exit country (CF trace `loc=`); unknown ⇒ not blocked; never applied to the user's own current/previous/manual server.

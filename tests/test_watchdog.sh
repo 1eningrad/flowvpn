@@ -175,6 +175,20 @@ _wd_dns_guard
 assert_eq "dg-failover"       "$(_calls)" "inc:dns_failover restart"
 assert_eq "dg-active"         "$(cat "$ECLIPVPN_TMP/dns_direct_active")" 8.8.4.4
 
+# --- auto_eval (watchdog's auto_mode re-pick) honours auto_failover --------------
+_t auto_eval_gate
+printf '%s' "$servers" > "$ECLIPVPN_TMP/servers.json"
+_vpn_running() { return 0; }
+test_xray()    { echo 1.2.3.4; }
+_reach_ms()    { echo "reach" >> "$WD_CALLS"; echo -1; }
+fresh_config '{"selected_server":0,"auto_failover":false}'; _reset; rm -f "$ECLIPVPN_TMP/auto_state.json"
+assert_json "ae-af-off"       "$(cmd_auto_eval)" '.status' skipped
+assert_eq   "ae-af-off-noprobe" "$(_calls)" ""
+fresh_config '{"selected_server":0}'; _reset; rm -f "$ECLIPVPN_TMP/auto_state.json"
+cmd_auto_eval >/dev/null 2>&1
+assert_eq   "ae-af-on-probes" "$(_calls | cut -d' ' -f1)" reach
+rm -f "$ECLIPVPN_TMP/auto_state.json" "$ECLIPVPN_TMP/auto.lock"
+
 # --- restore every real function the stubs replaced ---------------------------
 rm -f "$ECLIPVPN_TMP/servers.json" "$WD_CALLS"; _reset
 unset -f logger sleep _calls _reset _reset_keep_wan _tput_state

@@ -497,6 +497,17 @@ cmd_auto_eval() {
     [ -f "$ECLIPVPN_TMP/servers.json" ] || return 1
     _vpn_running || return 0   # not running → not our job, watchdog handles
 
+    # auto_failover gates EVERY automatic change of selected_server, and this
+    # periodic re-pick (watchdog → auto_mode) is one — it was the last path
+    # without the gate, so auto_mode=true still switched servers on a router
+    # set to auto_failover=false. Bail before probing: the result could not be
+    # acted on. A user's explicit auto-select (UI «Авто» button) is NOT gated.
+    if [ "$(get_config_val auto_failover true)" != "true" ]; then
+        flogd "Auto-eval: auto_failover off — skipping re-evaluation"
+        echo '{"status":"skipped","reason":"auto_failover off"}'
+        return 0
+    fi
+
     mkdir -p "$ECLIPVPN_TMP"
     local sf="$ECLIPVPN_TMP/auto_state.json"
     local oplock="$ECLIPVPN_TMP/auto.lock"
