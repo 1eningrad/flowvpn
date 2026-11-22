@@ -66,3 +66,14 @@ cmd_restore '{"config":{"running_intent":true,"selected_server":0,"subscriptions
 assert_rc "stub-rejected"          "$rc" 1
 assert_eq "stub-config-mode-kept"  "$(jq -r .mode "$ECLIPVPN_CONFIG")" all_vpn
 assert_eq "stub-config-subs-kept"  "$(jq -r '.subscriptions[0].id' "$ECLIPVPN_CONFIG")" keepme
+
+# --- get_config_val: default only for absent/null, never for a stored false ---
+# `.[$k] // $d` returned the default for `false`, so true-default booleans
+# (auto_failover, tput_guard, net_check_switch) could never be switched off.
+_t get_config_val_false
+fresh_config '{"auto_failover":false,"n":null,"s":"","z":0}'
+assert_eq "gcv-false-kept"   "$(get_config_val auto_failover true)" false
+assert_eq "gcv-absent-def"   "$(get_config_val missing dflt)"       dflt
+assert_eq "gcv-null-def"     "$(get_config_val n dflt)"             dflt
+assert_eq "gcv-empty-kept"   "$(get_config_val s dflt)"             ""
+assert_eq "gcv-zero-kept"    "$(get_config_val z 5)"                0

@@ -31,7 +31,13 @@ ulimit -n 8192 2>/dev/null
 . "$ECLIPVPN_LIB/health.sh"
 . "$ECLIPVPN_LIB/config.sh"
 
-get_config_val() { jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$ECLIPVPN_CONFIG"; }
+# Default applies ONLY when the key is absent/null. NOT `.[$k] // $d`: jq's `//`
+# also falls back on `false`, so `get_config_val auto_failover true` returned
+# "true" for a stored false — auto_failover, tput_guard and net_check_switch
+# could never be turned off, and a router with auto_failover=false still
+# failed over on its own (seen live 2026-11-20, found by tests/test_watchdog.sh
+# 2026-11-22). Same trap the auto_start comment in cmd_status warns about.
+get_config_val() { jq -r --arg k "$1" --arg d "$2" '.[$k] | if . == null then $d else . end' "$ECLIPVPN_CONFIG"; }
 flog() { logger -t eclipvpn "$*"; }
 # Log an error AND emit it as the {"error":...} JSON the CLI/CGI returns, so a
 # user-visible failure is never silent in the log (the recurring "ошибка есть —
