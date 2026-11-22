@@ -19,5 +19,6 @@ usr/lib/eclipvpn/domains.sh
 usr/lib/eclipvpn/traffic.sh
 usr/lib/eclipvpn/health.sh
 usr/lib/eclipvpn/config.sh
+usr/lib/eclipvpn/update.sh
 etc/init.d/eclipvpn
 www/cgi-bin/eclipvpn

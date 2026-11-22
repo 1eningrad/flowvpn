@@ -1630,6 +1630,15 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <div style="color:var(--text-dim);font-size:12px;padding:12px 0">Загрузка…</div>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Обновление</div>
+            <button class="btn btn-ghost btn-sm" id="updCheckBtn" onclick="checkUpdate()">Проверить</button>
+          </div>
+          <p class="card-desc" id="updInfo" style="font-size:12px">Новые версии публикуются как релизы на GitHub. Обновление скачивается роутером, проверяется и ставится; если после него VPN не поднимется — вернётся прежняя версия.</p>
+          <div id="updResult" style="display:none;margin-top:10px"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -1882,7 +1891,7 @@ function showTab(name,el){
   if(name==='logs'){loadLogs();if(liveMode)startLive()}
   if(name==='routing'){loadDomains();loadPresets();}
   if(name==='diagnose')loadQuickDiag();
-  if(name==='settings'){loadSchedule();loadAutoUpdate();loadSystemInfo()}
+  if(name==='settings'){loadSchedule();loadAutoUpdate();loadSystemInfo();resumeUpdate()}
   // On mobile, scroll to the section (since left column is above it); on desktop stay in place
   if(window.matchMedia('(max-width:840px)').matches){
     const sec=document.getElementById('sec-'+name);
@@ -2070,7 +2079,9 @@ const INCIDENT_LABEL={
   slow_noalt:'Низкая скорость везде',
   wan_down:'Провайдер недоступен',
   wan_recovered:'Интернет восстановлен',
-  emergency_muted:'Аварийно на замьюченный'
+  emergency_muted:'Аварийно на замьюченный',
+  update:'Обновление',
+  update_rollback:'Обновление откатено'
 };
 function fmtIncidentTime(ts){
   const d=new Date(ts*1000);
@@ -3415,6 +3426,69 @@ async function loadSchedule(){
     if(d.on)document.getElementById('schedOn').value=d.on;
     if(d.off)document.getElementById('schedOff').value=d.off;
   }catch(e){}
+}
+// --- Self-update (update.sh). check → «Обновить до X» → background worker,
+// polled via update-status. The worker runs detached on the router (uhttpd
+// kills a CGI at 60s), restarts the VPN onto the new code and rolls back by
+// itself if the tunnel does not come up.
+let _updPoll=null;
+function _updBox(html){const el=document.getElementById('updResult');if(!el)return;el.style.display=html?'block':'none';el.innerHTML=html||''}
+async function checkUpdate(){
+  const b=document.getElementById('updCheckBtn');
+  if(b){b.disabled=true;b.innerHTML='<span class="spinner"></span> Проверяем';}
+  try{
+    const r=await apiFetch(API+'?action=update-check');const d=await r.json();
+    if(d.error){_updBox('<div style="color:var(--red);font-size:12px">'+esc(d.error)+'</div>');return}
+    if(!d.available){
+      _updBox('<div style="font-size:12px;color:var(--text-dim)">Установлена последняя версия: <b>v'+esc(d.current)+'</b>'+(d.latest?' (на GitHub: '+esc(d.latest)+')':'')+'</div>');
+      return;
+    }
+    const notes=d.notes?'<div style="font-size:11.5px;color:var(--text-dim);white-space:pre-line;max-height:160px;overflow:auto;margin:8px 0;padding:8px;background:var(--card-hover);border-radius:8px">'+esc(d.notes)+'</div>':'';
+    _updBox('<div style="font-size:12.5px">Доступна версия <b>'+esc(d.latest)+'</b> (сейчас v'+esc(d.current)+')</div>'+notes
+      +'<button class="btn btn-primary btn-sm" style="margin-top:6px" data-tag="'+esc(d.latest)+'" onclick="startUpdate(this.dataset.tag)">Обновить до '+esc(d.latest)+'</button>');
+  }catch(e){_updBox('<div style="color:var(--red);font-size:12px">Ошибка проверки</div>')}
+  finally{if(b){b.disabled=false;b.textContent='Проверить';}}
+}
+async function startUpdate(tag){
+  if(!confirm('Обновить EclipVPN до '+tag+'?\n\nVPN перезапустится — интернет пропадёт на 10–30 секунд. Если после обновления VPN не поднимется, автоматически вернётся прежняя версия.'))return;
+  try{
+    const r=await apiFetch(API+'?action=self-update&tag='+encodeURIComponent(tag));const d=await r.json();
+    if(d.error){toast.error('Обновление не запущено',d.error);return}
+    if(d.status==='up_to_date'){toast.info('Уже установлена последняя версия');return}
+    _updBox('<div style="font-size:12.5px"><span class="spinner"></span> <span id="updPhase">Запуск…</span></div>');
+    if(_updPoll)clearInterval(_updPoll);
+    _updPoll=setInterval(pollUpdate,2500);
+  }catch(e){toast.error('Обновление не запущено')}
+}
+const _UPD_DONE={done:1,failed:1,rolled_back:1};
+// Re-attach to an update still running (page reloaded or reopened mid-update).
+async function resumeUpdate(){
+  if(_updPoll)return;
+  try{
+    const r=await apiFetch(API+'?action=update-status');const d=await r.json();
+    if(!d.phase||d.phase==='idle'||_UPD_DONE[d.phase])return;
+    _updBox('<div style="font-size:12.5px"><span class="spinner"></span> <span id="updPhase">'+esc(d.message||'Обновление…')+'</span></div>');
+    _updPoll=setInterval(pollUpdate,2500);
+  }catch(e){}
+}
+async function pollUpdate(){
+  let d;
+  // The VPN restart drops the router's web server for a moment — a failed
+  // poll is expected mid-update, just try again on the next tick.
+  try{const r=await apiFetch(API+'?action=update-status');d=await r.json()}catch(e){return}
+  const ph=document.getElementById('updPhase');
+  if(ph&&d.message)ph.textContent=d.message;
+  if(!_UPD_DONE[d.phase])return;
+  clearInterval(_updPoll);_updPoll=null;
+  if(d.phase==='done'){
+    _updBox('<div style="font-size:12.5px;color:var(--green)">'+esc(d.message)+'. Страница перезагрузится…</div>');
+    toast.success('EclipVPN обновлён',d.target);
+    // index.html itself was replaced — reload past the browser cache.
+    setTimeout(()=>{location.reload()},2500);
+  }else{
+    _updBox('<div style="font-size:12.5px;color:var(--red)">'+esc(d.message||'Обновление не удалось')+'</div>');
+    toast.error(d.phase==='rolled_back'?'Обновление откатено':'Обновление не удалось',d.message||'');
+  }
 }
 async function loadSystemInfo(){
   try{const r=await apiFetch(API+'?action=system-info');const d=await r.json();

@@ -30,6 +30,7 @@ ulimit -n 8192 2>/dev/null
 . "$ECLIPVPN_LIB/traffic.sh"
 . "$ECLIPVPN_LIB/health.sh"
 . "$ECLIPVPN_LIB/config.sh"
+. "$ECLIPVPN_LIB/update.sh"
 
 # Default applies ONLY when the key is absent/null. NOT `.[$k] // $d`: jq's `//`
 # also falls back on `false`, so `get_config_val auto_failover true` returned
@@ -861,6 +862,10 @@ case "$1" in
     get-dns)        cmd_get_dns ;;
     set-config)     cmd_set_config "$2" "$3" ;;
     set-wifi)       cmd_set_wifi "$2" "$3" ;;
+    update-check)   cmd_update_check ;;
+    update-status)  cmd_update_status ;;
+    self-update)    cmd_self_update "$2" "$3" ;;
+    self-update-run) _self_update_run "$2" "$3" ;;   # internal: detached worker
     *)
         # Keep in sync with the dispatch arms above (internal watchdog /
         # ensure-watchdog are deliberately omitted).
@@ -895,6 +900,9 @@ Settings:
   schedule set ON OFF | disable | get
   auto-update enable|disable|status
   backup | restore JSON
+Updates:
+  update-check | update-status    newer GitHub release? / progress of a running update
+  self-update [TAG] | self-update --file TARBALL   install it (rolls back if the VPN fails)
 EOF
         ;;
 esac

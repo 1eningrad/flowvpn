@@ -73,6 +73,8 @@ get-traffic | traffic-poll               per-outbound byte accounting / live up-
 get-incidents | clear-incidents          failover history
 reset-traffic                            zero per-chain byte counters
 backup | restore JSON                    export / import config as JSON
+update-check | update-status            newer GitHub release? / progress of a running self-update
+self-update [TAG] | self-update --file T  install a release (detached worker, auto-rollback if the VPN fails)
 watchdog                                 internal — single-instance, do not call directly
 ensure-watchdog                          internal — cron-driven watchdog revival (*/5, gated on running_intent)
 ```
@@ -194,6 +196,7 @@ The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`:
 - Subscription and rule updates are fetch-then-swap; never wipe before fetching.
 
 **Shipping**
+- **Self-update** (`update.sh`, UI ▸ Настройки ▸ Обновление) installs the latest GitHub **Release** (API `releases/latest`, so a bare tag is not enough) newer than `ECLIPVPN_VERSION`. It needs the repo to be PUBLIC. Worker runs detached (`setsid`; uhttpd kills CGI at 60s), validates the tarball by its own `packaging/ship-files` + `ash -n`, backs up to `/etc/eclipvpn/update_prev/`, installs per file atomically, restarts like `deploy.sh` (only if `running_intent`), and rolls back if the tunnel isn't up in 90s. **To release:** bump `ECLIPVPN_VERSION` (vYYYY.MM[.N]), commit, tag `v<version>`, push the tag, publish a GitHub Release for it (notes become the UI changelog). A new runtime dependency (xray/sing-box version, opkg package) is NOT installed by self-update — say so in the release notes.
 - `deploy.sh` ships COMMITTED bytes (`git archive HEAD`); commit first (`ALLOW_DIRTY=1` is the racy escape hatch).
 - xray ≥ 26.4.17 required; installers self-heal curl/libcurl skew by actually running `curl --version`.
 - Logging: `_err` for every user-visible error, `flogd` for debug (`log_debug`).

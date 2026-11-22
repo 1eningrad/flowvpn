@@ -19,7 +19,7 @@ _urldec() {
 
 # Parse query string
 action="" index="" mode="" domain="" list="" key="" value="" lines="" filter=""
-on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force="" sub_id=""
+on_time="" off_time="" ip_addr="" route="" op="" preset_name="" force="" sub_id="" tag=""
 IFS='&'
 for pair in $QUERY_STRING; do
     k="${pair%%=*}"; v="${pair#*=}"
@@ -31,7 +31,7 @@ for pair in $QUERY_STRING; do
         on) on_time="$v" ;; off) off_time="$v" ;;
         ip) ip_addr="$v" ;; route) route="$v" ;;
         op) op="$v" ;; name) preset_name="$v" ;;
-        force) force="$v" ;; id) sub_id="$v" ;;
+        force) force="$v" ;; id) sub_id="$v" ;; tag) tag="$v" ;;
     esac
 done
 unset IFS
@@ -168,6 +168,18 @@ case "$action" in
     healthcheck)    /usr/bin/eclipvpn healthcheck ;;
     net-check)      /usr/bin/eclipvpn net-check ;;
     system-info)    /usr/bin/eclipvpn system-info ;;
+    # Self-update. All three are MUTATING-gated (not in the read-only arm):
+    # update-check makes the router call GitHub, self-update replaces code.
+    update-check)   /usr/bin/eclipvpn update-check ;;
+    update-status)  /usr/bin/eclipvpn update-status ;;
+    self-update)
+        # Optional explicit tag; same shape the CLI validates (vYYYY.MM[.N]).
+        case "$tag" in
+            '') /usr/bin/eclipvpn self-update ;;
+            v[0-9]*) case "$tag" in *[!0-9A-Za-z._-]*) _bad tag ;; *) /usr/bin/eclipvpn self-update "$tag" ;; esac ;;
+            *) _bad tag ;;
+        esac
+        ;;
     get-traffic)    /usr/bin/eclipvpn get-traffic ;;
     traffic-poll)   /usr/bin/eclipvpn traffic-poll ;;
     reset-traffic)  /usr/bin/eclipvpn reset-traffic ;;
