@@ -303,6 +303,503 @@ _net_check_prev_idx() {
     ' "$ECLIPVPN_TMP/servers.json" 2>/dev/null
 }
 
+# ---------------------------------------------------------------------------
+# Per-tick guard blocks of cmd_watchdog, split out of its loop (2026-11-22)
+# VERBATIM — the only edits are `continue` -> `return 0`. They read and update
+# cmd_watchdog's state (fail_count, slow_count, tput_*, dns_fail, net_*_streak,
+# …) through ash's DYNAMIC scoping of `local`: a called function sees and
+# assigns its caller's locals. That keeps the state per-process, exactly where
+# it was, while letting tests drive one guard with hand-set state and stubbed
+# probes (tests/test_watchdog.sh). Don't add `local` for a state variable in
+# these functions — that would silently shadow the watchdog's copy.
+# ---------------------------------------------------------------------------
+
+# One tick of the direct-path DNS guard (see the dns_direct_servers invariant).
+# State: dns_fail; consts DNS_FAIL_MAX.
+_wd_dns_guard() {
+    local _dns_active
+    _dns_active=$(_active_dns_direct)
+    if _dns_probe "$_dns_active"; then
+        dns_fail=0
+    else
+        dns_fail=$((dns_fail + 1))
+        flog "Watchdog: direct DNS $_dns_active did not answer ($dns_fail/$DNS_FAIL_MAX)"
+        if [ "$dns_fail" -ge "$DNS_FAIL_MAX" ] && _watchdog_check_wan; then
+            local _cand _new=""
+            for _cand in $(_dns_direct_list); do
+                [ "$_cand" = "$_dns_active" ] && continue
+                if _dns_probe "$_cand"; then _new="$_cand"; break; fi
+            done
+            if [ -n "$_new" ]; then
+                echo "$_new" > "$ECLIPVPN_TMP/dns_direct_active"
+                _log_incident "dns_failover" "$_dns_active" "" "direct DNS $_dns_active -> $_new"
+                flog "Watchdog: direct DNS failover $_dns_active -> $_new, regenerating"
+                dns_fail=0
+                cmd_restart >/dev/null 2>&1
+            else
+                flog "Watchdog: no direct DNS in dns_direct_servers answered — keeping $_dns_active"
+                dns_fail=0
+            fi
+        fi
+    fi
+}
+
+# The tunnel is down: defer to an in-flight lifecycle op, else revive it if the
+# user wants it running (running_intent), with a 60s cooldown.
+_wd_revive() {
+    # Defer revival if a user-initiated lifecycle command is in
+    # flight. cmd_restart's brief stop_xray window otherwise tricks
+    # us into revival, which then races the rest of cmd_restart and
+    # spawns a parallel xray.
+    local op_marker="$ECLIPVPN_TMP/op.in_progress"
+    if [ -f "$op_marker" ]; then
+        local op_pid=$(cat "$op_marker" 2>/dev/null)
+        if [ -n "$op_pid" ] && kill -0 "$op_pid" 2>/dev/null; then
+            return 0
+        fi
+        # Stale marker — owning process is dead, fall through and
+        # remove on the way out so we don't get stuck deferring forever.
+        rm -f "$op_marker"
+    fi
+
+    local _intent
+    _intent=$(get_config_val running_intent false)
+    if [ "$_intent" = "true" ]; then
+        local revive_marker="$ECLIPVPN_TMP/last_revive"
+        local now=$(date +%s)
+        local last=0
+        [ -f "$revive_marker" ] && last=$(cat "$revive_marker" 2>/dev/null)
+        [ -z "$last" ] && last=0
+        # Min 60s between revival attempts. cmd_start needs ~7s to
+        # complete; this gives it room to finish + brief settle time.
+        if [ $((now - last)) -lt 60 ]; then
+            : # in cooldown — skip this tick silently
+        else
+            flog "Watchdog: VPN was killed externally, reviving"
+            echo $now > "$revive_marker"
+            # Subshell: cmd_start's `trap _op_end EXIT` only fires on
+            # process exit, and the watchdog never exits. A bare call
+            # would leak op.lock forever (owner=watchdog), wedging
+            # every later user lifecycle op. The subshell makes EXIT
+            # fire on its own exit, releasing the lock.
+            ( cmd_start ) >/dev/null 2>&1
+        fi
+    fi
+}
+
+# One tick of the net-check guard (see the comment block at its call site).
+# State: net_wl_streak, net_full_streak; reads tick, NET_EVERY, NET_STREAK,
+# interval, probe_port.
+_wd_net_check_guard() {
+    local _nc_op_busy=0
+    if [ -f "$ECLIPVPN_TMP/op.in_progress" ]; then
+        local _nc_op_pid; _nc_op_pid=$(cat "$ECLIPVPN_TMP/op.in_progress" 2>/dev/null)
+        [ -n "$_nc_op_pid" ] && kill -0 "$_nc_op_pid" 2>/dev/null && _nc_op_busy=1
+    fi
+    if [ "$_nc_op_busy" -eq 0 ] && [ $((tick % NET_EVERY)) -eq 0 ] \
+       && [ "$(get_config_val net_check_switch true)" = "true" ] \
+       && [ "$(get_config_val auto_failover true)" = "true" ]; then
+        local _nc_verdict
+        _nc_verdict=$(cmd_net_check 2>/dev/null | jq -r '.internet // "none"')
+        case "$_nc_verdict" in
+            whitelist)
+                net_full_streak=0
+                net_wl_streak=$((net_wl_streak + 1))
+                if [ "$net_wl_streak" -ge "$NET_STREAK" ]; then
+                    net_wl_streak=0
+                    local _cur=$(get_config_val selected_server 0)
+                    local _cur_name=$(jq -r ".[$_cur].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                    if ! _name_has_token "$_cur_name" "WL"; then
+                        local _total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                        if [ -n "$_total" ]; then
+                            # Raw pass-through (no protocol default): must stay
+                            # symmetric with the plain equality match in
+                            # _net_check_prev_idx (mirrors _remap_selected_server,
+                            # which also compares raw fields) — a vless entry's
+                            # protocol key is typically ABSENT (null), and
+                            # defaulting only one side to "vless" here would
+                            # make null never match "vless" on restore.
+                            # Atomic (.tmp + mv), matching every other stateful
+                            # file in this codebase (servers.json, config.json,
+                            # incidents.json...) — a plain `jq > file` here was
+                            # the one exception (found in review 2026-09-16); a
+                            # crash mid-write would leave truncated/invalid JSON
+                            # that _net_check_prev_idx's --argjson then rejects.
+                            if [ ! -f "$ECLIPVPN_TMP/net_check_prev.json" ]; then
+                                jq -c ".[$_cur] | {protocol, host, port, name}" \
+                                    "$ECLIPVPN_TMP/servers.json" 2>/dev/null \
+                                    > "$ECLIPVPN_TMP/net_check_prev.json.tmp" \
+                                && mv "$ECLIPVPN_TMP/net_check_prev.json.tmp" "$ECLIPVPN_TMP/net_check_prev.json" \
+                                || rm -f "$ECLIPVPN_TMP/net_check_prev.json.tmp"
+                            fi
+                            local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 1)
+                            if [ -n "$pick" ]; then
+                                local sel="${pick%% *}" sel_ms="${pick##* }"
+                                local sel_name=$(jq -r ".[$sel].name" "$ECLIPVPN_TMP/servers.json")
+                                local sel_host=$(jq -r ".[$sel].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                                logger -t eclipvpn "Watchdog: uplink whitelisted — switching to $sel_name (${sel_ms}ms)"
+                                _log_incident "net_check_switch" "$sel_host" "$sel_name" "аплинк в белых списках — переключение с $_cur_name на $sel_name (WL, ${sel_ms}мс)"
+                                _record_switch "$_cur" "$sel" "net_check_whitelist"
+                                update_config '.selected_server = $idx' --argjson idx "$sel" || flog "WARN: net-check whitelist switch save_config failed"
+                                ( cmd_restart ) >/dev/null 2>&1
+                                sleep $((interval * 3))
+                            else
+                                logger -t eclipvpn "Watchdog: uplink whitelisted but no verified WL candidate — staying on $_cur_name"
+                                _log_incident "net_check_noalt" "" "$_cur_name" "аплинк в белых списках, ни один WL-сервер не прошёл проверку — остаёмся на $_cur_name"
+                            fi
+                        fi
+                    fi
+                fi
+                ;;
+            full)
+                net_wl_streak=0
+                net_full_streak=$((net_full_streak + 1))
+                if [ "$net_full_streak" -ge "$NET_STREAK" ]; then
+                    net_full_streak=0
+                    if [ -f "$ECLIPVPN_TMP/net_check_prev.json" ]; then
+                        local _cur=$(get_config_val selected_server 0)
+                        local _total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                        local _prev_idx; _prev_idx=$(_net_check_prev_idx)
+                        local _restored=""
+                        if [ -n "$_prev_idx" ] && [ "$_prev_idx" = "$_cur" ]; then
+                            # A manual switch (or an earlier tick) already put
+                            # us back on the remembered server — nothing to
+                            # do but retire the marker below, no probe/scan.
+                            _restored="$_cur"
+                        elif [ -n "$_prev_idx" ]; then
+                            local res=$(_watchdog_probe_candidate "$_prev_idx" "$probe_port" latency)
+                            [ "${res%% *}" = "ok" ] && _restored="$_prev_idx"
+                        fi
+                        if [ -z "$_restored" ] && [ -n "$_total" ]; then
+                            local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 0)
+                            [ -n "$pick" ] && _restored="${pick%% *}"
+                        fi
+                        if [ -n "$_restored" ] && [ "$_restored" != "$_cur" ]; then
+                            local _cur_name=$(jq -r ".[$_cur].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                            local _r_name=$(jq -r ".[$_restored].name" "$ECLIPVPN_TMP/servers.json")
+                            local _r_host=$(jq -r ".[$_restored].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                            logger -t eclipvpn "Watchdog: uplink back to full — switching back to $_r_name"
+                            _log_incident "net_check_restore" "$_r_host" "$_r_name" "аплинк снова обычный — переключение с $_cur_name на $_r_name"
+                            _record_switch "$_cur" "$_restored" "net_check_full"
+                            update_config '.selected_server = $idx' --argjson idx "$_restored" || flog "WARN: net-check restore save_config failed"
+                            ( cmd_restart ) >/dev/null 2>&1
+                            rm -f "$ECLIPVPN_TMP/net_check_prev.json"
+                            sleep $((interval * 3))
+                        elif [ -n "$_restored" ]; then
+                            # Already back on the remembered server (e.g. a
+                            # manual switch beat us to it) — just clear state.
+                            rm -f "$ECLIPVPN_TMP/net_check_prev.json"
+                        else
+                            logger -t eclipvpn "Watchdog: uplink back to full but no verified normal candidate yet — staying on WL server"
+                        fi
+                    fi
+                fi
+                ;;
+            *)
+                net_wl_streak=0
+                net_full_streak=0
+                ;;
+        esac
+    fi
+}
+
+# The tunnel answered: close out a tracked WAN outage and reset the fail
+# counters. State: fail_count, silent_fails.
+_wd_on_probe_ok() {
+    # If we were tracking a WAN outage, close it out with a single
+    # "recovered" incident and clear the streak markers. Without
+    # this, an outage that started at 08:24 and ended at 08:28
+    # would just leave the journal stuck on its last wan_down line
+    # with no indication things came back.
+    local wan_marker="$ECLIPVPN_TMP/wan_down_since"
+    if [ -f "$wan_marker" ]; then
+        local since=$(cat "$wan_marker" 2>/dev/null)
+        local ticks=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
+        local duration_s=$(( $(date +%s) - ${since:-$(date +%s)} ))
+        logger -t eclipvpn "Watchdog: WAN recovered after ${duration_s}s ($ticks ticks)"
+        _log_incident "wan_recovered" "" "" "восстановлен через ${duration_s}с (было ${ticks} проверок без связи)"
+        rm -f "$wan_marker" "$ECLIPVPN_TMP/wan_down_ticks"
+    fi
+    [ "$silent_fails" -gt 0 ] && logger -t eclipvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
+    fail_count=0
+    silent_fails=0
+}
+
+# One tick of the throughput guard. State: slow_count, last_tput_switch,
+# tput_switch_helped, tput_redialed, tput_fast_retry_used; consts TPUT_*;
+# reads tick, interval, probe_port.
+_wd_tput_guard() {
+    # --- Throughput guard ------------------------------------------
+    # The probe above only proves the server ANSWERS. A peak-overloaded
+    # exit pings fast and returns 204 instantly while its bandwidth is
+    # shaped to a crawl — latency-based failover never fires, but the
+    # user sees "everything is molasses". Periodically measure REAL
+    # tunnel throughput; if it collapses for several consecutive
+    # checks, act in two stages:
+    #   1. RE-DIAL: the policer pins flows per-TCP-connection (root
+    #      cause 2026-06-11) — a fresh flow to the SAME exit often
+    #      escapes the squeeze while the live tunnel's pinned flow
+    #      crawls (probe 11.7MB/s vs live 199KB/s on one server,
+    #      2026-06-12). If a throwaway xray to the current server
+    #      measures clearly fast, force-restart in place (new flows,
+    #      same server) instead of burning a switch. One attempt per
+    #      incident.
+    #   2. SWITCH: fail over to the candidate with the best MEASURED
+    #      speed (not latency).
+    # Anti-flap is layered: a switch needs a candidate clearly faster
+    # (>2×) than the crawl, and the cooldown applies only while the
+    # last switch/benchmark produced no good reading since
+    # (tput_switch_helped=0 — the "every server is throttled" peak).
+    # A switch that DID restore speed and later got re-squeezed
+    # (rolling TSPU waves, observed 2026-06-10) may act again as soon
+    # as TPUT_SLOW_MAX low reads re-accumulate (~7 min), not 20.
+    # And after a FLOPPED action (squeezed before any good reading —
+    # the per-flow lottery lost) the FIRST re-action is allowed after
+    # TPUT_COOLDOWN_FAST, not the full cooldown: on 2026-06-12 a
+    # switch flopped while a free server existed, and the full gate
+    # left the user at 250KB/s for 10 min until a manual switch. One
+    # early retry catches that; a second consecutive flop means the
+    # peak really is everywhere — wait out the full 20 min.
+    if [ "$(get_config_val tput_guard true)" = "true" ] && [ $((tick % TPUT_EVERY)) -eq 0 ]; then
+        local min_kbps; min_kbps=$(get_config_val tput_min_kbps 500)
+        case "$min_kbps" in ''|*[!0-9]*) min_kbps=500 ;; esac
+        local kbps; kbps=$(_watchdog_throughput_kbps "$(_active_socks_port)")
+        if [ -n "$kbps" ] && [ "$kbps" -lt "$min_kbps" ]; then
+            slow_count=$((slow_count + 1))
+            logger -t eclipvpn "Watchdog: low throughput ${kbps}KB/s < ${min_kbps} ($slow_count/$TPUT_SLOW_MAX)"
+        else
+            [ "$slow_count" -gt 0 ] && [ -n "$kbps" ] && logger -t eclipvpn "Watchdog: throughput recovered (${kbps}KB/s)"
+            # A real good reading (not an empty no-data probe) proves
+            # the current server delivers — the next degradation is a
+            # fresh wave, not the same incident: lift the cooldown gate
+            # and re-arm the per-incident re-dial / early-retry budgets.
+            [ -n "$kbps" ] && { tput_switch_helped=1; tput_redialed=0; tput_fast_retry_used=0; }
+            slow_count=0
+        fi
+
+        if [ "$slow_count" -ge "$TPUT_SLOW_MAX" ]; then
+            local now=$(date +%s)
+            local cool=$TPUT_COOLDOWN
+            [ "$tput_fast_retry_used" -eq 0 ] && cool=$TPUT_COOLDOWN_FAST
+            if [ $((now - last_tput_switch)) -lt "$cool" ] && [ "$tput_switch_helped" -eq 0 ]; then
+                : # last switch/benchmark never lifted things — cool down, don't flap
+            else
+                # Acting from a helped=0 state means this IS the one
+                # early retry — spend it.
+                [ "$tput_switch_helped" -eq 0 ] && tput_fast_retry_used=1
+                local cur_idx=$(get_config_val selected_server 0)
+                local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local cur_name=$(jq -r ".[$cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local cur_host=$(jq -r ".[$cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                local did_redial=0
+                if [ "$tput_redialed" -eq 0 ]; then
+                    tput_redialed=1
+                    logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — probing a fresh flow to it"
+                    local fres=$(_watchdog_probe_candidate "$cur_idx" "$probe_port" throughput)
+                    local fresh_kbps=""
+                    [ "${fres%% *}" = "ok" ] && fresh_kbps="${fres#ok }"
+                    if [ -n "$fresh_kbps" ] && [ "$fresh_kbps" -ge "$min_kbps" ] && [ "$fresh_kbps" -gt $((kbps * 2)) ]; then
+                        logger -t eclipvpn "Watchdog: re-dialing $cur_name in place (fresh flow ${fresh_kbps}KB/s vs ${kbps}KB/s)"
+                        _log_incident "slow_redial" "$cur_host" "$cur_name" "низкая скорость (${kbps}КБ/с), свежий поток к тому же серверу даёт ${fresh_kbps}КБ/с — переподключение без смены сервера"
+                        # Force (=1) past the unchanged-config fast
+                        # path: configs are byte-identical and the
+                        # tunnel answers probes, so a plain restart
+                        # would no-op instead of replacing the flows.
+                        ( cmd_restart 1 ) >/dev/null 2>&1
+                        last_tput_switch=$(date +%s)
+                        tput_switch_helped=0
+                        slow_count=0
+                        did_redial=1
+                        sleep $((interval * 3))
+                    else
+                        logger -t eclipvpn "Watchdog: fresh flow to $cur_name also slow (${fresh_kbps:-0}KB/s)"
+                    fi
+                fi
+                # auto_failover gates EVERY automatic change of the selected
+                # server, and a throughput switch is one of them — but this
+                # path used to be gated only by tput_guard, so a user who
+                # turned failover off to stop surprise switches still got
+                # them here. Bail BEFORE the benchmark: probing the pool
+                # costs ~13s/server and the result could not be acted on
+                # anyway. The re-dial above stays allowed on purpose — it
+                # re-opens a flow to the SAME server, changing no selection.
+                if [ "$did_redial" -eq 0 ] && [ "$(get_config_val auto_failover true)" != "true" ]; then
+                logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — auto_failover off, staying put"
+                _log_incident "slow_noswitch" "$cur_host" "$cur_name" "низкая скорость (${kbps}КБ/с), автопереключение отключено — сервер оставлен"
+                last_tput_switch=$(date +%s)
+                tput_switch_helped=0
+                slow_count=0
+                elif [ "$did_redial" -eq 0 ]; then
+                logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — benchmarking servers"
+                if [ -n "$total" ] && [ "$total" -gt 1 ]; then
+                    # scope stays `normal` — muted servers are NOT an
+                    # emergency fallback here. This branch fires on
+                    # "everything is slow", and slow is not an outage:
+                    # silently migrating a throttled evening onto a
+                    # billed exit is exactly the surprise the mute list
+                    # exists to prevent. Only the connectivity failover
+                    # path above lifts the mute.
+                    local pick=$(_watchdog_pick_best "$cur_idx" "$total" "$probe_port" throughput)
+                    if [ -n "$pick" ]; then
+                        local sel="${pick%% *}" cand_kbps="${pick##* }"
+                        # Switch ONLY if the best alternative clears the threshold AND
+                        # is clearly faster (>2×) than the current crawl. If every node
+                        # is throttled at peak, a switch is just a pointless blip.
+                        if [ "$cand_kbps" -ge "$min_kbps" ] && [ "$cand_kbps" -gt $((kbps * 2)) ]; then
+                            local sel_name=$(jq -r ".[$sel].name" "$ECLIPVPN_TMP/servers.json")
+                            local sel_host=$(jq -r ".[$sel].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+                            logger -t eclipvpn "Watchdog: switching to $sel_name (${cand_kbps}KB/s vs ${kbps}KB/s)"
+                            _log_incident "slow_degraded" "$sel_host" "$sel_name" "низкая скорость на $cur_name (${kbps}КБ/с) → $sel_name (${cand_kbps}КБ/с)"
+                            _record_switch "$cur_idx" "$sel" "throughput"
+                            update_config '.selected_server = $idx' --argjson idx "$sel" || flog "WARN: throughput failover save_config failed"
+                            ( cmd_restart ) >/dev/null 2>&1
+                            last_tput_switch=$(date +%s)
+                            tput_switch_helped=0
+                            tput_redialed=0  # new server gets its own re-dial chance
+                            slow_count=0
+                            sleep $((interval * 3))
+                        else
+                            logger -t eclipvpn "Watchdog: all servers slow (best ${cand_kbps}KB/s) — staying put"
+                            _log_incident "slow_noalt" "$cur_host" "$cur_name" "скорость низкая везде (текущий ${kbps}КБ/с, лучший кандидат ${cand_kbps}КБ/с)"
+                            last_tput_switch=$(date +%s)
+                            tput_switch_helped=0
+                            slow_count=0
+                        fi
+                    else
+                        logger -t eclipvpn "Watchdog: no throughput candidates answered — staying put"
+                        last_tput_switch=$(date +%s)
+                        tput_switch_helped=0
+                        slow_count=0
+                    fi
+                fi
+                fi
+            fi
+        fi
+    fi
+    # --- end throughput guard --------------------------------------
+}
+
+# The tunnel did NOT answer ($1 = WD_PROBE_WHY): separate a dead WAN from a
+# dead server, count failures, and run the failover scan when due.
+# State: fail_count, silent_fails; reads max_fails, interval, probe_port.
+_wd_on_probe_fail() {
+    local why="$1"
+
+    # WAN sanity check: if our own internet is down, the VPN server is
+    # not at fault — switching would just pick a random working-looking
+    # candidate (or none) and pollute incidents with false-positives.
+    # Record the WAN outage as its own incident type and skip the
+    # fail_count bump so the user doesn't see a phantom server-degraded
+    # warning during ISP downtime.
+    #
+    # Dedup: we log only on the FIRST tick of a WAN outage (no marker
+    # yet) and silently count subsequent ticks. Prevents the journal
+    # from filling with 12 identical wan_down entries during a 4-min
+    # ISP glitch — the recovery path above will emit a single
+    # wan_recovered line summarising the streak.
+    if ! _watchdog_check_wan; then
+        local wan_marker="$ECLIPVPN_TMP/wan_down_since"
+        if [ ! -f "$wan_marker" ]; then
+            date +%s > "$wan_marker"
+            echo 1 > "$ECLIPVPN_TMP/wan_down_ticks"
+            logger -t eclipvpn "Watchdog: WAN down — provider issue, not switching ($why)"
+            local _cur_idx=$(get_config_val selected_server 0)
+            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            _log_incident "wan_down" "$_cur_host" "$_cur_name" "WAN недоступен ($why)"
+        else
+            local n=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
+            echo $((n + 1)) > "$ECLIPVPN_TMP/wan_down_ticks"
+        fi
+        return 0
+    fi
+
+    fail_count=$((fail_count + 1))
+    # Throttle "check failed" logs after the failover loop already ran —
+    # otherwise a permanent outage spams syslog every 20s forever.
+    # Persist incident only at >=3/5 — single isolated failures (1/5,
+    # 2/5) are typically transient TLS jitter that resolves on the
+    # next tick and used to clutter the journal with false positives.
+    # The 5/5 final fail still drives the switch path unchanged.
+    if [ "$fail_count" -le "$max_fails" ]; then
+        logger -t eclipvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
+        if [ "$fail_count" -ge 3 ]; then
+            local _cur_idx=$(get_config_val selected_server 0)
+            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
+        fi
+    else
+        silent_fails=$((silent_fails + 1))
+        # One reminder every ~5 min while still down
+        [ $((silent_fails % 15)) -eq 0 ] && logger -t eclipvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
+    fi
+
+    # Fire the failover scan at max_fails, then re-fire every 15 ticks
+    # (~5 min) while the outage persists. The original `-eq max_fails`
+    # fired exactly once: after a scan that found no candidates,
+    # fail_count kept climbing past max_fails and the switch path was
+    # disarmed until a probe happened to succeed — a dead current server
+    # stayed selected even when alternatives came back hours later.
+    if [ "$fail_count" -ge "$max_fails" ] && [ $(( (fail_count - max_fails) % 15 )) -eq 0 ] && [ "$(get_config_val auto_failover true)" = "true" ]; then
+        logger -t eclipvpn "Watchdog: switching server (cause: $why)"
+
+        local current=$(get_config_val selected_server 0)
+        local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+        [ -z "$total" ] && return 0
+
+        # Probe ALL eligible, non-current candidates and pick the one
+        # with lowest latency — not the first one that happens to answer.
+        # Old round-robin from current+1 caused USA to win whenever
+        # Germany failed (next index) even though Finland & Netherlands
+        # were both noticeably faster.
+        local pick=$(_watchdog_pick_best "$current" "$total" "$probe_port")
+        # Emergency second pass: not one un-muted server answered, so the
+        # choice is a billed exit or no internet at all. Take the billed one
+        # and record a DISTINCT incident type — the user muted these to keep
+        # costs down and must be able to see, in the journal, exactly when
+        # automation overrode that.
+        local _emerg=0
+        if [ -z "$pick" ]; then
+            local _muted_now; _muted_now=$(_muted_tokens)
+            if [ -n "$_muted_now" ]; then
+                logger -t eclipvpn "Watchdog: no un-muted candidate answered — trying muted servers"
+                pick=$(_watchdog_pick_best "$current" "$total" "$probe_port" latency muted_only)
+                [ -n "$pick" ] && _emerg=1
+            fi
+        fi
+        if [ -n "$pick" ]; then
+            local selected="${pick% *}" best_ms="${pick##* }"
+            local cand_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
+            local _cand_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            local _from_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            logger -t eclipvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
+            if [ "$_emerg" = 1 ]; then
+                _log_incident "emergency_muted" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name не ответил ни один не-замьюченный сервер → аварийно на замьюченный (тарифицируемый), ${best_ms}мс ($why)"
+            else
+                _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
+            fi
+            _record_switch "$current" "$selected" "failover"
+            update_config '.selected_server = $idx' --argjson idx "$selected" || flog "WARN: failover save_config failed (will retry next tick)"
+            # Subshell so cmd_restart's EXIT trap releases the op-lock —
+            # see the revival call above; a bare call leaks it forever.
+            ( cmd_restart ) >/dev/null 2>&1
+            fail_count=0
+            silent_fails=0
+            # Give the new server time to stabilize before next probe.
+            # Without this, a flaky network triggers cascading failovers.
+            sleep $((interval * 3))
+        else
+            # No candidate answered — could be everything blocked, key
+            # rotation, or a flaky upstream. Stay put, back off.
+            logger -t eclipvpn "Watchdog: no working candidates — staying on current server ($why)"
+            local _cur_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            local _cur_host=$(jq -r ".[$current].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
+            _log_incident "switch_failed" "$_cur_host" "$_cur_name" "все кандидаты недоступны"
+        fi
+    fi
+}
+
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=5 fail_count=0 tick=0 silent_fails=0
     # Throughput-guard state (see the guard block on the connectivity-OK path).
@@ -398,31 +895,7 @@ cmd_watchdog() {
         # the choice lives in $ECLIPVPN_TMP (wiped on reboot), so the primary
         # comes back on the next boot instead of flapping every recovery.
         if [ $((tick % DNS_EVERY)) -eq 0 ]; then
-            local _dns_active
-            _dns_active=$(_active_dns_direct)
-            if _dns_probe "$_dns_active"; then
-                dns_fail=0
-            else
-                dns_fail=$((dns_fail + 1))
-                flog "Watchdog: direct DNS $_dns_active did not answer ($dns_fail/$DNS_FAIL_MAX)"
-                if [ "$dns_fail" -ge "$DNS_FAIL_MAX" ] && _watchdog_check_wan; then
-                    local _cand _new=""
-                    for _cand in $(_dns_direct_list); do
-                        [ "$_cand" = "$_dns_active" ] && continue
-                        if _dns_probe "$_cand"; then _new="$_cand"; break; fi
-                    done
-                    if [ -n "$_new" ]; then
-                        echo "$_new" > "$ECLIPVPN_TMP/dns_direct_active"
-                        _log_incident "dns_failover" "$_dns_active" "" "direct DNS $_dns_active -> $_new"
-                        flog "Watchdog: direct DNS failover $_dns_active -> $_new, regenerating"
-                        dns_fail=0
-                        cmd_restart >/dev/null 2>&1
-                    else
-                        flog "Watchdog: no direct DNS in dns_direct_servers answered — keeping $_dns_active"
-                        dns_fail=0
-                    fi
-                fi
-            fi
+            _wd_dns_guard
         fi
 
         # Auto-mode periodic re-evaluation every ~20 minutes (60 ticks).
@@ -442,44 +915,7 @@ cmd_watchdog() {
         # blocked, server keys rotated): if we already tried recently and
         # still no xray, wait — don't pile up zombie children.
         if ! _vpn_running; then
-            # Defer revival if a user-initiated lifecycle command is in
-            # flight. cmd_restart's brief stop_xray window otherwise tricks
-            # us into revival, which then races the rest of cmd_restart and
-            # spawns a parallel xray.
-            local op_marker="$ECLIPVPN_TMP/op.in_progress"
-            if [ -f "$op_marker" ]; then
-                local op_pid=$(cat "$op_marker" 2>/dev/null)
-                if [ -n "$op_pid" ] && kill -0 "$op_pid" 2>/dev/null; then
-                    continue
-                fi
-                # Stale marker — owning process is dead, fall through and
-                # remove on the way out so we don't get stuck deferring forever.
-                rm -f "$op_marker"
-            fi
-
-            local _intent
-            _intent=$(get_config_val running_intent false)
-            if [ "$_intent" = "true" ]; then
-                local revive_marker="$ECLIPVPN_TMP/last_revive"
-                local now=$(date +%s)
-                local last=0
-                [ -f "$revive_marker" ] && last=$(cat "$revive_marker" 2>/dev/null)
-                [ -z "$last" ] && last=0
-                # Min 60s between revival attempts. cmd_start needs ~7s to
-                # complete; this gives it room to finish + brief settle time.
-                if [ $((now - last)) -lt 60 ]; then
-                    : # in cooldown — skip this tick silently
-                else
-                    flog "Watchdog: VPN was killed externally, reviving"
-                    echo $now > "$revive_marker"
-                    # Subshell: cmd_start's `trap _op_end EXIT` only fires on
-                    # process exit, and the watchdog never exits. A bare call
-                    # would leak op.lock forever (owner=watchdog), wedging
-                    # every later user lifecycle op. The subshell makes EXIT
-                    # fire on its own exit, releasing the lock.
-                    ( cmd_start ) >/dev/null 2>&1
-                fi
-            fi
+            _wd_revive
             continue
         fi
 
@@ -523,116 +959,7 @@ cmd_watchdog() {
         # This guard was missing that check entirely (found in review
         # 2026-09-16); the streak counters simply don't advance this tick and
         # pick back up once the op clears.
-        local _nc_op_busy=0
-        if [ -f "$ECLIPVPN_TMP/op.in_progress" ]; then
-            local _nc_op_pid; _nc_op_pid=$(cat "$ECLIPVPN_TMP/op.in_progress" 2>/dev/null)
-            [ -n "$_nc_op_pid" ] && kill -0 "$_nc_op_pid" 2>/dev/null && _nc_op_busy=1
-        fi
-        if [ "$_nc_op_busy" -eq 0 ] && [ $((tick % NET_EVERY)) -eq 0 ] \
-           && [ "$(get_config_val net_check_switch true)" = "true" ] \
-           && [ "$(get_config_val auto_failover true)" = "true" ]; then
-            local _nc_verdict
-            _nc_verdict=$(cmd_net_check 2>/dev/null | jq -r '.internet // "none"')
-            case "$_nc_verdict" in
-                whitelist)
-                    net_full_streak=0
-                    net_wl_streak=$((net_wl_streak + 1))
-                    if [ "$net_wl_streak" -ge "$NET_STREAK" ]; then
-                        net_wl_streak=0
-                        local _cur=$(get_config_val selected_server 0)
-                        local _cur_name=$(jq -r ".[$_cur].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                        if ! _name_has_token "$_cur_name" "WL"; then
-                            local _total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                            if [ -n "$_total" ]; then
-                                # Raw pass-through (no protocol default): must stay
-                                # symmetric with the plain equality match in
-                                # _net_check_prev_idx (mirrors _remap_selected_server,
-                                # which also compares raw fields) — a vless entry's
-                                # protocol key is typically ABSENT (null), and
-                                # defaulting only one side to "vless" here would
-                                # make null never match "vless" on restore.
-                                # Atomic (.tmp + mv), matching every other stateful
-                                # file in this codebase (servers.json, config.json,
-                                # incidents.json...) — a plain `jq > file` here was
-                                # the one exception (found in review 2026-09-16); a
-                                # crash mid-write would leave truncated/invalid JSON
-                                # that _net_check_prev_idx's --argjson then rejects.
-                                if [ ! -f "$ECLIPVPN_TMP/net_check_prev.json" ]; then
-                                    jq -c ".[$_cur] | {protocol, host, port, name}" \
-                                        "$ECLIPVPN_TMP/servers.json" 2>/dev/null \
-                                        > "$ECLIPVPN_TMP/net_check_prev.json.tmp" \
-                                    && mv "$ECLIPVPN_TMP/net_check_prev.json.tmp" "$ECLIPVPN_TMP/net_check_prev.json" \
-                                    || rm -f "$ECLIPVPN_TMP/net_check_prev.json.tmp"
-                                fi
-                                local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 1)
-                                if [ -n "$pick" ]; then
-                                    local sel="${pick%% *}" sel_ms="${pick##* }"
-                                    local sel_name=$(jq -r ".[$sel].name" "$ECLIPVPN_TMP/servers.json")
-                                    local sel_host=$(jq -r ".[$sel].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                                    logger -t eclipvpn "Watchdog: uplink whitelisted — switching to $sel_name (${sel_ms}ms)"
-                                    _log_incident "net_check_switch" "$sel_host" "$sel_name" "аплинк в белых списках — переключение с $_cur_name на $sel_name (WL, ${sel_ms}мс)"
-                                    _record_switch "$_cur" "$sel" "net_check_whitelist"
-                                    update_config '.selected_server = $idx' --argjson idx "$sel" || flog "WARN: net-check whitelist switch save_config failed"
-                                    ( cmd_restart ) >/dev/null 2>&1
-                                    sleep $((interval * 3))
-                                else
-                                    logger -t eclipvpn "Watchdog: uplink whitelisted but no verified WL candidate — staying on $_cur_name"
-                                    _log_incident "net_check_noalt" "" "$_cur_name" "аплинк в белых списках, ни один WL-сервер не прошёл проверку — остаёмся на $_cur_name"
-                                fi
-                            fi
-                        fi
-                    fi
-                    ;;
-                full)
-                    net_wl_streak=0
-                    net_full_streak=$((net_full_streak + 1))
-                    if [ "$net_full_streak" -ge "$NET_STREAK" ]; then
-                        net_full_streak=0
-                        if [ -f "$ECLIPVPN_TMP/net_check_prev.json" ]; then
-                            local _cur=$(get_config_val selected_server 0)
-                            local _total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                            local _prev_idx; _prev_idx=$(_net_check_prev_idx)
-                            local _restored=""
-                            if [ -n "$_prev_idx" ] && [ "$_prev_idx" = "$_cur" ]; then
-                                # A manual switch (or an earlier tick) already put
-                                # us back on the remembered server — nothing to
-                                # do but retire the marker below, no probe/scan.
-                                _restored="$_cur"
-                            elif [ -n "$_prev_idx" ]; then
-                                local res=$(_watchdog_probe_candidate "$_prev_idx" "$probe_port" latency)
-                                [ "${res%% *}" = "ok" ] && _restored="$_prev_idx"
-                            fi
-                            if [ -z "$_restored" ] && [ -n "$_total" ]; then
-                                local pick=$(_net_check_pick "$_cur" "$_total" "$probe_port" 0)
-                                [ -n "$pick" ] && _restored="${pick%% *}"
-                            fi
-                            if [ -n "$_restored" ] && [ "$_restored" != "$_cur" ]; then
-                                local _cur_name=$(jq -r ".[$_cur].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                                local _r_name=$(jq -r ".[$_restored].name" "$ECLIPVPN_TMP/servers.json")
-                                local _r_host=$(jq -r ".[$_restored].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                                logger -t eclipvpn "Watchdog: uplink back to full — switching back to $_r_name"
-                                _log_incident "net_check_restore" "$_r_host" "$_r_name" "аплинк снова обычный — переключение с $_cur_name на $_r_name"
-                                _record_switch "$_cur" "$_restored" "net_check_full"
-                                update_config '.selected_server = $idx' --argjson idx "$_restored" || flog "WARN: net-check restore save_config failed"
-                                ( cmd_restart ) >/dev/null 2>&1
-                                rm -f "$ECLIPVPN_TMP/net_check_prev.json"
-                                sleep $((interval * 3))
-                            elif [ -n "$_restored" ]; then
-                                # Already back on the remembered server (e.g. a
-                                # manual switch beat us to it) — just clear state.
-                                rm -f "$ECLIPVPN_TMP/net_check_prev.json"
-                            else
-                                logger -t eclipvpn "Watchdog: uplink back to full but no verified normal candidate yet — staying on WL server"
-                            fi
-                        fi
-                    fi
-                    ;;
-                *)
-                    net_wl_streak=0
-                    net_full_streak=0
-                    ;;
-            esac
-        fi
+        _wd_net_check_guard
         # --- end net-check guard ------------------------------------------------
 
         # Multi-endpoint VPN connectivity probe: try CF, gstatic, ipify in
@@ -642,288 +969,11 @@ cmd_watchdog() {
         # 5xx during CF maintenance windows — a single-endpoint probe would
         # have failed-over the user to a worse server for no reason).
         if _watchdog_probe_via_socks "$(_active_socks_port)"; then
-            # If we were tracking a WAN outage, close it out with a single
-            # "recovered" incident and clear the streak markers. Without
-            # this, an outage that started at 08:24 and ended at 08:28
-            # would just leave the journal stuck on its last wan_down line
-            # with no indication things came back.
-            local wan_marker="$ECLIPVPN_TMP/wan_down_since"
-            if [ -f "$wan_marker" ]; then
-                local since=$(cat "$wan_marker" 2>/dev/null)
-                local ticks=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
-                local duration_s=$(( $(date +%s) - ${since:-$(date +%s)} ))
-                logger -t eclipvpn "Watchdog: WAN recovered after ${duration_s}s ($ticks ticks)"
-                _log_incident "wan_recovered" "" "" "восстановлен через ${duration_s}с (было ${ticks} проверок без связи)"
-                rm -f "$wan_marker" "$ECLIPVPN_TMP/wan_down_ticks"
-            fi
-            [ "$silent_fails" -gt 0 ] && logger -t eclipvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
-            fail_count=0
-            silent_fails=0
+            _wd_on_probe_ok
 
-            # --- Throughput guard ------------------------------------------
-            # The probe above only proves the server ANSWERS. A peak-overloaded
-            # exit pings fast and returns 204 instantly while its bandwidth is
-            # shaped to a crawl — latency-based failover never fires, but the
-            # user sees "everything is molasses". Periodically measure REAL
-            # tunnel throughput; if it collapses for several consecutive
-            # checks, act in two stages:
-            #   1. RE-DIAL: the policer pins flows per-TCP-connection (root
-            #      cause 2026-06-11) — a fresh flow to the SAME exit often
-            #      escapes the squeeze while the live tunnel's pinned flow
-            #      crawls (probe 11.7MB/s vs live 199KB/s on one server,
-            #      2026-06-12). If a throwaway xray to the current server
-            #      measures clearly fast, force-restart in place (new flows,
-            #      same server) instead of burning a switch. One attempt per
-            #      incident.
-            #   2. SWITCH: fail over to the candidate with the best MEASURED
-            #      speed (not latency).
-            # Anti-flap is layered: a switch needs a candidate clearly faster
-            # (>2×) than the crawl, and the cooldown applies only while the
-            # last switch/benchmark produced no good reading since
-            # (tput_switch_helped=0 — the "every server is throttled" peak).
-            # A switch that DID restore speed and later got re-squeezed
-            # (rolling TSPU waves, observed 2026-06-10) may act again as soon
-            # as TPUT_SLOW_MAX low reads re-accumulate (~7 min), not 20.
-            # And after a FLOPPED action (squeezed before any good reading —
-            # the per-flow lottery lost) the FIRST re-action is allowed after
-            # TPUT_COOLDOWN_FAST, not the full cooldown: on 2026-06-12 a
-            # switch flopped while a free server existed, and the full gate
-            # left the user at 250KB/s for 10 min until a manual switch. One
-            # early retry catches that; a second consecutive flop means the
-            # peak really is everywhere — wait out the full 20 min.
-            if [ "$(get_config_val tput_guard true)" = "true" ] && [ $((tick % TPUT_EVERY)) -eq 0 ]; then
-                local min_kbps; min_kbps=$(get_config_val tput_min_kbps 500)
-                case "$min_kbps" in ''|*[!0-9]*) min_kbps=500 ;; esac
-                local kbps; kbps=$(_watchdog_throughput_kbps "$(_active_socks_port)")
-                if [ -n "$kbps" ] && [ "$kbps" -lt "$min_kbps" ]; then
-                    slow_count=$((slow_count + 1))
-                    logger -t eclipvpn "Watchdog: low throughput ${kbps}KB/s < ${min_kbps} ($slow_count/$TPUT_SLOW_MAX)"
-                else
-                    [ "$slow_count" -gt 0 ] && [ -n "$kbps" ] && logger -t eclipvpn "Watchdog: throughput recovered (${kbps}KB/s)"
-                    # A real good reading (not an empty no-data probe) proves
-                    # the current server delivers — the next degradation is a
-                    # fresh wave, not the same incident: lift the cooldown gate
-                    # and re-arm the per-incident re-dial / early-retry budgets.
-                    [ -n "$kbps" ] && { tput_switch_helped=1; tput_redialed=0; tput_fast_retry_used=0; }
-                    slow_count=0
-                fi
-
-                if [ "$slow_count" -ge "$TPUT_SLOW_MAX" ]; then
-                    local now=$(date +%s)
-                    local cool=$TPUT_COOLDOWN
-                    [ "$tput_fast_retry_used" -eq 0 ] && cool=$TPUT_COOLDOWN_FAST
-                    if [ $((now - last_tput_switch)) -lt "$cool" ] && [ "$tput_switch_helped" -eq 0 ]; then
-                        : # last switch/benchmark never lifted things — cool down, don't flap
-                    else
-                        # Acting from a helped=0 state means this IS the one
-                        # early retry — spend it.
-                        [ "$tput_switch_helped" -eq 0 ] && tput_fast_retry_used=1
-                        local cur_idx=$(get_config_val selected_server 0)
-                        local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                        local cur_name=$(jq -r ".[$cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                        local cur_host=$(jq -r ".[$cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                        local did_redial=0
-                        if [ "$tput_redialed" -eq 0 ]; then
-                            tput_redialed=1
-                            logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — probing a fresh flow to it"
-                            local fres=$(_watchdog_probe_candidate "$cur_idx" "$probe_port" throughput)
-                            local fresh_kbps=""
-                            [ "${fres%% *}" = "ok" ] && fresh_kbps="${fres#ok }"
-                            if [ -n "$fresh_kbps" ] && [ "$fresh_kbps" -ge "$min_kbps" ] && [ "$fresh_kbps" -gt $((kbps * 2)) ]; then
-                                logger -t eclipvpn "Watchdog: re-dialing $cur_name in place (fresh flow ${fresh_kbps}KB/s vs ${kbps}KB/s)"
-                                _log_incident "slow_redial" "$cur_host" "$cur_name" "низкая скорость (${kbps}КБ/с), свежий поток к тому же серверу даёт ${fresh_kbps}КБ/с — переподключение без смены сервера"
-                                # Force (=1) past the unchanged-config fast
-                                # path: configs are byte-identical and the
-                                # tunnel answers probes, so a plain restart
-                                # would no-op instead of replacing the flows.
-                                ( cmd_restart 1 ) >/dev/null 2>&1
-                                last_tput_switch=$(date +%s)
-                                tput_switch_helped=0
-                                slow_count=0
-                                did_redial=1
-                                sleep $((interval * 3))
-                            else
-                                logger -t eclipvpn "Watchdog: fresh flow to $cur_name also slow (${fresh_kbps:-0}KB/s)"
-                            fi
-                        fi
-                        # auto_failover gates EVERY automatic change of the selected
-                        # server, and a throughput switch is one of them — but this
-                        # path used to be gated only by tput_guard, so a user who
-                        # turned failover off to stop surprise switches still got
-                        # them here. Bail BEFORE the benchmark: probing the pool
-                        # costs ~13s/server and the result could not be acted on
-                        # anyway. The re-dial above stays allowed on purpose — it
-                        # re-opens a flow to the SAME server, changing no selection.
-                        if [ "$did_redial" -eq 0 ] && [ "$(get_config_val auto_failover true)" != "true" ]; then
-                        logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — auto_failover off, staying put"
-                        _log_incident "slow_noswitch" "$cur_host" "$cur_name" "низкая скорость (${kbps}КБ/с), автопереключение отключено — сервер оставлен"
-                        last_tput_switch=$(date +%s)
-                        tput_switch_helped=0
-                        slow_count=0
-                        elif [ "$did_redial" -eq 0 ]; then
-                        logger -t eclipvpn "Watchdog: throughput degraded on $cur_name (${kbps}KB/s) — benchmarking servers"
-                        if [ -n "$total" ] && [ "$total" -gt 1 ]; then
-                            # scope stays `normal` — muted servers are NOT an
-                            # emergency fallback here. This branch fires on
-                            # "everything is slow", and slow is not an outage:
-                            # silently migrating a throttled evening onto a
-                            # billed exit is exactly the surprise the mute list
-                            # exists to prevent. Only the connectivity failover
-                            # path above lifts the mute.
-                            local pick=$(_watchdog_pick_best "$cur_idx" "$total" "$probe_port" throughput)
-                            if [ -n "$pick" ]; then
-                                local sel="${pick%% *}" cand_kbps="${pick##* }"
-                                # Switch ONLY if the best alternative clears the threshold AND
-                                # is clearly faster (>2×) than the current crawl. If every node
-                                # is throttled at peak, a switch is just a pointless blip.
-                                if [ "$cand_kbps" -ge "$min_kbps" ] && [ "$cand_kbps" -gt $((kbps * 2)) ]; then
-                                    local sel_name=$(jq -r ".[$sel].name" "$ECLIPVPN_TMP/servers.json")
-                                    local sel_host=$(jq -r ".[$sel].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                                    logger -t eclipvpn "Watchdog: switching to $sel_name (${cand_kbps}KB/s vs ${kbps}KB/s)"
-                                    _log_incident "slow_degraded" "$sel_host" "$sel_name" "низкая скорость на $cur_name (${kbps}КБ/с) → $sel_name (${cand_kbps}КБ/с)"
-                                    _record_switch "$cur_idx" "$sel" "throughput"
-                                    update_config '.selected_server = $idx' --argjson idx "$sel" || flog "WARN: throughput failover save_config failed"
-                                    ( cmd_restart ) >/dev/null 2>&1
-                                    last_tput_switch=$(date +%s)
-                                    tput_switch_helped=0
-                                    tput_redialed=0  # new server gets its own re-dial chance
-                                    slow_count=0
-                                    sleep $((interval * 3))
-                                else
-                                    logger -t eclipvpn "Watchdog: all servers slow (best ${cand_kbps}KB/s) — staying put"
-                                    _log_incident "slow_noalt" "$cur_host" "$cur_name" "скорость низкая везде (текущий ${kbps}КБ/с, лучший кандидат ${cand_kbps}КБ/с)"
-                                    last_tput_switch=$(date +%s)
-                                    tput_switch_helped=0
-                                    slow_count=0
-                                fi
-                            else
-                                logger -t eclipvpn "Watchdog: no throughput candidates answered — staying put"
-                                last_tput_switch=$(date +%s)
-                                tput_switch_helped=0
-                                slow_count=0
-                            fi
-                        fi
-                        fi
-                    fi
-                fi
-            fi
-            # --- end throughput guard --------------------------------------
+            _wd_tput_guard
             continue
         fi
-        local why="$WD_PROBE_WHY"
-
-        # WAN sanity check: if our own internet is down, the VPN server is
-        # not at fault — switching would just pick a random working-looking
-        # candidate (or none) and pollute incidents with false-positives.
-        # Record the WAN outage as its own incident type and skip the
-        # fail_count bump so the user doesn't see a phantom server-degraded
-        # warning during ISP downtime.
-        #
-        # Dedup: we log only on the FIRST tick of a WAN outage (no marker
-        # yet) and silently count subsequent ticks. Prevents the journal
-        # from filling with 12 identical wan_down entries during a 4-min
-        # ISP glitch — the recovery path above will emit a single
-        # wan_recovered line summarising the streak.
-        if ! _watchdog_check_wan; then
-            local wan_marker="$ECLIPVPN_TMP/wan_down_since"
-            if [ ! -f "$wan_marker" ]; then
-                date +%s > "$wan_marker"
-                echo 1 > "$ECLIPVPN_TMP/wan_down_ticks"
-                logger -t eclipvpn "Watchdog: WAN down — provider issue, not switching ($why)"
-                local _cur_idx=$(get_config_val selected_server 0)
-                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                _log_incident "wan_down" "$_cur_host" "$_cur_name" "WAN недоступен ($why)"
-            else
-                local n=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
-                echo $((n + 1)) > "$ECLIPVPN_TMP/wan_down_ticks"
-            fi
-            continue
-        fi
-
-        fail_count=$((fail_count + 1))
-        # Throttle "check failed" logs after the failover loop already ran —
-        # otherwise a permanent outage spams syslog every 20s forever.
-        # Persist incident only at >=3/5 — single isolated failures (1/5,
-        # 2/5) are typically transient TLS jitter that resolves on the
-        # next tick and used to clutter the journal with false positives.
-        # The 5/5 final fail still drives the switch path unchanged.
-        if [ "$fail_count" -le "$max_fails" ]; then
-            logger -t eclipvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
-            if [ "$fail_count" -ge 3 ]; then
-                local _cur_idx=$(get_config_val selected_server 0)
-                local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
-            fi
-        else
-            silent_fails=$((silent_fails + 1))
-            # One reminder every ~5 min while still down
-            [ $((silent_fails % 15)) -eq 0 ] && logger -t eclipvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
-        fi
-
-        # Fire the failover scan at max_fails, then re-fire every 15 ticks
-        # (~5 min) while the outage persists. The original `-eq max_fails`
-        # fired exactly once: after a scan that found no candidates,
-        # fail_count kept climbing past max_fails and the switch path was
-        # disarmed until a probe happened to succeed — a dead current server
-        # stayed selected even when alternatives came back hours later.
-        if [ "$fail_count" -ge "$max_fails" ] && [ $(( (fail_count - max_fails) % 15 )) -eq 0 ] && [ "$(get_config_val auto_failover true)" = "true" ]; then
-            logger -t eclipvpn "Watchdog: switching server (cause: $why)"
-
-            local current=$(get_config_val selected_server 0)
-            local total=$(jq 'length' "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-            [ -z "$total" ] && continue
-
-            # Probe ALL eligible, non-current candidates and pick the one
-            # with lowest latency — not the first one that happens to answer.
-            # Old round-robin from current+1 caused USA to win whenever
-            # Germany failed (next index) even though Finland & Netherlands
-            # were both noticeably faster.
-            local pick=$(_watchdog_pick_best "$current" "$total" "$probe_port")
-            # Emergency second pass: not one un-muted server answered, so the
-            # choice is a billed exit or no internet at all. Take the billed one
-            # and record a DISTINCT incident type — the user muted these to keep
-            # costs down and must be able to see, in the journal, exactly when
-            # automation overrode that.
-            local _emerg=0
-            if [ -z "$pick" ]; then
-                local _muted_now; _muted_now=$(_muted_tokens)
-                if [ -n "$_muted_now" ]; then
-                    logger -t eclipvpn "Watchdog: no un-muted candidate answered — trying muted servers"
-                    pick=$(_watchdog_pick_best "$current" "$total" "$probe_port" latency muted_only)
-                    [ -n "$pick" ] && _emerg=1
-                fi
-            fi
-            if [ -n "$pick" ]; then
-                local selected="${pick% *}" best_ms="${pick##* }"
-                local cand_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
-                local _cand_host=$(jq -r ".[$selected].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                local _from_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                logger -t eclipvpn "Watchdog: switched to $cand_name (best of pool, ${best_ms}ms)"
-                if [ "$_emerg" = 1 ]; then
-                    _log_incident "emergency_muted" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name не ответил ни один не-замьюченный сервер → аварийно на замьюченный (тарифицируемый), ${best_ms}мс ($why)"
-                else
-                    _log_incident "auto_switch" "$_cand_host" "$cand_name" "после $max_fails сбоев на $_from_name → лучший по latency: ${best_ms}мс ($why)"
-                fi
-                _record_switch "$current" "$selected" "failover"
-                update_config '.selected_server = $idx' --argjson idx "$selected" || flog "WARN: failover save_config failed (will retry next tick)"
-                # Subshell so cmd_restart's EXIT trap releases the op-lock —
-                # see the revival call above; a bare call leaks it forever.
-                ( cmd_restart ) >/dev/null 2>&1
-                fail_count=0
-                silent_fails=0
-                # Give the new server time to stabilize before next probe.
-                # Without this, a flaky network triggers cascading failovers.
-                sleep $((interval * 3))
-            else
-                # No candidate answered — could be everything blocked, key
-                # rotation, or a flaky upstream. Stay put, back off.
-                logger -t eclipvpn "Watchdog: no working candidates — staying on current server ($why)"
-                local _cur_name=$(jq -r ".[$current].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                local _cur_host=$(jq -r ".[$current].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-                _log_incident "switch_failed" "$_cur_host" "$_cur_name" "все кандидаты недоступны"
-            fi
-        fi
+        _wd_on_probe_fail "$WD_PROBE_WHY"
     done
 }

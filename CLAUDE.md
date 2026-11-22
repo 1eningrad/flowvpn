@@ -35,7 +35,7 @@ There is no build step and no package manager for the router code — it is ship
 
 ### Testing
 
-`sh tests/run.sh [suite...]` — ash+jq unit suite (~250 assertions) that sources the REAL code (`usr/bin/eclipvpn` with `ECLIPVPN_SOURCE_ONLY=1`) against a scratch `ECLIPVPN_TMP`/`ECLIPVPN_CONFIG`; suites are `tests/test_*.sh`, picked up by GLOB (never hardcode a list — one rotted). An isolation guard aborts (rc 3) if a sourced lib clobbers the scratch paths — libs must have no top-level assignments. CI (`.github/workflows/ci.yml`) runs `sh -n` + `busybox ash -n` over `packaging/ship-files`, the manifest guard, advisory shellcheck, and the suite under **busybox ash with busybox applets** (catches GNU-only flags like `flock -w`). `tests/` is dev-only, not shipped. The suite covers pure/lock logic, not the live tunnel — verify runtime behaviour with `./deploy.sh` + the UI (hard-reload, `Cmd+Shift+R`). Full details: `docs/invariants.md` § Testing.
+`sh tests/run.sh [suite...]` — ash+jq unit suite (~300 assertions) that sources the REAL code (`usr/bin/eclipvpn` with `ECLIPVPN_SOURCE_ONLY=1`) against a scratch `ECLIPVPN_TMP`/`ECLIPVPN_CONFIG`; suites are `tests/test_*.sh`, picked up by GLOB (never hardcode a list — one rotted). An isolation guard aborts (rc 3) if a sourced lib clobbers the scratch paths — libs must have no top-level assignments. CI (`.github/workflows/ci.yml`) runs `sh -n` + `busybox ash -n` over `packaging/ship-files`, the manifest guard, advisory shellcheck, and the suite under **busybox ash with busybox applets** (catches GNU-only flags like `flock -w`). `tests/` is dev-only, not shipped. The suite covers pure/lock logic, not the live tunnel — verify runtime behaviour with `./deploy.sh` + the UI (hard-reload, `Cmd+Shift+R`). Full details: `docs/invariants.md` § Testing.
 
 ## CLI surface (existing commands)
 
@@ -152,6 +152,7 @@ The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`:
 ## Non-obvious invariants (index — read the full entry in `docs/invariants.md` before touching the area)
 
 **Process & lifecycle**
+- `cmd_watchdog` is a thin loop over per-tick guards (`_wd_dns_guard`, `_wd_revive`, `_wd_net_check_guard`, `_wd_on_probe_ok`, `_wd_tput_guard`, `_wd_on_probe_fail`) that share its state through ash's dynamic scoping — never `local` a state variable inside a guard. Scenario-tested in `tests/test_watchdog.sh` with stubbed probes.
 - Watchdog is single-instance (`mkdir` lockdir); never kill peers from `cmd_watchdog`. It drives log rotation, revival and failover, and is itself revived by a `*/5` cron (`ensure-watchdog`, gated on `running_intent`).
 - `cmd_restart` is soft (keeps nft + dnsmasq ⇒ LAN fails closed), has an unchanged-config fast path (`restart 1` forces), and switches servers make-before-break: active xray port rotates 1080↔1081 (`xray_port`, `xray.<port>.json`); always use `_active_socks_port`.
 - `op.in_progress` makes the watchdog defer; `running_intent` ≠ `auto_start` (boot only).
@@ -185,7 +186,7 @@ The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`:
 - `_sync_zapret_exclude` keeps zapret off the VPN server IPs — call it from any path that rewrites `servers.json`.
 
 **Config, CGI, security**
-- All JSON via jq; `save_config` is the only config writer; booleans are JSON bools (beware `// true`).
+- All JSON via jq; `save_config` is the only config writer; booleans are JSON bools. Never use jq `//` for a default on a boolean — it falls back on `false`. `get_config_val` defaults only on absent/null (it used `//` until 2026-11-22, so `auto_failover`/`tput_guard`/`net_check_switch` = false were silently ignored).
 - `set-config` keys are whitelisted with per-key validation; a new behaviour key must also be exposed in `/status`.
 - CGI validates every param with `case`; anti-CSRF/rebinding gate (Host allow-list + same-host Origin/Referer); new mutating actions must not match the read-only arm; no `no-referrer` in the UI.
 - Clash API :9090 is LAN-exposed (trusted-LAN threat model).
