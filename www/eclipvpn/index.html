@@ -2012,7 +2012,11 @@ function renderServers(servers,sel,switchingIdx){
       curKey=key;
       const collapsed=_collapsedSubs.has(key);
       const dot=(collapsed&&key===activeKey)?'<span class="sgh-active" title="Активный сервер в этой свёрнутой группе"></span>':'';
-      html+='<div class="sub-group-head" onclick="toggleSubGroup(\''+key+'\')" role="button" tabindex="0" aria-expanded="'+(collapsed?'false':'true')+'" title="'+(collapsed?'Развернуть':'Свернуть')+'">'
+      // key falls back to the free-text sub_name when sub_id is absent, so it
+      // must NOT be spliced into the onclick JS string (esc() can't help there:
+      // the attribute is entity-decoded before the JS parses, so &#39; breaks
+      // out again). Carry it in a data-* attribute and read it back instead.
+      html+='<div class="sub-group-head" data-key="'+esc(key)+'" onclick="toggleSubGroup(this.dataset.key)" role="button" tabindex="0" aria-expanded="'+(collapsed?'false':'true')+'" title="'+(collapsed?'Развернуть':'Свернуть')+'">'
         +'<span class="sgh-chev">'+(collapsed?'▸':'▾')+'</span>'
         +'<span>'+esc(s.sub_name||'Подписка')+'</span>'
         +'<span class="sgh-count">'+(counts[key]||0)+'</span>'+dot+'</div>';
@@ -3230,7 +3234,7 @@ async function loadLogs(){
       if(e.route==='vpn')vpn+=e.count;if(e.route==='direct')direct+=e.count;if(e.route==='error')err+=e.count;
       const time=e.time?(e.time.includes(' ')?e.time.split(' ').pop():e.time):'';
       const dup=e.count>1?`<span class="log-dup-count">×${e.count}</span>`:'';
-      return `<div class="log-line log-${e.route}${e.count>1?' log-dup':''}">`
+      return `<div class="log-line log-${esc(e.route)}${e.count>1?' log-dup':''}">`
         +`<span class="log-time">${esc(time.slice(0,8))}</span>`
         +`<span class="log-icon"><svg class="icon icon-sm"><use href="${icons[e.route]||'#i-globe'}"/></svg></span>`
         +`<span class="log-label">${labels[e.route]||'?'}</span>`
@@ -3339,7 +3343,7 @@ async function runHealthcheck(){
       const clickable=act?' check-action':'';
       const clickAttr=act?` onclick="event.stopPropagation();${act.fn}"`:'';
       const btn=act?`<button class="check-act-btn" onclick="event.stopPropagation();${act.fn}">${esc(act.label)} →</button>`:'';
-      return `<div class="check check-${c.status}${clickable}"${clickAttr}>`
+      return `<div class="check check-${esc(c.status)}${clickable}"${clickAttr}>`
         +`<div class="check-icon"><svg class="icon icon-sm"><use href="${icon}"/></svg></div>`
         +`<div class="check-body"><div class="check-name">${esc(c.name)}</div>`
         +`<div class="check-detail">${esc(c.detail)}</div>`

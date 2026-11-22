@@ -811,12 +811,39 @@ case "$1" in
     set-config)     cmd_set_config "$2" "$3" ;;
     set-wifi)       cmd_set_wifi "$2" "$3" ;;
     *)
-        echo "EclipVPN v4 — VPN for OpenWrt"
-        echo "Usage: eclipvpn {start|stop|restart|status|set-server N|update|ping}"
-        echo "       eclipvpn {set-mode all_vpn|blocklist}"
-        echo "       eclipvpn {add-domain DOMAIN direct|vpn}"
-        echo "       eclipvpn {remove-domain DOMAIN direct|vpn}"
-        echo "       eclipvpn {get-domains|get-devices|get-log|get-dns}"
-        echo "       eclipvpn {set-config KEY VALUE|set-wifi SSID PASSWORD}"
+        # Keep in sync with the dispatch arms above (internal watchdog /
+        # ensure-watchdog are deliberately omitted).
+        cat <<EOF
+EclipVPN $ECLIPVPN_VERSION — VPN for OpenWrt (build $(_build_id))
+Usage: eclipvpn COMMAND [ARGS]
+
+Lifecycle:
+  start | stop | status
+  restart [1]                      1 = force, even if the config is unchanged
+Servers:
+  set-server N | probe-server N    select / test server N (merged pool index)
+  mute-server N | unmute-server N  hide / show N for automatic picking
+  auto-select | auto-eval          pick fastest / re-check the live server
+  ping | real-ping                 TCP latency / real request through the tunnel
+Subscriptions:
+  sub list | add URL [NAME] | remove ID | enable ID | disable ID
+  sub rename ID NAME | filter ID TOKENS|off
+  update                           refresh subscriptions + routing rules
+Routing:
+  set-mode all_vpn|blocklist
+  add-domain DOM vpn|direct | remove-domain DOM vpn|direct | get-domains
+  preset list | enable NAME | disable NAME
+  get-devices | set-device ID vpn|direct | remove-device ID
+Diagnostics:
+  diagnose | healthcheck | net-check | system-info | get-dns
+  get-log [N] [all|vpn|direct|error|dns|flow] | clear-log
+  get-traffic | traffic-poll | reset-traffic
+  get-incidents | clear-incidents
+Settings:
+  set-config KEY VALUE | set-wifi SSID PASSWORD
+  schedule set ON OFF | disable | get
+  auto-update enable|disable|status
+  backup | restore JSON
+EOF
         ;;
 esac

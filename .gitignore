@@ -29,3 +29,6 @@ windows-installer/bundle.zip
 windows-installer/eclip.ico
 windows-installer/payload/
 windows-installer/lib/
+
+# Local router-recovery kit (firmware images, vendor flash tools) - not project code
+ax3000t-recovery/

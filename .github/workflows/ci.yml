@@ -65,7 +65,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-      - name: run unit suite
-        run: bash tests/run.sh
+      - name: install jq + busybox
+        run: sudo apt-get update && sudo apt-get install -y jq busybox-static
+      # Run the suite under busybox ash with busybox APPLETS first on PATH, not
+      # under bash with GNU coreutils. The router runs busybox, and a whole class
+      # of bugs is valid syntax + a flag busybox lacks: `flock -w` (GNU-only)
+      # silently broke auto-select's commit on every call (2026-09-15) and passed
+      # the old `bash tests/run.sh` job because GNU flock has -w. jq stays the
+      # system one (busybox has no jq applet). Partial parity only: Debian's
+      # busybox config is fuller than OpenWrt's (e.g. it ships `timeout`).
+      - name: run unit suite (busybox ash + busybox applets)
+        run: |
+          set -eu
+          bb="$RUNNER_TEMP/bb"
+          mkdir -p "$bb"
+          busybox --install -s "$bb"
+          PATH="$bb:$PATH" busybox ash tests/run.sh
