@@ -8,7 +8,7 @@ cmd_set_config() {
     [ -z "$key" ] || [ -z "$value" ] && { _err "set-config: missing key or value"; return 1; }
     # Whitelist allowed keys
     case "$key" in
-        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|server_exclude|muted_servers|full_tunnel|auto_failover|dns_direct_servers|dns_overrides|net_check_switch) ;;
+        subscription_url|interface|mode|auto_start|selected_server|blocklist_source|auto_mode|tput_guard|tput_min_kbps|wan_mtu|log_debug|singbox_loglevel|server_filter|server_exclude|muted_servers|full_tunnel|auto_failover|dns_direct_servers|dns_overrides|net_check_switch|blocked_exit_countries) ;;
         *) _err "set-config: invalid key '$key'"; return 1 ;;
     esac
     # mode change needs to wipe rules and refetch them — same dance as
@@ -116,6 +116,30 @@ cmd_set_config() {
         update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
         jq -n --arg k "$key" --arg v "$value" --argjson n "$(_muted_count "$value")" \
             '{status:"saved", key:$k, value:$v, muted_count:$n}'
+        return 0
+    fi
+    # blocked_exit_countries: comma-separated ISO-3166 alpha-2 codes (e.g. RU or
+    # RU,BY). Automatic pickers drop a candidate whose MEASURED exit country is
+    # listed (see _exit_country). Absent ⇒ "RU"; off/none/- stores "" ⇒ the
+    # check is disabled. Normalised to uppercase, strictly [A-Z][A-Z] per token
+    # since the key is CGI-reachable. No restart: read at pick time.
+    if [ "$key" = "blocked_exit_countries" ]; then
+        case "$value" in off|none|-) value="" ;; esac
+        value=$(printf '%s' "$value" | tr -d ' ' | tr 'a-z' 'A-Z')
+        if [ -n "$value" ]; then
+            [ "${#value}" -gt 60 ] && { _err "blocked_exit_countries: too long (max 60 chars)"; return 1; }
+            local _cc _oif="$IFS"
+            IFS=,
+            for _cc in $value; do
+                case "$_cc" in
+                    [A-Z][A-Z]) ;;
+                    *) IFS="$_oif"; _err "blocked_exit_countries: '$_cc' is not a 2-letter country code"; return 1 ;;
+                esac
+            done
+            IFS="$_oif"
+        fi
+        update_config '.[$k] = $v' --arg k "$key" --arg v "$value" || { _err "set-config save failed for $key"; return 1; }
+        jq -n --arg k "$key" --arg v "$value" '{status:"saved", key:$k, value:$v}'
         return 0
     fi
     # dns_direct_servers: ordered fallback list for the direct-path resolver.

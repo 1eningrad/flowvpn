@@ -566,6 +566,8 @@ cmd_status() {
           tput_guard: ($c.tput_guard | if . == false then false else true end),
           full_tunnel: ($c.full_tunnel // false),
           net_check_switch: ($c.net_check_switch | if . == false then false else true end),
+          # Absent ⇒ "RU" (the default protection); "" ⇒ explicitly off.
+          blocked_exit_countries: (if $c | has("blocked_exit_countries") then $c.blocked_exit_countries else "RU" end),
           running_intent: ($c.running_intent // false),
           device_rules: ($c.device_rules // {}),
           last_switch:$last_switch,

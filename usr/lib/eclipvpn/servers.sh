@@ -173,10 +173,15 @@ cmd_probe_server() {
         [ "$elapsed" -lt 0 ] 2>/dev/null && elapsed=0
 
         if [ -n "$test_ip" ]; then
-            local name
+            local name cc
             name=$(jq -r --argjson i "$idx" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
-            jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" \
-                '{status:"ok", ip:$ip, server:$name, latency_ms:$ms}'
+            # Measured exit country (empty = unknown) while the probe engine is
+            # still up — the automatic pickers veto blocked-country exits on it
+            # (see _exit_country). Measured after the timer, so latency_ms is
+            # unchanged.
+            cc=$(_exit_country "$probe_port")
+            jq -n --arg ip "$test_ip" --arg name "$name" --argjson ms "$elapsed" --arg cc "$cc" \
+                '{status:"ok", ip:$ip, server:$name, latency_ms:$ms, country:$cc}'
             exit 0
         else
             echo '{"error":"server unreachable"}'
@@ -363,6 +368,7 @@ cmd_auto_select() {
 
     local cur best_idx best_ms best_name
     cur=$(get_config_val selected_server 0)
+    local blocked; blocked=$(_blocked_exit_countries)
 
     while IFS=' ' read -r ms idx; do
         [ -z "$idx" ] && continue
@@ -376,6 +382,13 @@ cmd_auto_select() {
         flog "Auto-select: probing $name (idx=$idx rtt=${ms}ms)"
         local probe
         probe=$(cmd_probe_server "$idx" 2>/dev/null)
+        local pcc
+        pcc=$(printf '%s' "$probe" | jq -r '.country // ""' 2>/dev/null)
+        if echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1 && _country_blocked "$pcc" "$blocked"; then
+            attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "skipped_exit_country")
+            flog "Auto-select: $name exits in $pcc (blocked_exit_countries) — trying next"
+            continue
+        fi
         if echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
             attempts=$(_attempt_add "$attempts" "$name" "$idx" "$ms" "selected")
             best_idx="$idx"; best_ms="$ms"; best_name="$name"
@@ -609,6 +622,12 @@ cmd_auto_eval() {
         probe=$(cmd_probe_server "$best_idx" 2>/dev/null)
         if ! echo "$probe" | jq -e '.status == "ok"' >/dev/null 2>&1; then
             flog "Auto-mode: best candidate failed VLESS probe — staying"
+            exit 0
+        fi
+        local _pcc
+        _pcc=$(printf '%s' "$probe" | jq -r '.country // ""' 2>/dev/null)
+        if _country_blocked "$_pcc" "$(_blocked_exit_countries)"; then
+            flog "Auto-mode: best candidate exits in $_pcc (blocked_exit_countries) — staying"
             exit 0
         fi
 

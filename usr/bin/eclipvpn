@@ -597,6 +597,51 @@ _is_auto_skipped() {
     _name_has_token "$1" "$2"
 }
 
+# --- measured exit country ----------------------------------------------------
+# Name matching cannot tell `Россия (прямой)` (RU exit) from `Россия → Финляндия`
+# (RU entry, FI exit), and _is_metered_server only knows carrier names — so on
+# 2026-08-30 the emergency failover landed on a Selectel-RU exit: a "working"
+# tunnel with no VPN at all. The fix is to classify by the MEASURED exit, not
+# the name: every automatic picker asks the candidate's throwaway probe engine
+# where it actually comes out, and drops it if that country is blocked.
+#
+# _exit_country PORT — the exit's ISO-3166 alpha-2 country (uppercase) as seen
+# by Cloudflare through SOCKS:PORT, or empty if unknown. cdn-cgi/trace answers
+# on any CF-fronted host; cp.cloudflare.com is the host the probes already use,
+# so no third-party geo-IP service and no new dependency is involved.
+_exit_country() {
+    local loc
+    loc=$(curl -s --socks5-hostname "127.0.0.1:$1" --max-time 5 \
+          https://cp.cloudflare.com/cdn-cgi/trace 2>/dev/null \
+          | sed -n 's/^loc=//p' | head -n1 | tr 'a-z' 'A-Z')
+    case "$loc" in [A-Z][A-Z]) echo "$loc" ;; esac
+}
+
+# Comma-separated blocked exit countries from config `blocked_exit_countries`.
+# Key absent ⇒ "RU" (the default protection); explicitly cleared (stored as "")
+# ⇒ empty ⇒ the check is off. get_config_val's `//` keeps "" (jq only falls
+# back on null/false), which is exactly what makes "cleared" distinguishable.
+_blocked_exit_countries() { get_config_val blocked_exit_countries "RU"; }
+
+# _country_blocked CC LIST — true if CC is in the comma list. PURE (the list is
+# passed in, never read here — callers loop the pool, same rule as the mute
+# matcher). An UNKNOWN country (empty CC: trace failed, CF unreachable through
+# that exit) is deliberately NOT blocked: failing closed would let a Cloudflare
+# hiccup veto every candidate and turn a recoverable outage into no tunnel.
+_country_blocked() {
+    local cc="$1" list="$2" tok rest
+    [ -n "$cc" ] && [ -n "$list" ] || return 1
+    rest="$list"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            *,*) tok="${rest%%,*}"; rest="${rest#*,}" ;;
+            *)   tok="$rest"; rest="" ;;
+        esac
+        [ "$tok" = "$cc" ] && return 0
+    done
+    return 1
+}
+
 # --- persistent diagnostic state --------------------------------------------
 # incidents.json and last_switch.json are the failover JOURNAL — the only record
 # of why the tunnel moved and when. They live in $ECLIPVPN_TMP, which /tmp wipes

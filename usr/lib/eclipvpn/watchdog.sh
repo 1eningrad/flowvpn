@@ -106,8 +106,16 @@ _watchdog_throughput_kbps() {
 # which surfaced as "no working candidates" during recoverable outages.
 # Waiting for the SOCKS port to listen (instead of a blind sleep 2) makes
 # the common case faster, not slower.
+#
+# $4 blocked: optional comma list of blocked exit countries (from
+# _blocked_exit_countries, read ONCE by the caller). When non-empty, a
+# candidate that answers but exits in a listed country echoes
+# "blocked <CC>" instead of "ok …" — measured while the probe engine is
+# still alive, one extra small request. Pass it only from the automatic
+# pickers: the throughput re-dial and the net-check restore probe the
+# user's OWN current/previous choice and must not veto it.
 _watchdog_probe_candidate() {
-    local idx="$1" pp="$2" metric="${3:-latency}"
+    local idx="$1" pp="$2" metric="${3:-latency}" blocked="${4:-}"
     # Single throwaway config; engine-aware (hysteria2 → sing-box dialer, else
     # xray). .json suffix needed for xray's format sniff; mktemp+rename.
     local _wp wd_probe eng
@@ -142,7 +150,15 @@ _watchdog_probe_candidate() {
         kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null
         probe_pid=""
     done
-    local value=""
+    local value="" cc=""
+    if { [ "$code" = "204" ] || [ "$code" = "200" ]; } && [ -n "$blocked" ]; then
+        cc=$(_exit_country "$pp")
+        if _country_blocked "$cc" "$blocked"; then
+            [ -n "$probe_pid" ] && { kill "$probe_pid" 2>/dev/null; wait "$probe_pid" 2>/dev/null; }
+            rm -f "$wd_probe" "${wd_probe}.base"
+            echo "blocked $cc"; return
+        fi
+    fi
     if [ "$code" = "204" ] || [ "$code" = "200" ]; then
         if [ "$metric" = "throughput" ]; then
             # Measure while the probe-xray is still alive.
@@ -179,6 +195,9 @@ _watchdog_pick_best() {
     local best_idx="" best_ms=99999 best_kbps=-1
     local i=0 consec_fail=0
     local muted; muted=$(_muted_tokens)
+    # Measured exit-country gate — applies in BOTH scopes, like metered: a
+    # blocked-country exit is not a working VPN, emergency or not.
+    local blocked; blocked=$(_blocked_exit_countries)
     while [ "$i" -lt "$total" ]; do
         if [ "$i" -eq "$current" ]; then i=$((i+1)); continue; fi
         local cand_name=$(jq -r ".[$i].name" "$servers_json" 2>/dev/null)
@@ -190,8 +209,14 @@ _watchdog_pick_best() {
         elif _name_has_token "$cand_name" "$muted"; then
             i=$((i+1)); continue
         fi
-        local res=$(_watchdog_probe_candidate "$i" "$probe_port" "$metric")
-        if [ "${res%% *}" = "ok" ]; then
+        local res=$(_watchdog_probe_candidate "$i" "$probe_port" "$metric" "$blocked")
+        if [ "${res%% *}" = "blocked" ]; then
+            # It answered — the WAN and the server are fine, it just exits in
+            # the wrong country. Not a connectivity failure: don't count it
+            # toward the WAN-down abort.
+            consec_fail=0
+            logger -t eclipvpn "Watchdog: $cand_name skipped — exit country ${res#blocked }"
+        elif [ "${res%% *}" = "ok" ]; then
             consec_fail=0
             local val="${res#ok }"
             if [ "$metric" = "throughput" ]; then
@@ -241,6 +266,7 @@ _net_check_pick() {
     local servers_json="$ECLIPVPN_TMP/servers.json"
     local best_idx="" best_ms=99999 i=0
     local muted; muted=$(_muted_tokens)
+    local blocked; blocked=$(_blocked_exit_countries)
     while [ "$i" -lt "$total" ]; do
         if [ "$i" -eq "$current" ]; then i=$((i+1)); continue; fi
         local cand_name; cand_name=$(jq -r ".[$i].name" "$servers_json" 2>/dev/null)
@@ -249,10 +275,12 @@ _net_check_pick() {
         if [ "$want_wl" = "1" ] && [ "$has_wl" -ne 1 ]; then i=$((i+1)); continue; fi
         if [ "$want_wl" = "0" ] && [ "$has_wl" -eq 1 ]; then i=$((i+1)); continue; fi
         _is_auto_skipped "$cand_name" "$muted" && { i=$((i+1)); continue; }
-        local res; res=$(_watchdog_probe_candidate "$i" "$probe_port" latency)
+        local res; res=$(_watchdog_probe_candidate "$i" "$probe_port" latency "$blocked")
         if [ "${res%% *}" = "ok" ]; then
             local val="${res#ok }"
             [ "$val" -lt "$best_ms" ] && { best_ms=$val; best_idx=$i; }
+        elif [ "${res%% *}" = "blocked" ]; then
+            logger -t eclipvpn "Net-check: $cand_name skipped — exit country ${res#blocked }"
         fi
         i=$((i+1))
     done
