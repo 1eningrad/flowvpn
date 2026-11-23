@@ -126,7 +126,7 @@ function renderSubscriptions(){
   const metaMap=(state&&state.subscription_meta)||{};
   const counts={};
   ((state&&state.servers)||[]).forEach(s=>{const k=s.sub_id||'';counts[k]=(counts[k]||0)+1});
-  if(!subs.length){el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:6px 0">Пока нет подписок — добавьте первую ниже.</div>';return}
+  if(!subs.length){const b=document.getElementById('addSubBox');if(b)b.open=true;el.innerHTML='<div style="color:var(--text-dim);font-size:12px;padding:6px 0">Пока нет подписок — добавьте первую ниже.</div>';return}
   el.innerHTML=subs.map(sub=>{
     const m=metaMap[sub.id]||{};
     const cnt=counts[sub.id]||0;
@@ -145,8 +145,8 @@ function renderSubscriptions(){
       +'</div>'
       +'<div style="display:flex;align-items:center;gap:4px;flex-shrink:0">'
         +'<label class="toggle toggle-sm" title="'+(en?'Выключить':'Включить')+' подписку"><input type="checkbox" '+(en?'checked':'')+' onchange="subToggle(\''+sub.id+'\',this.checked)"><div class="toggle-track"></div><div class="toggle-knob"></div></label>'
-        +'<button class="btn btn-ghost btn-sm" title="Переименовать" onclick="subRename(\''+sub.id+'\')">✎</button>'
-        +'<button class="btn btn-ghost btn-sm" title="Удалить" onclick="subRemove(\''+sub.id+'\')">✕</button>'
+        +'<button class="btn btn-ghost btn-sm sub-btn" title="Переименовать" aria-label="Переименовать" onclick="subRename(\''+sub.id+'\')"><svg class="icon icon-sm"><use href="#i-edit"/></svg></button>'
+        +'<button class="btn btn-ghost btn-sm sub-btn" title="Удалить" aria-label="Удалить" onclick="subRemove(\''+sub.id+'\')"><svg class="icon icon-sm"><use href="#i-x"/></svg></button>'
       +'</div>'
     +'</div>';
   }).join('');
@@ -205,8 +205,15 @@ function showTabMobile(name){
 // Jump to Settings ▸ Подписки and focus the URL field so the user can paste a
 // subscription link immediately. Used by the empty-server-list hint when there
 // are no subscriptions configured.
+function goToAutomation(){
+  showTabMobile('settings');
+  const c=document.getElementById('automationCard');
+  const y=c.getBoundingClientRect().top+window.pageYOffset-document.getElementById('appHeader').offsetHeight-12;
+  window.scrollTo({top:Math.max(0,y)});
+}
 function goToSubscriptions(){
   showTabMobile('settings');
+  document.getElementById('addSubBox').open=true;
   setTimeout(function(){var i=document.getElementById('subUrl');if(i){i.scrollIntoView({behavior:'smooth',block:'center'});try{i.focus()}catch(e){}}},120);
 }
 
@@ -611,15 +618,41 @@ const ERR_RU={
 };
 function ruErr(e){return ERR_RU[e]||String(e||'')}
 
+// Promise-based confirm/prompt on a native <dialog> (focus trap and Esc for free).
+// Resolves true / the typed string, or null when dismissed.
+function askBox(o){
+  const d=document.getElementById('dlg'),inp=document.getElementById('dlgInput'),ok=document.getElementById('dlgOk');
+  if(d.open)return Promise.resolve(null);
+  const text=document.getElementById('dlgText'),cancel=document.getElementById('dlgCancel');
+  document.getElementById('dlgTitle').textContent=o.title;
+  text.textContent=o.text||'';text.hidden=!o.text;
+  ok.textContent=o.ok||'Да';
+  ok.className='btn '+(o.danger?'btn-danger':'btn-primary');
+  const isPrompt=o.value!==undefined;
+  inp.hidden=!isPrompt;inp.value=isPrompt?o.value:'';
+  return new Promise(res=>{
+    let result=null;
+    document.getElementById('dlgForm').onsubmit=()=>{result=isPrompt?inp.value:true};
+    cancel.onclick=()=>d.close();
+    d.onclick=e=>{if(e.target===d){const r=d.getBoundingClientRect();
+      if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close()}};
+    d.onclose=()=>res(result);
+    d.showModal();
+    if(isPrompt){inp.focus();inp.select()}else cancel.focus();
+  });
+}
+
 let _vpnPending=false;
 async function toggleVPN(){
   const cb=document.getElementById('vpnToggle');
   if(_vpnPending){cb.checked=!cb.checked;return}
   const on=cb.checked;
-  if(!on&&!confirm('Отключить VPN?\n\nВесь трафик пойдёт напрямую, заблокированные сайты не откроются.')){
+  // Pending from here on, so a status poll can't flip the switch under the dialog.
+  _vpnPending=true;cb.disabled=true;
+  if(!on&&!await askBox({title:'Отключить VPN?',text:'Весь трафик пойдёт напрямую, заблокированные сайты не откроются.',ok:'Отключить',danger:true})){
+    _vpnPending=false;cb.disabled=false;
     cb.checked=true;document.getElementById('vpnMiniToggle').checked=true;return;
   }
-  _vpnPending=true;cb.disabled=true;
   const tid=toast.loading(on?'Подключаемся…':'Отключаем…');
   try{
     const r=await apiFetch(API+'?action='+(on?'start':'stop'),{timeoutMs:65000});const d=await r.json();
@@ -819,6 +852,11 @@ async function toggleAutoStart(enabled){
   }
 }
 
+function toggleAutoHint(){
+  const p=document.getElementById('autoModeHint');
+  p.hidden=!p.hidden;
+  document.getElementById('autoHintBtn').setAttribute('aria-expanded',String(!p.hidden));
+}
 function modeLabel(){
   return state.mode!=='all_vpn'?'Только по списку':(state.full_tunnel?'Весь трафик, включая РФ':'Весь трафик кроме РФ');
 }
@@ -878,8 +916,9 @@ function setRuExitBlock(cb){
 }
 function setFullTunnel(cb){
   const on=cb.checked;
-  if(!confirm((on?'Пустить российские сайты через VPN?':'Вернуть российские сайты напрямую?')+(state.running?'\n\nVPN перезапустится — связь ненадолго прервётся.':''))){cb.checked=!on;return}
   return _behaviour(cb,async()=>{
+    if(!await askBox({title:on?'Пустить российские сайты через VPN?':'Вернуть российские сайты напрямую?',
+      text:state.running?'VPN перезапустится — связь ненадолго прервётся.':'',ok:'Применить'}))return;
     await _saveBehaviour('full_tunnel',on?'true':'false');
     state.full_tunnel=on;
     if(!state.running){toast.info('Сохранено','Применится при включении VPN');return}
@@ -1006,7 +1045,7 @@ async function subToggle(id,on){
 function _subName(id){const s=((state&&state.subscriptions)||[]).find(x=>x.id===id);return s?(s.name||''):''}
 async function subRemove(id){
   if(_subActionPending)return;
-  if(!confirm('Удалить подписку «'+(_subName(id)||'')+'»?\nЕё серверы исчезнут из списка.'))return;
+  if(!await askBox({title:'Удалить подписку «'+(_subName(id)||'')+'»?',text:'Её серверы исчезнут из списка.',ok:'Удалить',danger:true}))return;
   _subActionPending=true;
   const tid=toast.loading('Удаляем подписку…');
   try{
@@ -1019,7 +1058,7 @@ async function subRemove(id){
 }
 async function subRename(id){
   if(_subActionPending)return;
-  const name=prompt('Название подписки:',_subName(id)||'');
+  const name=await askBox({title:'Название подписки',value:_subName(id)||'',ok:'Сохранить'});
   if(name===null)return;
   const nm=name.trim();if(!nm)return;
   _subActionPending=true;
@@ -1434,7 +1473,7 @@ async function loadTraffic(){
   }catch(e){}
 }
 async function resetTraffic(){
-  if(!confirm('Обнулить счётчики «Через VPN» и «Напрямую»? Скорость и графики не затрагиваются.'))return;
+  if(!await askBox({title:'Обнулить счётчики трафика?',text:'«Через VPN» и «Напрямую» начнутся с нуля.',ok:'Обнулить',danger:true}))return;
   try{
     await apiFetch(API+'?action=reset-traffic');
     toast.success('Счётчики обнулены');
@@ -1671,7 +1710,7 @@ async function loadLogs(){
 }
 async function clearLog(){
   if(currentLogFilter==='incidents'){
-    if(!confirm('Очистить всю историю событий?'))return;
+    if(!await askBox({title:'Очистить всю историю событий?',ok:'Очистить',danger:true}))return;
     try{await apiFetch(API+'?action=clear-incidents');_lastLogSig='';toast.success('История событий очищена');loadIncidents();loadLogs()}
     catch(e){toast.error('Ошибка')}
     return;
@@ -1840,7 +1879,7 @@ async function checkUpdate(){
   finally{if(b){b.disabled=false;b.textContent='Проверить';}}
 }
 async function startUpdate(tag){
-  if(!confirm('Обновить EclipVPN до '+tag+'?\n\nVPN перезапустится — интернет пропадёт на 10–30 секунд. Если после обновления VPN не поднимется, автоматически вернётся прежняя версия.'))return;
+  if(!await askBox({title:'Обновить EclipVPN до '+tag+'?',ok:'Обновить',text:'VPN перезапустится — интернет пропадёт на 10–30 секунд. Если после обновления VPN не поднимется, автоматически вернётся прежняя версия.'}))return;
   try{
     const r=await apiFetch(API+'?action=self-update&tag='+encodeURIComponent(tag));const d=await r.json();
     if(d.error){toast.error('Обновление не запущено',d.error);return}
@@ -1976,7 +2015,7 @@ async function restoreBackup(event){
   try{parsed=JSON.parse(t)}
   catch(e){toast.error('Неверный формат файла');event.target.value='';return}
   if(!parsed||typeof parsed.config!=='object'){toast.error('Не похоже на бэкап EclipVPN');event.target.value='';return}
-  if(!confirm('Восстановить настройки из бэкапа?\n\nТекущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. Если VPN запущен, он перезапустится с новыми настройками.')){
+  if(!await askBox({title:'Восстановить настройки из файла?',ok:'Восстановить',danger:true,text:'Текущие настройки (подписка, режим, исключения, маршруты устройств) будут заменены содержимым файла. Если VPN запущен, он перезапустится с новыми настройками.'})){
     event.target.value='';return;
   }
   try{
@@ -2202,7 +2241,7 @@ document.addEventListener('keydown',(e)=>{
     if(ob&&ob.classList.contains('show')){_closeOnboard();return}
     if(typing){e.target.blur();return}
   }
-  if(typing)return;
+  if(typing||document.getElementById('dlg').open)return;
   if(e.key>='1'&&e.key<='5'){
     const btns=document.querySelectorAll('.tabs .tab');
     const idx=parseInt(e.key,10)-1;

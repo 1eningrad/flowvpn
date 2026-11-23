@@ -42,13 +42,8 @@ class UI(unittest.TestCase):
         self.ctx = self.browser.new_context(viewport=viewport)
         self.page = p = self.ctx.new_page()
         self.errors = []
-        self.dialogs, self.accept = [], True
         p.on("pageerror", lambda e: self.errors.append(str(e)))
 
-        def dialog(d):
-            self.dialogs.append(d.message)
-            d.accept() if self.accept else d.dismiss()
-        p.on("dialog", dialog)
         p.goto(self.url)
         expect(p.locator("#statusTitle")).to_have_text("Подключено")
         return p
@@ -58,6 +53,11 @@ class UI(unittest.TestCase):
 
     def toggle(self, id_):
         self.page.locator(f"label.toggle:has(#{id_})").click()
+
+    def answer(self, yes):
+        expect(self.page.locator("#dlg")).to_be_visible()
+        self.page.click("#dlgOk" if yes else "#dlgCancel")
+        expect(self.page.locator("#dlg")).to_be_hidden()
 
     def calls(self, action):
         return [c for c in self.router.calls if c["action"] == action]
@@ -108,6 +108,7 @@ class UI(unittest.TestCase):
         self.router.fail["stop"] = "another lifecycle op in progress"
         self.open()
         self.toggle("vpnToggle")
+        self.answer(True)
         self.toast("Уже выполняется другая операция")
 
     def test_update_toast_renders_desc(self):
@@ -125,12 +126,11 @@ class UI(unittest.TestCase):
     # --- VPN switch
     def test_cancelled_stop_keeps_both_switches_on(self):
         p = self.open()
-        self.accept = False
         self.toggle("vpnToggle")
-        p.wait_for_timeout(200)
-        self.assertEqual(len(self.dialogs), 1)
+        p.evaluate("fetchStatus()")  # a poll must not flip the switch meanwhile
+        self.answer(False)
         self.assertEqual(self.calls("stop"), [])
-        self.assertTrue(p.evaluate("vpnToggle.checked&&vpnMiniToggle.checked"))
+        p.wait_for_function("vpnToggle.checked&&vpnMiniToggle.checked&&!vpnToggle.disabled")
 
     # --- automation
     def test_behaviour_toggles(self):
@@ -160,12 +160,12 @@ class UI(unittest.TestCase):
 
     def test_full_tunnel_confirms_and_restarts(self):
         p = self.open()
-        self.accept = False
         self.toggle("ftToggle")
-        p.wait_for_timeout(150)
+        self.answer(False)
+        p.wait_for_function("!ftToggle.disabled&&!ftToggle.checked")
         self.assertEqual(self.calls("set-config"), [])
-        self.accept = True
         self.toggle("ftToggle")
+        self.answer(True)
         self.toast("Весь трафик, включая РФ")
         self.assertEqual(len(self.calls("restart")), 1)
 
@@ -243,6 +243,47 @@ class UI(unittest.TestCase):
         self.router.incidents.append(dict(ts=1795457000, type="update_rollback", host="", server="", detail="x"))
         expect(p.locator("#incidentsBadge")).to_have_text("1")
         expect(p.locator(".incident:not(.ok)")).to_have_count(1)
+
+    def test_escape_dismisses_dialog(self):
+        p = self.open()
+        self.toggle("vpnToggle")
+        expect(p.locator("#dlg")).to_be_visible()
+        p.keyboard.press("2")  # tab shortcut is off under a dialog
+        p.keyboard.press("Escape")
+        expect(p.locator("#dlg")).to_be_hidden()
+        expect(p.locator("#sec-routing")).to_be_visible()
+        self.assertEqual(self.calls("stop"), [])
+
+    def test_rename_prompt(self):
+        p = self.open()
+        self.tab("settings")
+        p.click('[aria-label="Переименовать"]')
+        p.fill("#dlgInput", "Новое")
+        p.keyboard.press("Enter")
+        expect(p.locator("#dlg")).to_be_hidden()
+        self.toast("Переименовано")
+
+    def test_badge_opens_automation(self):
+        p = self.open(PHONE)
+        p.click("#failoverBadge")
+        expect(p.locator("#automationCard")).to_be_in_viewport()
+
+    def test_servers_on_first_phone_screen(self):
+        p = self.open(PHONE)
+        self.assertLess(p.locator(".server").first.bounding_box()["y"], 420)
+
+    def test_hint_hidden_until_asked(self):
+        p = self.open()
+        expect(p.locator("#autoModeHint")).to_be_hidden()
+        p.click("#autoHintBtn")
+        expect(p.locator("#autoModeHint")).to_contain_text("Ручной режим")
+
+    def test_schedule_times_only_when_enabled(self):
+        p = self.open()
+        self.tab("settings")
+        expect(p.locator("#schedOn")).to_be_hidden()
+        self.toggle("schedToggle")
+        expect(p.locator("#schedOn")).to_be_visible()
 
     def test_plurals(self):
         p = self.open()

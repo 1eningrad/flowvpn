@@ -105,12 +105,12 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   border-color:rgba(248,113,113,0.18);
   color:var(--text-muted)
 }
-.header-info b{color:var(--text);font-weight:600;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11.5px}
+.header-info b{color:var(--text);font-weight:600; font-variant-numeric:tabular-nums;font-size:11.5px}
 /* Uplink (direct WAN) state — full / whitelist-only / none. Independent of
    the VPN state: it answers "is the PROVIDER's internet working, and is it
    whitelist-filtered" (only Yandex reachable, Google not). */
 .net-badge{
-  display:none;align-items:center;gap:6px;margin-top:8px;
+  display:none;align-items:center;gap:6px;
   font-size:11.5px;font-weight:500;padding:4px 10px;border-radius:999px;
   border:1px solid var(--border);color:var(--text-muted);width:fit-content;cursor:default
 }
@@ -154,8 +154,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   background:var(--card);
   border:1px solid var(--border);
   border-radius:6px;
-  padding:22px 24px;
-  margin-bottom:20px;
+  padding:14px 20px;
+  margin-bottom:16px;
   position:relative;
   overflow:hidden;
 }
@@ -191,8 +191,12 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 
 .status-text h1{
   font-size:22px;font-weight:600;letter-spacing:-0.02em;
-  margin-bottom:8px;line-height:1.2;
+  line-height:1.2;
 }
+.title-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-bottom:6px}
+button.net-badge{font-family:inherit;background:var(--card);cursor:pointer}
+button.net-badge:hover{border-color:var(--border-strong);color:var(--text)}
+button.net-badge .nb-dot{background:var(--text-dim)}
 .status-text .meta{
   font-size:13px;color:var(--text-muted);
   display:flex;gap:10px 18px;flex-wrap:wrap;align-items:center;
@@ -258,7 +262,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .group-head{font-size:13px;font-weight:600;color:var(--text-muted);margin:22px 2px 10px}
 .section > .group-head:first-child{margin-top:4px}
 .auto-row{padding:12px 0;border-top:1px solid var(--border)}
-.card-desc + .auto-row{border-top:none}
+.card-desc + .auto-row,.card-title + .auto-row{border-top:none}
 .mode-switch + .auto-row{margin-top:14px;padding-bottom:0}
 .auto-row.off{opacity:.5}
 .toggle-sm{width:42px;height:24px;flex-shrink:0}
@@ -288,6 +292,14 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   /* Bottom-nav layout: «Главная» = hero + left column, every other tab = its
      section only, with the compact header standing in for the hero. */
   .grid > *{min-width:0}
+  /* Servers belong on the first screen: one line of speed above, totals below. */
+  .home-col{display:flex;flex-direction:column}
+  .traffic-card{order:1}
+  .now-card{padding:6px 12px!important}
+  .now-card .card-head,.now-card .spark{display:none}
+  .now-card .speed-row{margin:0}
+  .now-card .speed-item{display:flex;align-items:center;justify-content:center;gap:8px;padding:4px!important;border:none;background:none}
+  .now-card .speed-label{margin:0;text-transform:none;letter-spacing:0}
   body.m-home .grid > :not(.home-col){display:none}
   body:not(.m-home) .home-col,body:not(.m-home) .hero{display:none}
   .header{gap:12px}
@@ -377,15 +389,14 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   font-size:11px;color:var(--text-dim);
   text-transform:uppercase;letter-spacing:0.05em;font-weight:600
 }
-.mini-stat-val{
-  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+.mini-stat-val{ font-variant-numeric:tabular-nums;
   font-size:14px;font-weight:700
 }
 .traffic-meta{
   display:flex;justify-content:space-between;align-items:center;
   font-size:11px;color:var(--text-dim);margin-top:6px;padding:0 2px
 }
-.traffic-since{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+.traffic-since{ font-variant-numeric:tabular-nums;}
 .btn-link{
   background:none;border:none;padding:0;cursor:pointer;
   font-size:11px;color:var(--text-muted);text-decoration:underline;
@@ -402,7 +413,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   text-align:center
 }
 .speed-label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
-.speed-value{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:14px;font-weight:600}
+.speed-value{ font-variant-numeric:tabular-nums;font-size:14px;font-weight:600}
 .speed-down .speed-value{color:var(--green)}
 .speed-up .speed-value{color:var(--accent-warm)}
 
@@ -487,7 +498,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .ping-mid .ping-bars span:nth-child(-n+3){background:var(--yellow)}
 .ping-bad .ping-bars span:nth-child(-n+2){background:var(--red)}
 .server-ping{
-  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;
+  font-variant-numeric:tabular-nums;font-size:11px;
   padding:2px 7px;border-radius:6px;font-weight:500;min-width:52px;text-align:center
 }
 .server-proto{
@@ -515,7 +526,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .incident.ok{border-left-color:var(--green)}
 .incident-row{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:2px}
 .incident-type{font-size:11px;font-weight:700;letter-spacing:0.03em;text-transform:uppercase;color:var(--text)}
-.incident-time{font-size:11px;color:var(--text-dim);font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+.incident-time{font-size:11px;color:var(--text-dim); font-variant-numeric:tabular-nums;}
 .incident-server{font-size:13px;color:var(--text);margin-bottom:1px}
 .incident-detail{font-size:11.5px;color:var(--text-muted);line-height:1.35}
 .incident-empty{color:var(--text-dim);font-size:12px;padding:16px;text-align:center}
@@ -690,7 +701,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   border:1px solid var(--border);border-radius:6px;text-align:center
 }
 .stat-label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
-.stat-num{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:16px;font-weight:600}
+.stat-num{ font-variant-numeric:tabular-nums;font-size:16px;font-weight:600}
 
 /* Devices */
 .device{
@@ -1261,3 +1272,36 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   .status-text .meta{font-size:11px}
   .bn-item span{font-size:9.5px}
 }
+
+/* Confirm / prompt dialog (replaces the browser's own boxes) */
+.dlg{
+  margin:auto;width:min(420px,calc(100vw - 32px));padding:20px;
+  border:1px solid var(--border-strong);border-radius:12px;
+  background:#15161a;color:var(--text);box-shadow:0 20px 60px rgba(0,0,0,.5)
+}
+[data-theme="light"] .dlg{background:#fff}
+.dlg::backdrop{background:rgba(0,0,0,.55)}
+.dlg h2{font-size:16px;font-weight:600;line-height:1.35}
+.dlg p{font-size:13px;color:var(--text-muted);line-height:1.5;margin-top:8px;white-space:pre-line}
+.dlg .input{margin-top:12px}
+.dlg-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.dlg .btn:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
+.help-btn{
+  width:18px;height:18px;margin-left:4px;padding:0;border-radius:50%;vertical-align:1px;position:relative;
+  border:1px solid var(--border-strong);background:none;color:var(--text-muted);
+  font:600 11px/1 inherit;font-family:inherit;cursor:pointer
+}
+.help-btn:hover,.help-btn[aria-expanded="true"]{color:var(--text);border-color:var(--text-muted)}
+.help-btn::after{content:'';position:absolute;inset:-13px}
+.row-btns{display:flex;gap:8px;flex-shrink:0}
+.add-sub summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text-muted);padding:10px 0 4px}
+.add-sub[open] summary{color:var(--text)}
+.sub-btn{padding:8px;min-width:36px}
+.setting-body.disabled{display:none}
+.auto-row + .setting-body{margin:0 0 12px;padding-top:0;border-top:none}
+@media(max-width:640px){
+  .setting-row:has(.row-btns){flex-wrap:wrap}
+  .setting-row .row-btns{flex-basis:100%}
+  .setting-row .row-btns .btn{flex:1;justify-content:center}
+}
+.auto-row:last-child{padding-bottom:0}
