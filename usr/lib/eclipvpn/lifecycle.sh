@@ -476,7 +476,9 @@ _link_state() {
     local n ts now
     now=$(date +%s)
     if [ -f "$ECLIPVPN_TMP/wan_down_since" ]; then echo wan; return; fi
-    if read -r n ts < "$ECLIPVPN_TMP/probe_fails" 2>/dev/null; then
+    # Test first: ash reports a failed "<" itself, before any 2>/dev/null, and
+    # /status is polled every few seconds.
+    if [ -f "$ECLIPVPN_TMP/probe_fails" ] && { read -r n ts < "$ECLIPVPN_TMP/probe_fails"; } 2>/dev/null; then
         case "$n$ts" in ''|*[!0-9]*) echo ok; return ;; esac
         if [ "$n" -ge 3 ] && [ $((now - ts)) -lt 120 ] && [ "$ts" -gt "${1:-0}" ]; then
             echo lost; return

@@ -200,6 +200,7 @@ _t link_state
 _now=$(date +%s)
 rm -f "$ECLIPVPN_TMP"/probe_fails "$ECLIPVPN_TMP"/wan_down_since
 assert_eq "ls-no-marker"   "$(_link_state 0)" ok
+assert_eq "ls-quiet"       "$(_link_state 0 2>&1)" ok
 echo "2 $_now" > "$ECLIPVPN_TMP/probe_fails";             assert_eq "ls-jitter"  "$(_link_state 0)" ok
 echo "3 $_now" > "$ECLIPVPN_TMP/probe_fails";             assert_eq "ls-lost"    "$(_link_state 0)" lost
 assert_eq "ls-older-than-start" "$(_link_state $((_now + 1)))" ok
