@@ -40,22 +40,12 @@
 
 ## Быстрая установка
 
-> **Репозиторий приватный.** Публичный `curl | sh` ниже сработает только у тех, у кого есть доступ к репо (или если сделать его публичным). Способы установки сейчас: **Windows-установщик** (см. ниже), приватный `curl` с PAT, либо `install-from-mac.sh` из локальной копии.
-
-**Если репозиторий публичный:**
 ```bash
 ssh root@router-ip
 curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
 ```
 
-**Если приватный** — нужен fine-grained Personal Access Token (read-only `Contents` на этом репо). Заголовок — в двойных кавычках (в одинарных `$REPO_TOKEN` не раскроется), и токен надо явно пробросить в окружение `sh`, читающего скрипт из пайпа:
-```bash
-ssh root@router-ip
-REPO_TOKEN=ghp_xxxxx
-curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
-  https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh \
-  | REPO_TOKEN="$REPO_TOKEN" sh
-```
+Если GitHub с роутера недоступен (часто в РФ) — Windows-установщик (см. ниже) или `install-from-mac.sh` из локальной копии.
 
 Установщик ставит зависимости, скачивает xray под архитектуру, кладёт скрипты и UI в правильные пути, создаёт redirect со старого `/flowvpn/` на `/eclipvpn/`.
 
@@ -69,7 +59,10 @@ curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
 - **Файл**: `EclipVPN-Installer.exe` (~31 МБ, aarch64)
 - **SHA-256**: `5f468d133654d32ee7061e92c38def771967992823c0598adafffdf72946beb0`
 
-> Поскольку репозиторий приватный, ассет качается **только с авторизацией** в GitHub: открой страницу релиза в браузере, где ты залогинен, и нажми на файл (прямая ссылка `releases/download/...` без авторизации отдаёт 404). Либо из CLI с доступом: `gh release download v2026.06 -R 1eningrad/flowvpn`.
+
+### Обновление
+
+После установки обновляться можно прямо из интерфейса: **Настройки ▸ Обновление ▸ «Проверить» → «Обновить»**. Роутер сам скачивает последний [релиз](https://github.com/1eningrad/flowvpn/releases/latest) с GitHub (напрямую или через VPN), проверяет его и ставит; если после обновления VPN не поднялся за 90 секунд — автоматически возвращается прежняя версия. Из консоли: `eclipvpn update-check`, `eclipvpn self-update`. Кнопка есть начиная с v2026.11 — на более старую версию этот релиз ставится как обычно.
 
 Пересборка после изменений в `usr/`/`www/`/`etc/`: `cd windows-installer && powershell -ExecutionPolicy Bypass -File build-exe.ps1` (подробности — `windows-installer/README.md`).
 
@@ -248,7 +241,7 @@ ssh root@192.168.1.1 'eclipvpn backup' > ~/eclip-config.json
 
 ### 2. На новом роутере — установка
 
-**Если репозиторий приватный** (нет GitHub PAT под рукой) — используй `install-from-mac.sh`. Он tar-pipe'ит исходники из локальной копии репо, без обращения к GitHub:
+**Если GitHub с роутера недоступен** — используй `install-from-mac.sh`. Он tar-pipe'ит исходники из локальной копии репо, без обращения к GitHub:
 
 ```bash
 # фабричный роутер (после reset, IP 192.168.1.1):
@@ -339,20 +332,11 @@ Lightweight VPN manager for OpenWrt routers. Russian sites bypass the tunnel. Su
 
 ### Quick install
 
-> The repository is **private**, so the public `curl | sh` below only works for users with repo access (or if you make it public). Options: the **Windows installer** (`EclipVPN-Installer.exe`, from the [`v2026.06` release](https://github.com/1eningrad/flowvpn/releases/tag/v2026.06) — a fully offline GUI installer; the download itself needs GitHub auth), the private-PAT curl below, or `install-from-mac.sh`.
-
-Public repo:
 ```bash
 curl -sSL https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh | sh
 ```
 
-Private repo (fine-grained PAT, read-only `Contents`; double quotes matter — single quotes would send the literal string `$REPO_TOKEN` — and the token must be re-exported into the piped `sh`):
-```bash
-REPO_TOKEN=ghp_xxxxx
-curl -sSL -H "Authorization: Bearer $REPO_TOKEN" \
-  https://raw.githubusercontent.com/1eningrad/flowvpn/main/install.sh \
-  | REPO_TOKEN="$REPO_TOKEN" sh
-```
+If GitHub is unreachable from the router (common in Russia), use the offline **Windows installer** (`EclipVPN-Installer.exe`, from the [`v2026.06` release](https://github.com/1eningrad/flowvpn/releases/tag/v2026.06)) or `install-from-mac.sh`. Once installed, update from the UI: **Settings ▸ Update** (downloads the latest GitHub release, auto-rollback if the VPN fails; v2026.11+).
 
 See the Russian section above for full documentation.
 
