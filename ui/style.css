@@ -512,6 +512,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .incident.t-auto_switch{border-left-color:var(--accent)}
 .incident.t-switch_failed{border-left-color:#ef4444}
 .incident.t-emergency_muted{border-left-color:#fbbf24}
+.incident.ok{border-left-color:var(--green)}
 .incident-row{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:2px}
 .incident-type{font-size:11px;font-weight:700;letter-spacing:0.03em;text-transform:uppercase;color:var(--text)}
 .incident-time{font-size:11px;color:var(--text-dim);font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}

@@ -13,6 +13,7 @@ class Router:
     def __init__(self):
         self.calls = []      # every mutating request, as dicts
         self.fail = {}       # action -> error text
+        self.incidents = []
         self.notes = ""
         self.rules = {"192.168.10.11": "vpn", "AA:BB:CC:DD:EE:12": "direct"}
         self.protocols = ["vless"] * 4
@@ -35,6 +36,8 @@ class Router:
                         device_rules=self.rules, subscription_meta={})
         if a == "net-check":
             return dict(internet="full")
+        if a == "get-incidents":
+            return dict(incidents=self.incidents, stats=[])
         if a == "update-check":
             return dict(current="1", latest="v2", available=True, url="https://github.com/a/b", notes=self.notes)
         if a == "ping":

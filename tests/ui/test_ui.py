@@ -229,6 +229,21 @@ class UI(unittest.TestCase):
         self.assertIsNone(p.evaluate("window.pwned||null"))
         self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), 375)
 
+    def test_update_is_an_event_not_a_failure(self):
+        self.router.incidents = [dict(ts=1795457111, type="update", host="", server="", detail="обновлено до v2")]
+        p = self.open()
+        self.tab("logs")
+        expect(p.locator("#logStats")).to_contain_text("Напрямую")
+        expect(p.locator("#incidentsBadge")).to_be_hidden()
+        p.locator('.log-filter[data-filter="incidents"]').click()
+        expect(p.locator(".incident.ok")).to_contain_text("обновлено до v2")
+        expect(p.locator(".incident-server")).to_have_count(0)
+        expect(p.locator("#logStats")).to_have_text("")
+        expect(p.locator("#logCount")).to_have_text("1")
+        self.router.incidents.append(dict(ts=1795457000, type="update_rollback", host="", server="", detail="x"))
+        expect(p.locator("#incidentsBadge")).to_have_text("1")
+        expect(p.locator(".incident:not(.ok)")).to_have_count(1)
+
     def test_plurals(self):
         p = self.open()
         for t in ("1 домен", "3 домена", "11 доменов"):

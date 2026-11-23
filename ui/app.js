@@ -355,7 +355,7 @@ function renderServers(servers,sel,switchingIdx){
     const protoTag=!mixedProto?'':`<span class="server-proto" title="Протокол: ${esc(proto)}">${protoLabels[proto]||esc(proto)}</span>`;
     const inc=s.host?incidentStats[s.host]:null;
     const failTag=inc&&inc.count_24h>0
-      ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Откройте «История сбоев» ниже.">⚠ ${inc.count_24h}</span>`
+      ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Подробности: Журнал → События.">⚠ ${inc.count_24h}</span>`
       :'';
     html+=`<div class="server${a}${sw}${metered?' server-metered':''}${muted?' server-muted':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${muted?', исключён из автовыбора':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
       ${flagBadge}
@@ -380,7 +380,12 @@ const INCIDENT_LABEL={
   wan_recovered:'Интернет восстановлен',
   emergency_muted:'Аварийно на исключённый',
   update:'Обновление',
-  update_rollback:'Обновление откатено'
+  update_rollback:'Обновление откачено',
+  slow_noswitch:'Низкая скорость — смена сервера выключена',
+  dns_failover:'DNS провайдера сменён',
+  net_check_switch:'Белые списки — переключение',
+  net_check_noalt:'Белые списки — рабочего сервера нет',
+  net_check_restore:'Белые списки закончились — возврат'
 };
 function fmtIncidentTime(ts){
   const d=new Date(ts*1000);
@@ -396,35 +401,38 @@ function renderIncidentsInLog(items){
   const el=document.getElementById('logList');
   if(!el)return;
   if(!items||!items.length){
-    el.innerHTML='<div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Сбоев нет — все серверы стабильны</div>';
+    el.innerHTML='<div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Событий нет — всё работает стабильно</div>';
     return;
   }
   el.innerHTML=items.map(it=>{
     const label=INCIDENT_LABEL[it.type]||it.type;
-    return `<div class="incident t-${esc(it.type)}">
+    return `<div class="incident t-${esc(it.type)}${INCIDENT_OK.has(it.type)?' ok':''}">
       <div class="incident-row">
         <span class="incident-type">${esc(label)}</span>
         <span class="incident-time" title="${esc(new Date(it.ts*1000).toLocaleString('ru-RU'))}">${esc(fmtIncidentTime(it.ts))}</span>
       </div>
-      <div class="incident-server">${it.server?serverNameDisplay(it.server):'—'}</div>
+      ${it.server?`<div class="incident-server">${serverNameDisplay(it.server)}</div>`:''}
       ${it.detail?`<div class="incident-detail">${esc(it.detail)}</div>`:''}
     </div>`;
   }).join('');
 }
-let _lastIncidentsCount=0;
+// The journal holds good news too (an update, a recovered uplink): those are
+// shown in green and must not light the red failure badge.
+const INCIDENT_OK=new Set(['update','wan_recovered','net_check_restore']);
+function updateIncidentsBadge(items){
+  const n=items.filter(it=>!INCIDENT_OK.has(it.type)).length;
+  const badge=document.getElementById('incidentsBadge');
+  if(!badge)return;
+  badge.textContent=n;
+  badge.style.display=n>0?'inline-flex':'none';
+}
 async function loadIncidents(){
   try{
     const r=await apiFetch(API+'?action=get-incidents');
     const d=await r.json();
     incidentStats={};
     (d.stats||[]).forEach(s=>{ if(s.host) incidentStats[s.host]=s; });
-    const total=(d.incidents||[]).length;
-    _lastIncidentsCount=total;
-    const badge=document.getElementById('incidentsBadge');
-    if(badge){
-      if(total>0){badge.textContent=total;badge.style.display='inline-flex'}
-      else badge.style.display='none';
-    }
+    updateIncidentsBadge(d.incidents||[]);
     if(state&&state.servers)renderServers(state.servers,state.selected);
     // If user is currently viewing incidents in the log tab, refresh the rendered list too.
     if(currentLogFilter==='incidents')renderIncidentsInLog(d.incidents||[]);
@@ -1516,7 +1524,7 @@ const LOG_FILTER_HINTS={
   vpn:'Соединения через VPN-туннель — эти запросы видны сайтам как иностранный IP.',
   direct:'Соединения напрямую, минуя VPN. Сюда идут российские сайты и исключения — это ускоряет их загрузку и сохраняет домашний IP для них.',
   error:'Только реальные сбои. Фоновый шум — таймауты к Яндексу через провайдера и DNS-всплески Apple — отфильтрован, чтобы не пугать без причины.',
-  incidents:'Сбои подключения и автопереключения серверов: единичные неудачные проверки связи, переключения на резервный сервер и неудавшиеся ручные смены.',
+  incidents:'История важных событий: сбои связи, смены сервера, проблемы у провайдера, обновления EclipVPN. Число в красном кружке — только сбои.',
   dns:'DNS-запросы: домен → IP. Полезно если сайт «не открывается» — здесь видно, переводится ли имя в адрес и как.',
   flow:'Действия EclipVPN: запуск/остановка, переключения серверов, обновления подписки, события автоматики. Это лог утилиты, а не трафик.'
 };
@@ -1573,23 +1581,24 @@ async function loadLogs(){
       const d=await r.json();
       incidentStats={};
       (d.stats||[]).forEach(s=>{ if(s.host) incidentStats[s.host]=s; });
-      const total=(d.incidents||[]).length;
-      _lastIncidentsCount=total;
-      const badge=document.getElementById('incidentsBadge');
-      if(badge){
-        if(total>0){badge.textContent=total;badge.style.display='inline-flex'}
-        else badge.style.display='none';
-      }
+      updateIncidentsBadge(d.incidents||[]);
       if(state&&state.servers)renderServers(state.servers,state.selected);
       renderIncidentsInLog(d.incidents||[]);
-      _lastLogSig='INC:'+total;
+      const list=(d.incidents||[]);
+      _lastLogSig='INC:'+list.length;
+      // Drop the previous filter's counters: they describe connections.
+      document.getElementById('logCount').textContent=list.length;
+      document.getElementById('logStats').innerHTML='';
     }catch(e){}
     _logLoading=false;
     return;
   }
   try{
-    const r=await apiFetch(API+'?action=get-log&lines=200&filter='+currentLogFilter);
+    const asked=currentLogFilter;
+    const r=await apiFetch(API+'?action=get-log&lines=200&filter='+asked);
     const d=await r.json();
+    // The user picked another filter meanwhile: this answer is not for it.
+    if(asked!==currentLogFilter){setTimeout(loadLogs,0);return}
     const list=document.getElementById('logList');
     if(!list){_logLoading=false;return}
 
@@ -1662,8 +1671,8 @@ async function loadLogs(){
 }
 async function clearLog(){
   if(currentLogFilter==='incidents'){
-    if(!confirm('Очистить всю историю сбоев?'))return;
-    try{await apiFetch(API+'?action=clear-incidents');_lastLogSig='';toast.success('История сбоев очищена');loadIncidents();loadLogs()}
+    if(!confirm('Очистить всю историю событий?'))return;
+    try{await apiFetch(API+'?action=clear-incidents');_lastLogSig='';toast.success('История событий очищена');loadIncidents();loadLogs()}
     catch(e){toast.error('Ошибка')}
     return;
   }
