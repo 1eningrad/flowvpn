@@ -1,5 +1,6 @@
 """Stateful fake router: serves the built UI and answers /cgi-bin/eclipvpn."""
 import json
+import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +14,11 @@ class Router:
     def __init__(self):
         self.calls = []      # every mutating request, as dicts
         self.fail = {}       # action -> error text
+        self.link = "ok"
+        self.running = True
+        self.selected = 2
+        self.probe_delay = 0
+        self.traffic = dict(vpn_dl=15e9, dir_dl=8e9)
         self.incidents = []
         self.notes = ""
         self.rules = {"192.168.10.11": "vpn", "AA:BB:CC:DD:EE:12": "direct"}
@@ -23,17 +29,33 @@ class Router:
     def answer(self, g):
         a = g.get("action", "")
         if a in ("set-config", "set-device", "remove-device-route", "restart",
-                 "start", "stop", "get-log", "set-mode"):
+                 "start", "stop", "set-server", "probe-server", "auto-select", "get-log", "set-mode"):
             self.calls.append(g)
         if a in self.fail:
             return {"error": self.fail[a]}
         if a == "status":
-            return dict(self.cfg, running=True, server=NAMES[2], uptime=4000, selected=2,
+            return dict(self.cfg, running=self.running, link=self.link, server=NAMES[self.selected], uptime=4000, selected=self.selected,
                         servers=[dict(name=n, host=f"h{i}", port=443, protocol=self.protocols[i],
                                       sub_id="a", sub_name="X", muted=i == 1) for i, n in enumerate(NAMES)],
                         subscriptions=[dict(id="a", name="EclipVPN", url="https://example.com/a/very/long/path", enabled=True)],
                         subscription_url="x", vpn_ip="203.0.113.139", auto_start=True, auto_mode=False,
                         device_rules=self.rules, subscription_meta={})
+        if a == "probe-server":
+            time.sleep(self.probe_delay)
+            return dict(ip="203.0.113.9")
+        if a == "set-server":
+            self.selected = int(g["index"])
+            return dict(vpn_ip="203.0.113.9")
+        if a == "auto-select":
+            self.selected = 0
+            self.link = "ok"
+            return dict(switched=True, server=NAMES[0], rtt_ms=40)
+        if a in ("start", "stop"):
+            self.running = a == "start"
+        if a == "get-traffic":
+            return self.traffic
+        if a == "traffic-poll":
+            return dict(down=4.4e6, up=9e4)
         if a == "net-check":
             return dict(internet="full")
         if a == "get-incidents":

@@ -15,7 +15,7 @@ from playwright.sync_api import expect, sync_playwright  # noqa: E402
 
 PHONE = {"width": 375, "height": 812}
 DESKTOP = {"width": 1280, "height": 900}
-TABS = ["home", "routing", "devices", "logs", "diagnose", "settings"]
+TABS = ["servers", "routing", "devices", "logs", "diagnose", "settings"]
 
 
 class UI(unittest.TestCase):
@@ -39,13 +39,17 @@ class UI(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def open(self, viewport=DESKTOP):
+        p = self.open_raw(viewport)
+        expect(p.locator("#powBtn")).to_have_text("Отключить")
+        return p
+
+    def open_raw(self, viewport=DESKTOP):
         self.ctx = self.browser.new_context(viewport=viewport)
         self.page = p = self.ctx.new_page()
         self.errors = []
         p.on("pageerror", lambda e: self.errors.append(str(e)))
 
         p.goto(self.url)
-        expect(p.locator("#statusTitle")).to_have_text("Подключено")
         return p
 
     def tab(self, name):
@@ -74,21 +78,35 @@ class UI(unittest.TestCase):
             with self.subTest(tab=t):
                 self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), 375)
 
-    def test_phone_home_tab_owns_the_servers(self):
+    def test_phone_sections_shrink_the_stage(self):
         p = self.open(PHONE)
         expect(p.locator("#serverList")).to_be_visible()
-        p.locator('.bn-item[data-tab="devices"]').click()
+        p.locator('.tab[data-tab="devices"]').click()
         expect(p.locator("#serverList")).to_be_hidden()
         expect(p.locator("#deviceList")).to_be_visible()
-        expect(p.locator(".header-mini-toggle")).to_be_visible()
-        p.locator('.bn-item[data-tab="home"]').click()
-        expect(p.locator("#serverList")).to_be_visible()
+        expect(p.locator("#powBtn")).to_be_hidden()
+        p.locator('.tab[data-tab="servers"]').click()
+        expect(p.locator("#powBtn")).to_be_visible()
 
-    def test_desktop_shows_both_columns(self):
+    def test_desktop_stage_stays_beside_every_section(self):
         p = self.open()
-        expect(p.locator("#serverList")).to_be_visible()
-        expect(p.locator("#sec-routing")).to_be_visible()
-        expect(p.locator("#bottomNav")).to_be_hidden()
+        for t in TABS:
+            self.tab(t)
+            expect(p.locator("#powBtn")).to_be_in_viewport()
+
+    def test_low_window_keeps_power_button(self):
+        p = self.open({"width": 1280, "height": 600})
+        expect(p.locator("#powBtn")).to_be_in_viewport()
+
+    def test_touch_targets(self):
+        p = self.open(PHONE)
+        for t in TABS:
+            self.tab(t)
+            p.wait_for_timeout(250)
+            small = p.evaluate("""()=>[...document.querySelectorAll('#stage button,.tab,.section.active button,.section.active input:not([type=checkbox]):not([type=file]),.section.active .server')]
+              .filter(e=>e.offsetParent).map(e=>[(e.id||e.className||e.textContent),e.getBoundingClientRect().height]).filter(x=>x[1]<43.5)""")
+            with self.subTest(tab=t):
+                self.assertEqual(small, [])
 
     # --- status
     def test_failover_badge_visible_only_when_off(self):
@@ -107,7 +125,7 @@ class UI(unittest.TestCase):
     def test_stop_error_reason_is_shown(self):
         self.router.fail["stop"] = "another lifecycle op in progress"
         self.open()
-        self.toggle("vpnToggle")
+        self.page.click("#powBtn")
         self.answer(True)
         self.toast("Уже выполняется другая операция")
 
@@ -124,13 +142,86 @@ class UI(unittest.TestCase):
         self.toast("Маршрут не изменён")
 
     # --- VPN switch
-    def test_cancelled_stop_keeps_both_switches_on(self):
+    def test_cancelled_stop_changes_nothing(self):
         p = self.open()
-        self.toggle("vpnToggle")
-        p.evaluate("fetchStatus()")  # a poll must not flip the switch meanwhile
+        p.click("#powBtn")
+        p.evaluate("fetchStatus()")
         self.answer(False)
         self.assertEqual(self.calls("stop"), [])
-        p.wait_for_function("vpnToggle.checked&&vpnMiniToggle.checked&&!vpnToggle.disabled")
+        expect(p.locator("#powBtn")).to_have_text("Отключить")
+
+    def test_stop_and_start(self):
+        p = self.open()
+        p.click("#powBtn")
+        self.answer(True)
+        expect(p.locator("#statusTitle")).to_have_text("Выключен")
+        expect(p.locator("#stage")).to_have_class("off")
+        p.click("#powBtn")
+        expect(p.locator("#statusTitle")).to_have_text("Узбекистан")
+
+    def test_dead_server_offers_the_fastest_one(self):
+        self.router.link = "lost"
+        p = self.open_raw()
+        expect(p.locator("#stage")).to_have_class("lost")
+        expect(p.locator("#statusMeta")).to_contain_text("Сам сервер не сменится")
+        expect(p.locator("#altBtn")).to_be_visible()
+        self.assertEqual(self.calls("auto-select"), [])  # never on its own
+        p.click("#powBtn")
+        expect(p.locator("#statusTitle")).to_have_text("Австрия")
+        expect(p.locator("#powBtn")).to_have_text("Отключить")
+
+    def test_provider_outage_does_not_offer_switching(self):
+        self.router.link = "wan"
+        p = self.open_raw()
+        expect(p.locator("#statusPre")).to_contain_text("Нет интернета у провайдера")
+        expect(p.locator("#powBtn")).to_have_text("Отключить")
+        expect(p.locator("#altBtn")).to_be_hidden()
+
+    def test_old_backend_without_link_reads_as_ok(self):
+        self.router.link = None
+        p = self.open()
+        expect(p.locator("#statusPre")).to_contain_text("Подключено через")
+
+    def test_switch_server(self):
+        p = self.open()
+        p.locator(".server").nth(0).click()
+        expect(p.locator("#statusTitle")).to_have_text("Австрия")
+        expect(p.locator("#powBtn")).to_have_text("Отключить")
+        self.assertEqual(len(self.calls("set-server")), 1)
+
+    def test_cancel_while_probing(self):
+        self.router.probe_delay = 1.5
+        p = self.open()
+        p.locator(".server").nth(0).click()
+        expect(p.locator("#powBtn")).to_have_text("Отменить")
+        expect(p.locator("#stage")).to_have_class("busy")
+        p.click("#powBtn")
+        expect(p.locator("#statusTitle")).to_have_text("Узбекистан")
+        p.wait_for_timeout(2000)
+        self.assertEqual(self.calls("set-server"), [])
+        expect(p.locator(".server.active")).to_contain_text("Узбекистан")
+
+    def test_failed_probe_rolls_back(self):
+        self.router.fail["probe-server"] = "server unreachable"
+        p = self.open()
+        p.locator(".server").nth(0).click()
+        self.toast("Сервер не отвечает")
+        expect(p.locator("#statusTitle")).to_have_text("Узбекистан")
+        self.assertEqual(self.calls("set-server"), [])
+
+    def test_long_names_fit(self):
+        p = self.open(PHONE)
+        for n, title in (("Россия (прямой)", "Россия"), ("Объединённые Арабские Эмираты", "Объединённые Арабские Эмираты"),
+                         ("🇳🇱 auto-nl-03.example.net | LTE", "auto-nl-03.example.net")):
+            p.evaluate("n=>{state.server=n;renderStage()}", n)
+            expect(p.locator("#statusTitle")).to_have_text(title)
+            self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), 375)
+
+    def test_names_are_not_html(self):
+        p = self.open()
+        p.evaluate("state.server='X · <img src=x onerror=window.pwned=1>';renderStage()")
+        self.assertEqual(p.locator("#stage img").count(), 0)
+        self.assertIsNone(p.evaluate("window.pwned||null"))
 
     # --- automation
     def test_behaviour_toggles(self):
@@ -160,6 +251,7 @@ class UI(unittest.TestCase):
 
     def test_full_tunnel_confirms_and_restarts(self):
         p = self.open()
+        self.tab("routing")
         self.toggle("ftToggle")
         self.answer(False)
         p.wait_for_function("!ftToggle.disabled&&!ftToggle.checked")
@@ -186,6 +278,7 @@ class UI(unittest.TestCase):
     # --- domains, log, servers
     def test_domain_search(self):
         p = self.open()
+        self.tab("routing")
         p.locator("#directCard > .card-head").click()
         expect(p.locator("#directDomains .tag-readonly").first).to_be_hidden()
         p.fill("#directSearch", "b15")
@@ -246,12 +339,12 @@ class UI(unittest.TestCase):
 
     def test_escape_dismisses_dialog(self):
         p = self.open()
-        self.toggle("vpnToggle")
+        p.click("#powBtn")
         expect(p.locator("#dlg")).to_be_visible()
         p.keyboard.press("2")  # tab shortcut is off under a dialog
         p.keyboard.press("Escape")
         expect(p.locator("#dlg")).to_be_hidden()
-        expect(p.locator("#sec-routing")).to_be_visible()
+        expect(p.locator("#sec-servers")).to_be_visible()
         self.assertEqual(self.calls("stop"), [])
 
     def test_rename_prompt(self):
@@ -264,19 +357,13 @@ class UI(unittest.TestCase):
         self.toast("Переименовано")
 
     def test_badge_opens_automation(self):
-        p = self.open(PHONE)
+        p = self.open()
         p.click("#failoverBadge")
         expect(p.locator("#automationCard")).to_be_in_viewport()
 
     def test_servers_on_first_phone_screen(self):
         p = self.open(PHONE)
-        self.assertLess(p.locator(".server").first.bounding_box()["y"], 420)
-
-    def test_hint_hidden_until_asked(self):
-        p = self.open()
-        expect(p.locator("#autoModeHint")).to_be_hidden()
-        p.click("#autoHintBtn")
-        expect(p.locator("#autoModeHint")).to_contain_text("Ручной режим")
+        self.assertLess(p.locator(".server").first.bounding_box()["y"], 340)
 
     def test_schedule_times_only_when_enabled(self):
         p = self.open()

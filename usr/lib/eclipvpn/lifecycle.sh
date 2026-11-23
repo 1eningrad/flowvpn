@@ -468,17 +468,35 @@ cmd_restart() {
         '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }
 
+# Does the tunnel actually carry traffic? "ok" | "lost" (the current server
+# failed 3+ watchdog probes in a row) | "wan" (the provider itself is down).
+# From the watchdog's own markers; a stale one (watchdog dead, or written before
+# the last (re)start) says nothing, so it reads as ok. $1 = tunnel start epoch.
+_link_state() {
+    local n ts now
+    now=$(date +%s)
+    if [ -f "$ECLIPVPN_TMP/wan_down_since" ]; then echo wan; return; fi
+    if read -r n ts < "$ECLIPVPN_TMP/probe_fails" 2>/dev/null; then
+        case "$n$ts" in ''|*[!0-9]*) echo ok; return ;; esac
+        if [ "$n" -ge 3 ] && [ $((now - ts)) -lt 120 ] && [ "$ts" -gt "${1:-0}" ]; then
+            echo lost; return
+        fi
+    fi
+    echo ok
+}
+
 cmd_status() {
     # Polled from UI every 5s — kept cheap.
     # Single jq pass: --slurpfile reads config + servers.json once each,
     # everything else (running, vpn_ip, uptime, etc.) comes via --argjson/--arg.
-    local running="false" uptime=0 vpn_ip=""
+    local running="false" uptime=0 vpn_ip="" link="ok" st=0
     if _vpn_running; then
         running="true"
         [ -f "$ECLIPVPN_TMP/start_time" ] && {
-            local st=$(cat "$ECLIPVPN_TMP/start_time")
+            st=$(cat "$ECLIPVPN_TMP/start_time")
             uptime=$(($(date +%s) - st))
         }
+        link=$(_link_state "$st")
         [ -f "$ECLIPVPN_TMP/vpn_ip" ] && vpn_ip=$(cat "$ECLIPVPN_TMP/vpn_ip")
     fi
 
@@ -529,6 +547,7 @@ cmd_status() {
         --argjson running "$running" \
         --argjson uptime "$uptime" \
         --arg vpn_ip "$vpn_ip" \
+        --arg link "$link" \
         --argjson devices "$device_count" \
         --argjson last_switch "$last_switch" \
         --argjson last_update "$last_update" \
@@ -538,6 +557,7 @@ cmd_status() {
          ($c.selected_server // 0) as $sel |
          (($c.muted_servers // "") | split(",") | map(select(length>0))) as $mtoks |
          {running:$running,
+          link:$link,
           server: (if $running then ($srv[$sel].name // "") else "" end),
           uptime:$uptime,
           selected: $sel,

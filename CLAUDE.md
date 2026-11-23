@@ -31,6 +31,7 @@ Apart from `sh ui/build.sh` (concatenates `ui/` into the committed `www/eclipvpn
 | `ash -n <file>` | Syntax-check a script before deploy. `deploy.sh` already runs this on every shell file. |
 | `sh tests/run.sh [suite...]` | Run the unit suite (needs `jq`). No args = all; `parse`/`validators`/`locks`/`config` = one suite. Exit non-zero on any failure. See "Testing". |
 | `python3 tests/ui/test_ui.py` | Browser tests of the UI against a fake router (needs `pip install playwright`). |
+| `python3 tests/ui/preview.py ROUTER_IP` | The built UI on live router data, read-only, nothing deployed. |
 | `cd docs && tectonic eclipvpn_manual.tex` | Rebuild the user manual PDF. |
 | `cd windows-installer && powershell -ExecutionPolicy Bypass -File build-exe.ps1` | Rebuild `EclipVPN-Installer.exe` (offline Windows installer). Stages the live `usr/`/`www/`/`etc/` tree — rebuild after any router-code change. See its own section below. |
 

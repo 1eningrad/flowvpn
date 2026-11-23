@@ -167,49 +167,34 @@ function storePings(list){
 }
 function pingClass(ms){return ms<0?'ping-none':ms<150?'ping-good':ms<400?'ping-mid':'ping-bad'}
 
-function showTab(name,el){
-  // «Главная» exists only in the bottom nav. It has no .section: the desktop
-  // section stays selected underneath, so widening the window still shows it.
-  document.body.classList.toggle('m-home',name==='home');
-  if(name==='home'){
-    document.querySelectorAll('.bn-item').forEach(t=>{
-      const on=t.dataset.tab==='home';
-      t.classList.toggle('active',on);
-      if(on)t.setAttribute('aria-current','page');else t.removeAttribute('aria-current');
-    });
-    stopLive();
-    window.scrollTo(0,0);
-    if(window._setCompact)window._setCompact();
-    return;
-  }
-  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
-  document.querySelectorAll('.tab,.bn-item').forEach(t=>{t.classList.remove('active');t.removeAttribute('aria-current')});
-  document.getElementById('sec-'+name).classList.add('active');
-  document.querySelectorAll('.tab[data-tab="'+name+'"],.bn-item[data-tab="'+name+'"]').forEach(e=>{
-    e.classList.add('active');
-    e.setAttribute('aria-current','page');
+// `home` and `diagnose` are older names still used by shortcuts and fix-actions.
+function showTab(name){
+  const diag=name==='diagnose';
+  name=diag?'settings':name==='home'?'servers':name;
+  document.querySelectorAll('.section').forEach(s=>s.classList.toggle('active',s.id==='sec-'+name));
+  document.querySelectorAll('.tab').forEach(t=>{
+    const on=t.dataset.tab===name;
+    t.classList.toggle('active',on);
+    if(on)t.setAttribute('aria-current','page');else t.removeAttribute('aria-current');
   });
+  // Phone: inside a section the stage shrinks to its top line.
+  document.body.classList.toggle('in-section',name!=='servers');
   stopLive();
   if(name==='devices')loadDevices();
   if(name==='logs'){loadLogs();if(liveMode)startLive()}
   if(name==='routing'){loadDomains();loadPresets();}
   if(name==='settings'){loadSchedule();loadAutoUpdate();loadSystemInfo();resumeUpdate()}
-  // Phone: each tab is its own screen — start at its top. Desktop stays in place.
-  if(window.matchMedia('(max-width:840px)').matches)window.scrollTo(0,0);
-  if(window._setCompact)window._setCompact();
+  window.scrollTo(0,0);
+  if(diag)document.getElementById('diagCard').scrollIntoView();
+  if(name==='servers')drawSpark();
 }
-function showTabMobile(name){
-  const desktopTab=document.querySelector('.tabs .tab[data-tab="'+name+'"]');
-  showTab(name,desktopTab||document.createElement('div'));
-}
+function showTabMobile(name){showTab(name)}
 // Jump to Settings ▸ Подписки and focus the URL field so the user can paste a
 // subscription link immediately. Used by the empty-server-list hint when there
 // are no subscriptions configured.
 function goToAutomation(){
   showTabMobile('settings');
-  const c=document.getElementById('automationCard');
-  const y=c.getBoundingClientRect().top+window.pageYOffset-document.getElementById('appHeader').offsetHeight-12;
-  window.scrollTo({top:Math.max(0,y)});
+  document.getElementById('automationCard').scrollIntoView();
 }
 function goToSubscriptions(){
   showTabMobile('settings');
@@ -344,7 +329,6 @@ function renderServers(servers,sel,switchingIdx){
     const cls=p!==undefined?pingClass(p)+(saved?' ping-old':''):'ping-none';
     const flagMatch=s.name.match(/^(\p{RI}\p{RI})\s*(.*)/u);
     const name=flagMatch?flagMatch[2]:s.name;
-    const flagBadge=flagHTML(s.name);
     const bars='<span class="ping-bars"><span></span><span></span><span></span><span></span></span>';
     // metered still drives the row tint (.server-metered) — the "Тариф" badge it
     // used to render was dropped as noise; the tooltip on the row and the tint
@@ -365,7 +349,6 @@ function renderServers(servers,sel,switchingIdx){
       ?`<span class="server-fail${inc.count_24h<=2?' warn':''}" title="Сбоев за 24ч: ${inc.count_24h}, за 7дн: ${inc.count_7d}. Подробности: Журнал → События.">⚠ ${inc.count_24h}</span>`
       :'';
     html+=`<div class="server${a}${sw}${metered?' server-metered':''}${muted?' server-muted':''}" onclick="selectServer(${i})" tabindex="0" role="button" aria-label="${esc(name)}${p!==undefined?(', пинг '+pingStr):''}${i===sel?', выбран':''}${muted?', исключён из автовыбора':''}${inc&&inc.count_24h>0?', сбоев за 24ч '+inc.count_24h:''}">
-      ${flagBadge}
       <span class="server-name">${esc(name)}</span>
       ${protoTag}
       ${failTag}
@@ -501,7 +484,6 @@ async function fetchStatus(){
     // Don't fight an in-flight start/stop: a poll landing mid-operation
     // still sees the old `running` and would visually bounce the toggle the
     // user just flipped (same guard as _autoModePending / _switchPending).
-    if(!_vpnPending)document.getElementById('vpnToggle').checked=on;
     renderSubscriptions();
     // Sync persistent auto_mode toggle from backend state, but stay out of
     // the way while a toggle/auto-select op is in flight — otherwise this
@@ -518,42 +500,17 @@ async function fetchStatus(){
     // auto_failover badge. Default TRUE, so only an explicit false lights it —
     // an older backend that doesn't send the field must not show the warning.
     const fb=document.getElementById('failoverBadge');
-    if(fb) fb.style.display = (state.auto_failover === false) ? 'inline-flex' : 'none';
+    if(fb) fb.style.display = (state.auto_failover === false) ? '' : 'none';
     renderAutomation();
     const hint=document.getElementById('autoModeHint');
     if(hint){
       if(state.auto_mode){
-        hint.textContent='Авто-режим — сервер выбирается автоматически по пингу. Клик по серверу выключает авто.';
-        hint.style.color='var(--accent-text)';
+        hint.textContent='Включено: периодически ищет самый быстрый. Выбор сервера вручную выключает.';
       }else{
-        hint.textContent='Ручной режим — кликните на сервер, чтобы переключиться. Включите Авто, чтобы система выбирала за вас.';
-        hint.style.color='var(--text-muted)';
+        hint.textContent=state.auto_failover===false?'Выключено. Чтобы заработало, включите и «Менять сервер автоматически» в Настройках.':'Выключено: сервер выбираете вы.';
       }
     }
-    const orb=document.getElementById('statusOrb');
-    orb.classList.toggle('off',!on);
-
-    if(on){
-      document.getElementById('statusTitle').textContent='Подключено';
-      const modeText=modeLabel();
-      document.getElementById('statusMeta').innerHTML=
-        `<span><b>${serverNameDisplay(state.server||'—')}</b></span>`+
-        `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
-        `<span id="uptimeLive" class="num" title="С момента последнего запуска или переключения сервера">${fmtUpLive(state.uptime)}</span>`+
-        `<span>${modeText}</span>`;
-      const hi=document.getElementById('headerInfo');
-      hi.className='header-info on';
-      hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--green)"></span> '
-        +serverNameDisplay(state.server||'')+'<span class="hi-sep" style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
-      if(!_vpnPending)document.getElementById('vpnMiniToggle').checked=true;
-    }else{
-      document.getElementById('statusTitle').textContent='Отключено';
-      document.getElementById('statusMeta').innerHTML='<span>Нажмите переключатель, чтобы подключиться</span>';
-      const hi=document.getElementById('headerInfo');
-      hi.className='header-info off';
-      hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--red)"></span> Выключено';
-      if(!_vpnPending)document.getElementById('vpnMiniToggle').checked=false;
-    }
+    renderStage();
 
     // #subUrl stays empty — it's an "add subscription" field. The active
     // subscription is shown in the meta card below (with its own «Обновить»).
@@ -562,6 +519,75 @@ async function fetchStatus(){
     renderServers(state.servers,state.selected);
     if(!window._onboardChecked){window._onboardChecked=true;maybeShowOnboard()}
   }catch(e){}
+}
+
+// --- Stage: the coloured status screen ---------------------------------------
+// «🇺🇿 Узбекистан · тест» / «Россия (прямой)» → big title + a note beside the IP.
+function splitName(raw){
+  const n=String(raw||'').replace(/^\p{RI}\p{RI}\s*/u,'').trim();
+  const m=n.match(/^(.+?)\s*(?:[·|]\s*(.+)|\((.+)\))$/);
+  return m?[m[1],m[2]||m[3]]:[n||'—',''];
+}
+// What the stage is showing: probing (cancellable) | switching | starting |
+// stopping | off | wan (provider down) | lost (server dead) | ok.
+let _stageBusy='';
+function stageState(){
+  if(_stageBusy)return _stageBusy;
+  if(!state.running)return 'off';
+  return state.link==='wan'?'wan':state.link==='lost'?'lost':'ok';
+}
+const STAGE={
+  ok:['ok','Подключено через'],off:['power','Трафик идёт напрямую'],lost:['warn','Нет связи с сервером'],wan:['warn','Нет интернета у провайдера'],
+  probing:['busy','Проверяю'],switching:['busy','Переключаю на'],selecting:['busy','Проверяю все серверы'],starting:['busy','Подключаю'],stopping:['busy','Отключаю']
+};
+function _setText(id,t){const e=document.getElementById(id);if(e&&e.textContent!==t)e.textContent=t}
+function renderStage(){
+  if(!('running' in state))return;
+  const st=stageState(),stage=document.getElementById('stage');
+  const cls=st==='ok'?'':st==='off'||st==='stopping'?'off':st==='lost'||st==='wan'?'lost':'busy';
+  if(stage.className!==cls)stage.className=cls;
+  const pre=document.getElementById('statusPre');
+  if(pre.dataset.s!==st){
+    pre.dataset.s=st;
+    pre.innerHTML='<svg class="icon'+(STAGE[st][0]==='busy'?' spin':'')+'"><use href="#i-'+STAGE[st][0]+'"/></svg><span>'+STAGE[st][1]+'</span>';
+  }
+  const cur=(state.servers&&state.servers[state.selected]||{}).name||state.server;
+  const [title,note]=st==='off'?['Выключен','']:st==='selecting'?['Выбираю','']:splitName(st==='ok'?(state.server||cur):cur);
+  _setText('statusTitle',title);
+  fitTitle(title);
+  const meta=document.getElementById('statusMeta');
+  const html={
+    ok:()=>(note?esc(note)+' · ':'')+esc(state.vpn_ip||'—')+' · <span id="uptimeLive" class="num">'+fmtUpLive(state.uptime)+'</span> · '+esc(modeLabel().replace(/^./,c=>c.toLowerCase())),
+    off:()=>'Заблокированные сайты не откроются',
+    lost:()=>state.auto_failover===false?'Сам сервер не сменится, выберите другой':'Ищу рабочий сервер, можно выбрать вручную',
+    wan:()=>'Смена сервера не поможет, VPN вернётся вместе с интернетом',
+    probing:()=>'Прежнее соединение пока работает',switching:()=>'Осталось несколько секунд',
+    selecting:()=>'Может занять до двух минут, прежнее соединение работает',
+    starting:()=>'Обычно занимает 5–10 секунд',stopping:()=>''
+  }[st]();
+  if(meta.dataset.h!==html){meta.dataset.h=html;meta.innerHTML=html}
+  const pow=document.getElementById('powBtn');
+  _setText('powBtn',{ok:'Отключить',off:'Подключить',lost:'Подключить самый быстрый',wan:'Отключить',probing:'Отменить',switching:'Переключаю…',selecting:'Выбираю…',starting:'Подключаю…',stopping:'Отключаю…'}[st]);
+  pow.disabled=st==='selecting'||st==='switching'||st==='starting'||st==='stopping';
+  document.getElementById('altBtn').hidden=st!=='lost';
+  document.getElementById('failoverBadge').hidden=st!=='ok';
+}
+// Largest size at which the title fits the stage in at most two lines.
+function fitTitle(t){
+  const el=document.getElementById('statusTitle'),wide=window.innerWidth>860;
+  const w=el.parentElement.clientWidth;
+  const longest=t.length>16?Math.max(...t.split(/\s+/).map(x=>x.length),Math.ceil(t.length/2)):t.length;
+  const max=wide?(window.innerHeight<700?72:108):50;
+  const px=Math.max(26,Math.min(max,w/(Math.max(longest,1)*.6)))+'px';
+  if(el.style.fontSize!==px)el.style.fontSize=px;
+}
+window.addEventListener('resize',()=>{renderStage();drawSpark()});
+function powClick(){
+  const st=stageState();
+  if(st==='probing')cancelSwitch();
+  else if(st==='off')startVPN();
+  else if(st==='lost')doAutoSelect();
+  else if(st==='ok'||st==='wan')stopVPN();
 }
 
 // Single timer for ad-hoc status refreshes after user actions.
@@ -643,24 +669,23 @@ function askBox(o){
 }
 
 let _vpnPending=false;
-async function toggleVPN(){
-  const cb=document.getElementById('vpnToggle');
-  if(_vpnPending){cb.checked=!cb.checked;return}
-  const on=cb.checked;
-  // Pending from here on, so a status poll can't flip the switch under the dialog.
-  _vpnPending=true;cb.disabled=true;
-  if(!on&&!await askBox({title:'Отключить VPN?',text:'Весь трафик пойдёт напрямую, заблокированные сайты не откроются.',ok:'Отключить',danger:true})){
-    _vpnPending=false;cb.disabled=false;
-    cb.checked=true;document.getElementById('vpnMiniToggle').checked=true;return;
-  }
+async function _powerOp(on){
+  if(_vpnPending)return;
+  _vpnPending=true;_stageBusy=on?'starting':'stopping';renderStage();
   const tid=toast.loading(on?'Подключаемся…':'Отключаем…');
   try{
     const r=await apiFetch(API+'?action='+(on?'start':'stop'),{timeoutMs:65000});const d=await r.json();
     if(d.error)updateToast(tid,on?'Не удалось подключиться':'Не удалось отключить',{type:'error',desc:ruErr(d.error),duration:8000});
     else updateToast(tid,on?'VPN подключён':'VPN отключён',{type:'success'});
+    try{await fetchStatus()}catch(_){}
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
-  finally{_vpnPending=false;cb.disabled=false}
+  finally{_vpnPending=false;_stageBusy='';renderStage()}
   scheduleStatus(2000);
+}
+function startVPN(){return _powerOp(true)}
+async function stopVPN(){
+  if(_vpnPending||_switchPending)return;
+  if(await askBox({title:'Отключить VPN?',text:'Весь трафик пойдёт напрямую, заблокированные сайты не откроются.',ok:'Отключить',danger:true}))return _powerOp(false);
 }
 
 // Mute / un-mute a server: it stops being a candidate for auto-select,
@@ -704,9 +729,14 @@ async function toggleMute(ev,i,isMuted){
 // 2. Soft restart (5-7s) — actually switch
 // On any failure we roll back the visual selection so the UI stays honest.
 let _switchPending=false;
+// Cancel works only while the target is being probed: the live tunnel has not
+// been touched yet. The router finishes its probe on its own; we ignore it.
+function cancelSwitch(){if(_stageBusy==='probing'){const f=_switchAbort;_switchAbort=null;if(f)f(new Error('cancelled'))}}
+let _switchAbort=null;
 async function selectServer(i){
-  if(_switchPending)return;
-  if(i===state.selected)return;  // already selected — ignore noise click
+  if(_switchPending||_stageBusy)return;
+  // Already selected: ignore, unless its link is dead and the user retries it.
+  if(i===state.selected&&stageState()!=='lost')return;
   if(!state.servers||!state.servers[i])return;
 
   // Manual click while auto-mode is on counts as user opting into manual.
@@ -730,7 +760,9 @@ async function selectServer(i){
   // Optimistic UI: highlight new server immediately, lock the rest of the list,
   // mark the target with .switching for the spinner+pulse.
   state.selected=i;
+  _stageBusy='probing';
   renderServers(state.servers,i,i);
+  renderStage();
   const list=document.getElementById('serverList');
   list.classList.add('locked');
 
@@ -742,12 +774,14 @@ async function selectServer(i){
 
   try{
     // Phase 1: probe — temporary xray, no production impact if it fails
-    const pr=await apiFetch(API+'?action=probe-server&index='+i,{timeoutMs:90000});
+    const cancelled=new Promise((_,rej)=>{_switchAbort=rej});
+    const pr=await Promise.race([apiFetch(API+'?action=probe-server&index='+i,{timeoutMs:90000}),cancelled]);
     const pd=await pr.json();
     if(pd.error)throw new Error(pd.error);
 
     tid=updateToast(tid,'Сервер работает ('+pd.ip+') — переключаемся…',{type:'loading',duration:0});
 
+    _switchAbort=null;_stageBusy='switching';renderStage();
     // Phase 2: actual switch — soft restart with new selected_server
     const sr=await apiFetch(API+'?action=set-server&index='+i,{timeoutMs:90000});
     const sd=await sr.json();
@@ -775,6 +809,7 @@ async function selectServer(i){
       apiFetch(API+'?action=set-config&key=auto_mode&value=true').catch(()=>{});
     }
     const reason=(e&&e.message)||'неизвестная ошибка';
+    if(reason==='cancelled'){updateToast(tid,'Отменено',{type:'info',desc:'Сервер прежний'});return}
     let humanReason=reason;
     if(/unreachable/i.test(reason))humanReason='Сервер не отвечает';
     else if(/HTTP 5/.test(reason))humanReason='Ошибка роутера';
@@ -783,7 +818,7 @@ async function selectServer(i){
     // sees a fresh entry (and the badge on the failing server) immediately.
     loadIncidents();
   }finally{
-    _switchPending=false;
+    _switchPending=false;_stageBusy='';_switchAbort=null;renderStage();
     _autoModePending=false;   // release the auto-mode sync lock taken above
     // Render first, then unlock — avoids a microsecond gap where stale DOM
     // is interactive after the lock is removed.
@@ -806,7 +841,7 @@ async function doPing(){
   if(am)am.disabled=true;
   try{const r=await apiFetch(API+'?action=ping',{timeoutMs:90000});const d=await r.json();if(Array.isArray(d))storePings(d);renderServers(state.servers,state.selected)}catch(e){}
   _probePending=false;
-  if(b){b.disabled=false;b.textContent='Проверить пинг';}
+  if(b){b.disabled=false;b.textContent='Замерить пинг';}
   if(am)am.disabled=false;
 }
 // Maps backend status code to a short Russian phrase for the toast log.
@@ -852,11 +887,6 @@ async function toggleAutoStart(enabled){
   }
 }
 
-function toggleAutoHint(){
-  const p=document.getElementById('autoModeHint');
-  p.hidden=!p.hidden;
-  document.getElementById('autoHintBtn').setAttribute('aria-expanded',String(!p.hidden));
-}
 function modeLabel(){
   return state.mode!=='all_vpn'?'Только по списку':(state.full_tunnel?'Весь трафик, включая РФ':'Весь трафик кроме РФ');
 }
@@ -899,7 +929,7 @@ function setBehaviour(key,cb){
   return _behaviour(cb,async()=>{
     await _saveBehaviour(key,on?'true':'false');
     state[key]=on;
-    document.getElementById('failoverBadge').style.display=state.auto_failover===false?'inline-flex':'none';
+    document.getElementById('failoverBadge').style.display=state.auto_failover===false?'':'none';
     toast.success(on?'Включено':'Выключено',document.querySelector('#'+cb.id+'Row .setting-row-title').textContent);
   });
 }
@@ -957,8 +987,8 @@ async function doAutoSelect(){
   // Shares the _probePending lock with doPing — running both in parallel hammers
   // the router. The Auto toggle is also disabled by its caller (toggleAutoMode)
   // and by doPing, so the two sweeps can't overlap.
-  if(_probePending)return;
-  _probePending=true;
+  if(_probePending||_stageBusy)return;
+  _probePending=true;_stageBusy='selecting';renderStage();
   const pingBtn=document.getElementById('pingBtn');
   if(pingBtn)pingBtn.disabled=true;
   let tid=toast.loading('Измеряем все серверы и выбираем лучший…');
@@ -984,7 +1014,7 @@ async function doAutoSelect(){
     const desc=log?(reason+'\n\n'+log):reason;
     tid=updateToast(tid,'Не удалось подобрать',{type:'error',desc,duration:7000});
   }finally{
-    _probePending=false;
+    _probePending=false;_stageBusy='';renderStage();
     if(pingBtn)pingBtn.disabled=false;
   }
 }
@@ -1466,6 +1496,7 @@ async function loadTraffic(){
     const statDirect=document.getElementById('statDirect');
     if(statDirect)statDirect.title='Напрямую: ↓ '+fmtBytes(d.dir_dl||0)+'  ↑ '+fmtBytes(d.dir_ul||0);
     const since=document.getElementById('trafficSince');
+    _setText('trafficPhone','Через VPN '+fmtBytes(vpnTotal)+', напрямую '+fmtBytes(dirTotal));
     if(since){
       since.textContent='учёт '+fmtSinceShort(d.started);
       if(d.started)since.title='Учёт начат '+new Date(d.started*1000).toLocaleString('ru-RU')+'. Переживает рестарты sing-box, сбрасывается только вручную.';
@@ -1491,37 +1522,19 @@ function pushSpeed(down,up){
 }
 function drawSpark(){
   const c=document.getElementById('speedSpark');if(!c)return;
-  const dpr=window.devicePixelRatio||1;
-  const rect=c.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1,rect=c.parentElement.getBoundingClientRect();
   const w=rect.width,h=rect.height;
-  if(c.width!==w*dpr||c.height!==h*dpr){c.width=w*dpr;c.height=h*dpr}
+  if(!w||!h)return;   // hidden on phones
+  if(c.width!==Math.round(w*dpr)||c.height!==Math.round(h*dpr)){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr)}
   const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
-  const max=Math.max(1,...speedHistory.down,...speedHistory.up);
-  const drawLine=(arr,stroke,fill)=>{
-    ctx.beginPath();
-    arr.forEach((v,i)=>{
-      const x=i*(w/(SPARK_POINTS-1));
-      const y=h-(v/max)*(h-4)-2;
-      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-    });
-    if(fill){
-      const grad=ctx.createLinearGradient(0,0,0,h);
-      grad.addColorStop(0,fill);grad.addColorStop(1,'transparent');
-      const x2=(SPARK_POINTS-1)*(w/(SPARK_POINTS-1));
-      ctx.lineTo(x2,h);ctx.lineTo(0,h);ctx.closePath();
-      ctx.fillStyle=grad;ctx.fill();
-      ctx.beginPath();
-      arr.forEach((v,i)=>{
-        const x=i*(w/(SPARK_POINTS-1));
-        const y=h-(v/max)*(h-4)-2;
-        if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-      });
-    }
-    ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.lineJoin='round';ctx.stroke();
-  };
-  drawLine(speedHistory.down,'#34d399','rgba(52,211,153,0.25)');
-  drawLine(speedHistory.up,'#5e6ad2',null);
+  const peak=Math.max(...speedHistory.down),max=Math.max(1,peak);
+  const color=getComputedStyle(document.getElementById('stage')).getPropertyValue('--hi').trim()||'#fff';
+  const pt=(v,i)=>[i*(w/(SPARK_POINTS-1)),h-(v/max)*(h-30)-2];
+  ctx.beginPath();speedHistory.down.forEach((v,i)=>{const [x,y]=pt(v,i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+  ctx.strokeStyle=color;ctx.lineWidth=2.5;ctx.lineJoin='round';ctx.stroke();
+  ctx.lineTo(w,h);ctx.lineTo(0,h);ctx.closePath();ctx.globalAlpha=.14;ctx.fillStyle=color;ctx.fill();ctx.globalAlpha=1;
+  _setText('sparkMax',peak>0?'до '+fmtSpeed(peak)+' за минуту':'');
 }
 
 // Speed monitor — was a direct WebSocket from the browser to sing-box's
@@ -1538,6 +1551,7 @@ async function speedTick(){
     const down=d.down||0, up=d.up||0;
     document.getElementById('speedDown').textContent=fmtSpeed(down);
     document.getElementById('speedUp').textContent=fmtSpeed(up);
+    _setText('speedMini','↓ '+fmtSpeed(down));
     pushSpeed(down,up);
   }catch(e){}
 }
@@ -1749,8 +1763,7 @@ async function hcClearLog(){
   catch(e){toast.error('Ошибка очистки')}
 }
 function hcOpenErrors(){
-  const tab=document.querySelector('.tab[data-tab="logs"]');
-  showTab('logs',tab);
+  showTab('logs');
   const errFilter=document.querySelector('.log-filter[data-filter="error"]');
   if(errFilter)setLogFilter('error',errFilter);
 }
@@ -2046,6 +2059,7 @@ function applyTheme(pref){
   else root.removeAttribute('data-theme');
   requestAnimationFrame(()=>requestAnimationFrame(()=>root.classList.remove('theme-switching')));
   const btn=document.getElementById('themeBtn');
+  if(window.drawSpark&&document.getElementById('speedSpark'))requestAnimationFrame(()=>{try{drawSpark()}catch(e){}});
   if(btn){btn.innerHTML='<svg class="icon"><use href="'+THEME_ICONS[pref]+'"/></svg>';btn.title='Тема: '+THEME_LABELS[pref]+' (клик: переключить)'}
 }
 function toggleTheme(){
@@ -2064,66 +2078,6 @@ function toggleTheme(){
   try{window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{
     if((localStorage.getItem('eclipvpn-theme')||'auto')==='auto')applyTheme('auto');
   });}catch(e){}
-})();
-
-function syncMiniToggle(el){
-  // toggleVPN refuses to run while an op is pending and reverts the MAIN
-  // checkbox — revert the mini one here too, or they desync until the
-  // next status poll.
-  if(_vpnPending){el.checked=!el.checked;return}
-  const main=document.getElementById('vpnToggle');
-  main.checked=el.checked;
-  toggleVPN();
-}
-
-// Collapsible header: shade on scroll
-(function initScrollHeader(){
-  const header=document.getElementById('appHeader');
-  let ticking=false;
-  function update(){
-    const y=window.scrollY||document.documentElement.scrollTop||0;
-    header.classList.toggle('scrolled',y>40);
-    ticking=false;
-  }
-  window.addEventListener('scroll',()=>{
-    if(!ticking){requestAnimationFrame(update);ticking=true}
-  },{passive:true});
-  update();
-  // Mini-toggle visibility — track the main hero toggle, show mini only when
-  // the main one has scrolled off-screen. Threshold by scrollY would either
-  // overlap (mini shows while main still visible) or hide too long (main
-  // already gone but mini still hidden).
-  // IMPORTANT: observe the parent <label class="toggle">, not the <input>.
-  // The input itself is display:none (custom toggle UX hides the checkbox
-  // and styles the surrounding label). getBoundingClientRect on a
-  // display:none element returns all zeros, which would make r.bottom<=0
-  // true and incorrectly mark the page as "scrolled past hero" on init.
-  const mainToggleInput=document.getElementById('vpnToggle');
-  const mainToggle=mainToggleInput&&mainToggleInput.closest('.toggle');
-  if(mainToggle){
-    // Set initial compact state synchronously so there's no flash of
-    // mini-toggle before scroll listener fires.
-    const setCompact=()=>{
-      const r=mainToggle.getBoundingClientRect();
-      // Both checks needed: rect of zeros (pre-layout) shouldn't trigger
-      // compact, only an actual top-out (bottom strictly less than 0).
-      // The hero is deliberately hidden on non-home phone tabs: compact too.
-      const heroHidden=!document.body.classList.contains('m-home')&&window.matchMedia('(max-width:840px)').matches;
-      header.classList.toggle('compact',heroHidden||(r.height>0&&r.bottom<0));
-    };
-    window._setCompact=setCompact;
-    window.addEventListener('resize',setCompact);
-    setCompact();
-    // Use a scroll-driven check instead of IntersectionObserver: IO's first
-    // async callback can fire with isIntersecting=false on iOS Safari when
-    // the page is still settling (dynamic toolbar resizing the visual
-    // viewport). getBoundingClientRect after layout is reliable. The cost
-    // is one rect read per scroll frame, which is negligible.
-    let ticking2=false;
-    window.addEventListener('scroll',()=>{
-      if(!ticking2){requestAnimationFrame(()=>{setCompact();ticking2=false});ticking2=true}
-    },{passive:true});
-  }
 })();
 
 // Onboarding
@@ -2269,13 +2223,13 @@ async function loadNetCheck(){
     const b=document.getElementById('netBadge');
     if(!b)return;
     const m={
-      full:['full','Интернет: есть','Прямой канал работает: Яндекс и Google доступны'],
-      whitelist:['whitelist','Интернет: только белые списки','Google напрямую недоступен, Яндекс отвечает — провайдер пропускает только «белые» сайты. Зарубежные VPN-серверы и обновление подписок напрямую могут не работать.'],
+      full:['full','Интернет есть','Прямой канал работает: Яндекс и Google доступны'],
+      whitelist:['whitelist','Только белые списки','Google напрямую недоступен, Яндекс отвечает — провайдер пропускает только «белые» сайты. Зарубежные VPN-серверы и обновление подписок напрямую могут не работать.'],
       none:['none','Нет интернета','Ни Яндекс, ни Google не отвечают — канал провайдера не работает']
     }[d.internet];
     if(!m){b.style.display='none';return}
     b.className='net-badge '+m[0];
-    b.style.display='inline-flex';
+    b.style.display='';
     document.getElementById('netBadgeText').textContent=m[1];
     b.title=m[2];
   }catch(e){}

@@ -194,3 +194,18 @@ rm -f "$ECLIPVPN_TMP/servers.json" "$WD_CALLS"; _reset
 unset -f logger sleep _calls _reset _reset_keep_wan _tput_state
 # shellcheck disable=SC1090
 . "$REPO/usr/bin/eclipvpn"
+
+# --- link state for /status ----------------------------------------------------
+_t link_state
+_now=$(date +%s)
+rm -f "$ECLIPVPN_TMP"/probe_fails "$ECLIPVPN_TMP"/wan_down_since
+assert_eq "ls-no-marker"   "$(_link_state 0)" ok
+echo "2 $_now" > "$ECLIPVPN_TMP/probe_fails";             assert_eq "ls-jitter"  "$(_link_state 0)" ok
+echo "3 $_now" > "$ECLIPVPN_TMP/probe_fails";             assert_eq "ls-lost"    "$(_link_state 0)" lost
+assert_eq "ls-older-than-start" "$(_link_state $((_now + 1)))" ok
+echo "9 $((_now - 500))" > "$ECLIPVPN_TMP/probe_fails";   assert_eq "ls-stale"   "$(_link_state 0)" ok
+echo "junk" > "$ECLIPVPN_TMP/probe_fails";                assert_eq "ls-garbage" "$(_link_state 0)" ok
+echo "$_now" > "$ECLIPVPN_TMP/wan_down_since";            assert_eq "ls-wan"     "$(_link_state 0)" wan
+rm -f "$ECLIPVPN_TMP"/wan_down_since
+fail_count=4; silent_fails=0; _wd_on_probe_ok
+assert_eq "ls-ok-clears" "$([ -f "$ECLIPVPN_TMP/probe_fails" ] && echo yes || echo no)" no

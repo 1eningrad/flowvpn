@@ -523,6 +523,7 @@ _wd_on_probe_ok() {
     [ "$silent_fails" -gt 0 ] && logger -t eclipvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
     fail_count=0
     silent_fails=0
+    rm -f "$ECLIPVPN_TMP/probe_fails"
 }
 
 # One tick of the throughput guard. State: slow_count, last_tput_switch,
@@ -715,6 +716,8 @@ _wd_on_probe_fail() {
     fi
 
     fail_count=$((fail_count + 1))
+    # "count epoch" for cmd_status (`link`): running only says the process lives.
+    echo "$fail_count $(date +%s)" > "$ECLIPVPN_TMP/probe_fails"
     # Throttle "check failed" logs after the failover loop already ran —
     # otherwise a permanent outage spams syslog every 20s forever.
     # Persist incident only at >=3/5 — single isolated failures (1/5,

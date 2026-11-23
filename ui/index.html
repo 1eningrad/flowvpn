@@ -12,12 +12,16 @@
 @@include style.css
 </style>
 </head>
-<body class="m-home">
+<body>
 <svg style="display:none">
   <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="11" rx="2.5"/><path d="M7.5 11V7a4.5 4.5 0 019 0v4"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 014 9 13 13 0 01-4 9 13 13 0 01-4-9 13 13 0 014-9z"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l4.5-1L20 7.5 16.5 4 5 15.5z"/><path d="M14 6.5l3.5 3.5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L22 20.5H2zM12 10v4.5M12 17.6v.1"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3v8M6.6 6.6a8 8 0 1 0 10.8 0"/></symbol>
+  <symbol id="i-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 7"/></symbol>
+  <symbol id="i-busy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6l-12 12"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7.5"/><path d="M21 21l-5.5-5.5"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.5 12c0 .6 0 1.2-.1 1.7l2.1 1.7-2 3.5-2.5-1c-.9.7-2 1.2-3 1.5L13.5 22h-3l-.5-2.6c-1-.3-2.1-.8-3-1.5l-2.5 1-2-3.5 2.1-1.7c-.1-.5-.1-1.1-.1-1.7s0-1.2.1-1.7L2.5 8.6l2-3.5 2.5 1c.9-.7 2-1.2 3-1.5L10.5 2h3l.5 2.6c1 .3 2.1.8 3 1.5l2.5-1 2 3.5-2.1 1.7c.1.5.1 1.1.1 1.7z"/></symbol>
@@ -55,127 +59,72 @@
 </svg>
 
 <div class="app">
-  <div class="header" id="appHeader">
-    <div class="brand">
-      <div class="logo">EclipVPN</div>
+  <header id="stage" class="off">
+    <div class="st-top">
+      <span class="brand">EclipVPN</span>
+      <span class="st-right">
+        <span class="net-badge" id="netBadge"><span id="netBadgeText"></span></span>
+        <span class="st-speed" id="speedMini"></span>
+        <button class="st-icon" onclick="toggleTheme()" id="themeBtn" title="Тема" aria-label="Сменить тему"><svg class="icon"><use href="#i-moon"/></svg></button>
+      </span>
     </div>
-    <div class="header-info" id="headerInfo">Загрузка…</div>
-    <div class="header-actions">
-      <label class="header-mini-toggle" title="Вкл/Выкл VPN">
-        <input type="checkbox" id="vpnMiniToggle" aria-label="Включить или выключить VPN" onchange="syncMiniToggle(this)">
-        <div class="mt-track"></div>
-        <div class="mt-knob"></div>
-      </label>
-      <button class="btn btn-ghost btn-icon" onclick="toggleTheme()" id="themeBtn" title="Тема"><svg class="icon"><use href="#i-moon"/></svg></button>
+    <div class="st-main" role="status">
+      <p class="st-pre" id="statusPre"></p>
+      <h1 id="statusTitle">Загрузка…</h1>
+      <p class="st-sub" id="statusMeta"></p>
+      <!-- auto_failover=false: a deliberate choice, so a neutral reminder that
+           opens the setting rather than a warning. -->
+      <button class="st-chip" id="failoverBadge" style="display:none" onclick="goToAutomation()">Смена сервера: вручную</button>
     </div>
-  </div>
-
-  <!-- Hero status -->
-  <div class="hero">
-    <div class="hero-inner">
-      <div class="hero-status">
-        <div class="status-orb off" id="statusOrb">
-          <div class="pulse"></div>
-          <div class="dot"></div>
-        </div>
-        <div class="status-text">
-          <div class="title-row">
-            <h1 id="statusTitle">Отключено</h1>
-            <div class="net-badge" id="netBadge"><span class="nb-dot"></span><span id="netBadgeText"></span></div>
-            <!-- auto_failover=false: a deliberate choice, so a neutral reminder that
-               opens the setting rather than a warning. -->
-            <button class="net-badge" id="failoverBadge" style="display:none" onclick="goToAutomation()" title="VPN не меняет сервер сам при обрыве. Нажмите, чтобы открыть настройку."><span class="nb-dot"></span><span>Смена сервера: вручную</span></button>
-          </div>
-          <div class="meta" id="statusMeta">
-            <span>Нажмите, чтобы подключиться</span>
-          </div>
-        </div>
-      </div>
-      <label class="toggle" title="Вкл/Выкл VPN">
-        <input type="checkbox" id="vpnToggle" aria-label="Включить или выключить VPN" onchange="toggleVPN()">
-        <div class="toggle-track"></div>
-        <div class="toggle-knob"></div>
-      </label>
+    <div class="st-chart" aria-hidden="true"><canvas id="speedSpark"></canvas><span id="sparkMax"></span></div>
+    <div class="st-nums">
+      <div><b id="speedDown">—</b><span>загрузка</span></div>
+      <div><b id="speedUp">—</b><span>отдача</span></div>
+      <div id="statVpn"><b id="sessionVpn">—</b><span>через VPN</span></div>
+      <div id="statDirect"><b id="sessionDirect">—</b><span>напрямую</span></div>
     </div>
-  </div>
-
-  <div class="grid">
-    <!-- Left column (phone: the «Главная» tab) -->
-    <div class="home-col">
-      <!-- Now panel -->
-      <div class="card now-card">
-        <div class="card-head">
-          <div class="card-title">Сейчас</div>
-          <span class="live-dot" title="Обновляется в реальном времени"></span>
-        </div>
-        <canvas id="speedSpark" class="spark" width="600" height="60"></canvas>
-        <div class="speed-row">
-          <div class="speed-item speed-down">
-            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-down"/></svg> Входящий</div>
-            <div class="speed-value" id="speedDown">—</div>
-          </div>
-          <div class="speed-item speed-up">
-            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-up"/></svg> Исходящий</div>
-            <div class="speed-value" id="speedUp">—</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card traffic-card">
-        <div class="card-head"><div class="card-title">Трафик</div></div>
-        <div class="mini-stats" id="trafficStats">
-          <div class="mini-stat" id="statVpn" title="Через VPN">
-            <div class="mini-stat-label">Через VPN</div>
-            <div class="mini-stat-val" id="sessionVpn" style="color:var(--accent-text)">—</div>
-          </div>
-          <div class="mini-stat" id="statDirect" title="Напрямую">
-            <div class="mini-stat-label">Напрямую</div>
-            <div class="mini-stat-val" id="sessionDirect" style="color:var(--green,#34d399)">—</div>
-          </div>
-        </div>
-        <div class="traffic-meta">
-          <span id="trafficSince" class="traffic-since" title="Счётчик не обнуляется при перезапуске VPN, только вручную.">—</span>
-          <button class="btn-link" onclick="resetTraffic()" title="Обнулить счётчики «Через VPN» и «Напрямую»">Сбросить</button>
-        </div>
-      </div>
+    <div class="st-act">
+      <button id="powBtn" onclick="powClick()">…</button>
+      <button id="altBtn" onclick="stopVPN()" hidden>Отключить</button>
+    </div>
+  </header>
+  <main id="panel">
+    <nav class="tabs" aria-label="Разделы">
+      <button class="tab active" data-tab="servers" aria-current="page" onclick="showTab('servers')">Серверы</button>
+      <button class="tab" data-tab="routing" onclick="showTab('routing')">Правила</button>
+      <button class="tab" data-tab="devices" onclick="showTab('devices')">Устройства</button>
+      <button class="tab" data-tab="logs" onclick="showTab('logs')">Журнал</button>
+      <button class="tab" data-tab="settings" onclick="showTab('settings')">Настройки</button>
+    </nav>
 
       <!-- Servers -->
-      <div class="card servers-card">
-        <div class="card-head">
-          <div class="card-title">Серверы <button class="help-btn" id="autoHintBtn" aria-expanded="false" aria-controls="autoModeHint" aria-label="Как выбирается сервер" onclick="toggleAutoHint()">?</button></div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn" title="Насколько быстро отвечают серверы. Меньше — быстрее.">Проверить пинг</button>
-            <label class="toggle toggle-sm" title="Авто-режим: выбирает сервер с минимальным пингом (платные операторские пропускаются). Клик по серверу вручную выключает авто.">
-              <input type="checkbox" id="autoModeToggle" onchange="toggleAutoMode(this.checked)" aria-label="Авто-выбор лучшего сервера">
-              <span class="toggle-track"></span>
-              <span class="toggle-knob"></span>
-            </label>
-            <span style="font-size:13px;color:var(--text-muted)">Авто</span>
-          </div>
+      <div class="section active" id="sec-servers">
+        <div class="srv-tools">
+          <button class="btn-text" id="bestBtn" onclick="doAutoSelect()">Выбрать самый быстрый</button>
+          <button class="btn-text" onclick="doPing()" id="pingBtn">Замерить пинг</button>
         </div>
-        <p id="autoModeHint" class="card-desc" style="margin:0 0 6px 0;font-size:12px" hidden></p>
         <div id="serverList" class="server-list">
           <div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Загрузка…</div>
         </div>
-      </div>
 
-    </div>
-
-    <!-- Right column -->
-    <div>
-      <div class="tabs">
-        <button class="tab active" data-tab="routing" onclick="showTab('routing',this)">Маршрутизация</button>
-        <button class="tab" data-tab="devices" onclick="showTab('devices',this)">Устройства</button>
-        <button class="tab" data-tab="logs" onclick="showTab('logs',this)">Журнал</button>
-        <button class="tab" data-tab="diagnose" onclick="showTab('diagnose',this)">Диагностика</button>
-        <button class="tab" data-tab="settings" onclick="showTab('settings',this)">Настройки</button>
+        <div class="setting-row auto-row srv-auto">
+          <div class="setting-row-info">
+            <div class="setting-row-title">Подбирать сервер автоматически</div>
+            <div class="setting-row-desc" id="autoModeHint"></div>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="autoModeToggle" onchange="toggleAutoMode(this.checked)" aria-label="Подбирать сервер автоматически">
+            <span class="toggle-track"></span>
+            <span class="toggle-knob"></span>
+          </label>
+        </div>
+        <div class="srv-foot"><span id="trafficPhone"></span><span><span id="trafficSince">—</span> <button class="btn-text" onclick="resetTraffic()">Сбросить счётчики</button></span></div>
       </div>
 
       <!-- Routing -->
-      <div class="section active" id="sec-routing">
+      <div class="section" id="sec-routing">
         <div class="card">
           <div class="card-title">Как направлять трафик</div>
-          <p class="card-desc">Выберите что будет идти через VPN, а что напрямую</p>
           <div class="mode-switch">
             <div class="mode-option" id="mode-all" onclick="setMode('all_vpn')" tabindex="0" role="button" aria-label="Режим: всё через VPN кроме РФ">
               <h3>Всё через VPN</h3>
@@ -199,14 +148,13 @@
           </div>
         </div>
 
-        <div class="card card-accent card-accent-direct card-collapsible" id="directCard">
+        <div class="card card-collapsible" id="directCard">
           <!-- No inline onkeydown: the global role=button keydown handler already
                synthesizes a click — an inline handler made Enter/Space toggle twice
                (open+close in one keypress, card looked dead to keyboard users). -->
           <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="directCardBody">
             <div>
               <div class="card-title">Исключения — минуя VPN</div>
-              <p class="card-desc" style="margin:3px 0 0">Эти сайты откроются напрямую, без VPN</p>
             </div>
             <div class="stat-num" id="directCount" style="color:var(--green);font-size:13px">0</div>
           </div>
@@ -220,7 +168,7 @@
           </div>
         </div>
 
-        <div class="card card-accent card-accent-vpn card-collapsible" id="vpnCard">
+        <div class="card card-collapsible" id="vpnCard">
           <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="vpnCardBody">
             <div>
               <div class="card-title">Принудительно через VPN</div>
@@ -238,11 +186,10 @@
           </div>
         </div>
 
-        <div class="card card-accent card-accent-vpn card-collapsible" id="presetsCard">
+        <div class="card card-collapsible" id="presetsCard">
           <div class="card-head" onclick="toggleCollapsible('presetsCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="presetsCardBody">
             <div>
-              <div class="card-title">Сервисы</div>
-              <p class="card-desc" style="margin:3px 0 0">Включить — все домены сервиса пойдут через VPN</p>
+              <div class="card-title">Сервисы через VPN</div>
             </div>
             <div class="stat-num" id="presetsCount" style="color:var(--accent-text);font-size:13px">0</div>
           </div>
@@ -251,9 +198,8 @@
           </div>
         </div>
 
-        <div class="card card-accent card-accent-dns">
+        <div class="card">
           <div class="card-title">DNS защита</div>
-          <p class="card-desc">DNS-запросы защищены от подмены провайдером</p>
           <!-- Must match singbox.sh: VPN DNS is DoH 1.1.1.1, direct DNS is
                Yandex 77.88.8.8 (deliberately not Cloudflare — RU bank NS
                refuse foreign resolvers, see CLAUDE.md). -->
@@ -278,20 +224,6 @@
             <div class="dev-empty">Загрузка…</div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-title">Статистика трафика</div>
-          <div class="card-desc" style="margin-bottom:8px">С момента последнего перезапуска VPN</div>
-          <div class="stats">
-            <div class="stat" title="Трафик через VPN — сумма исходящего и входящего">
-              <div class="stat-label">Через VPN</div>
-              <div class="stat-num" id="trafficVpn" style="color:var(--accent-text)">—</div>
-            </div>
-            <div class="stat" title="Трафик напрямую (RU-сайты, кастомный список исключений)">
-              <div class="stat-label">Напрямую</div>
-              <div class="stat-num" id="trafficDirect" style="color:var(--green)">—</div>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- Logs -->
@@ -303,7 +235,6 @@
               <button class="log-live" id="liveBtn" onclick="toggleLive()" title="Обновление в реальном времени">Live</button>
             </div>
           </div>
-          <p class="card-desc">Куда идёт каждое соединение. Дубликаты сгруппированы по количеству.</p>
           <div class="log-filters">
             <button class="log-filter active" data-filter="conn" onclick="setLogFilter('conn',this)">Главное</button>
             <button class="log-filter" data-filter="vpn" onclick="setLogFilter('vpn',this)">VPN</button>
@@ -328,20 +259,6 @@
         </div>
       </div>
 
-      <!-- Diagnose -->
-      <div class="section" id="sec-diagnose">
-        <div class="card">
-          <div class="card-head">
-            <div class="card-title">Полная проверка</div>
-            <button class="btn btn-primary btn-sm" onclick="runHealthcheck()" id="hcBtn">Запустить</button>
-          </div>
-          <p class="card-desc">Процессы, сеть, VPN-туннель, доступность сайтов, утечка IP. Занимает несколько секунд.</p>
-          <div id="hcResults">
-            <div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center">Нажмите «Запустить» для проверки</div>
-          </div>
-        </div>
-      </div>
-
       <!-- Settings -->
       <div class="section" id="sec-settings">
         <h2 class="group-head">Подписки</h2>
@@ -350,7 +267,6 @@
             <div class="card-title">Провайдеры</div>
             <button class="btn btn-ghost btn-sm" id="updateBtn" onclick="doUpdate()">Обновить</button>
           </div>
-          <p class="card-desc">Можно добавить несколько провайдеров — серверы со всех включённых подписок объединяются в один список.</p>
           <div id="subList"></div>
           <details id="addSubBox" class="add-sub">
             <summary>Добавить подписку или сервер</summary>
@@ -456,6 +372,16 @@
           </div>
         </div>
         <h2 class="group-head">Система</h2>
+        <div class="card" id="diagCard">
+          <div class="card-head">
+            <div class="card-title">Полная проверка</div>
+            <button class="btn btn-primary btn-sm" onclick="runHealthcheck()" id="hcBtn">Запустить</button>
+          </div>
+          <p class="card-desc">Процессы, сеть, VPN-туннель, доступность сайтов, утечка IP. Занимает несколько секунд.</p>
+          <div id="hcResults">
+            <div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center">Нажмите «Запустить» для проверки</div>
+          </div>
+        </div>
         <div class="card">
           <div class="card-head">
             <div class="card-title">Обновление EclipVPN</div>
@@ -494,8 +420,6 @@
           </div>
         </div>
       </div>
-    </div>
-  </div>
 
   <footer class="footer">
     <div class="footer-left">
@@ -510,6 +434,7 @@
       <a href="https://github.com/1eningrad/flowvpn/issues/new" target="_blank" rel="noopener" class="footer-link">Сообщить об ошибке</a>
     </div>
   </footer>
+  </main>
 </div>
 
 <div class="onboard" id="onboardOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
@@ -553,27 +478,6 @@
     </div>
   </div>
 </div>
-
-<nav class="bottom-nav" id="bottomNav">
-  <button class="bn-item active" data-tab="home" aria-current="page" onclick="showTabMobile('home')">
-    <svg class="icon"><use href="#i-home"/></svg><span>Главная</span>
-  </button>
-  <button class="bn-item" data-tab="routing" onclick="showTabMobile('routing')">
-    <svg class="icon"><use href="#i-globe"/></svg><span>Маршрут</span>
-  </button>
-  <button class="bn-item" data-tab="devices" onclick="showTabMobile('devices')">
-    <svg class="icon"><use href="#i-phone"/></svg><span>Устройства</span>
-  </button>
-  <button class="bn-item" data-tab="logs" onclick="showTabMobile('logs')">
-    <svg class="icon"><use href="#i-search"/></svg><span>Журнал</span>
-  </button>
-  <button class="bn-item" data-tab="diagnose" onclick="showTabMobile('diagnose')">
-    <svg class="icon"><use href="#i-shield"/></svg><span>Проверка</span>
-  </button>
-  <button class="bn-item" data-tab="settings" onclick="showTabMobile('settings')">
-    <svg class="icon"><use href="#i-gear"/></svg><span>Настройки</span>
-  </button>
-</nav>
 
 <dialog class="dlg" id="dlg" aria-labelledby="dlgTitle">
   <form method="dialog" id="dlgForm">
