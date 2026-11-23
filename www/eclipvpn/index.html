@@ -278,10 +278,14 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 /* Layout */
 .grid{display:grid;grid-template-columns:360px minmax(0,1fr);gap:20px;align-items:start}
 @media(max-width:840px){
-  .grid{display:flex;flex-direction:column;gap:0}
-  .grid > :nth-child(2){order:1}
-  .grid > :nth-child(1){order:2}
-  .header{flex-wrap:wrap;gap:12px}
+  .grid{display:flex;flex-direction:column;align-items:stretch;gap:0}
+  /* Bottom-nav layout: «Главная» = hero + left column, every other tab = its
+     section only, with the compact header standing in for the hero. */
+  .grid > *{min-width:0}
+  body.m-home .grid > :not(.home-col){display:none}
+  body:not(.m-home) .home-col,body:not(.m-home) .hero{display:none}
+  .header{gap:12px}
+  .header-info{min-width:0;white-space:nowrap;overflow:hidden}
 }
 
 /* Cards */
@@ -1137,6 +1141,24 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .row-val{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:var(--text)}
 
 /* ==================== Mobile optimizations (at end to override desktop) ==================== */
+@media(max-width:840px){
+  /* Top tabs hidden, bottom nav shown */
+  .tabs,.footer{display:none}
+  .bottom-nav{display:flex}
+  .app{padding-bottom:calc(82px + env(safe-area-inset-bottom))}
+  .toasts{bottom:calc(82px + env(safe-area-inset-bottom))}
+  /* Touch targets. Toggles keep their size; ::after widens the hit area. */
+  .btn{min-height:44px}
+  .btn-icon,.header .btn-icon{min-width:44px}
+  .btn-link{min-height:44px}
+  .log-filter,.log-live{min-height:44px}
+  .toggle::after,.header-mini-toggle::after{content:'';position:absolute;inset:-10px -4px}
+  .server{min-height:48px}
+  .server-mute{opacity:.6;min-width:44px;min-height:44px;margin:-8px -6px;justify-content:center}
+  .tag-remove{width:30px;height:30px;margin:-8px -9px -8px -4px}
+  .sub-card{flex-wrap:wrap;justify-content:flex-end}
+  .sub-card > :first-child{flex-basis:100%!important}
+}
 @media(max-width:640px){
   .app{padding:0 14px calc(82px + env(safe-area-inset-bottom))}
   .header{margin:0 -14px 14px;padding:12px 14px;gap:6px}
@@ -1144,6 +1166,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   .header-info b{font-size:11px}
   .logo{font-size:22px}
   .version{display:none}
+  /* One-line compact header: the IP stays in the hero on «Главная» */
+  .header-info b,.header-info .hi-sep{display:none}
   .header-actions{gap:6px}
   .header .btn-icon{width:32px;height:32px;padding:6px}
 
@@ -1155,9 +1179,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   .status-text h1{font-size:20px;margin-bottom:6px}
 
   /* Touch targets — Apple HIG ≥44pt; desktop's 6×12 is too tight for fingers */
-  .btn{padding:9px 14px;min-height:38px}
-  .btn-icon{min-width:38px}
-  .btn-link{padding:8px 12px;min-height:36px;display:inline-flex;align-items:center}
+  .btn{padding:9px 14px}
+  .btn-link{padding:8px 12px;display:inline-flex;align-items:center}
   .traffic-meta{padding:4px 2px;min-height:36px}
   .status-text .meta{font-size:11.5px;gap:6px 12px}
   .status-text .meta span+span{padding-left:14px}
@@ -1167,10 +1190,6 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   .card-accent{padding-left:18px}
   .card-accent::before{top:10px;bottom:10px}
 
-  /* Top tabs hidden, bottom nav shown */
-  .tabs{display:none}
-  .bottom-nav{display:flex}
-  .footer{display:none}
 
   .mode-switch{flex-direction:column;gap:8px}
   .mode-option{padding:14px 14px}
@@ -1216,9 +1235,10 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 }
 </style>
 </head>
-<body>
+<body class="m-home">
 <svg style="display:none">
   <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="11" rx="2.5"/><path d="M7.5 11V7a4.5 4.5 0 019 0v4"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 014 9 13 13 0 01-4 9 13 13 0 01-4-9 13 13 0 014-9z"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6l-12 12"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7.5"/><path d="M21 21l-5.5-5.5"/></symbol>
@@ -1301,8 +1321,8 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   </div>
 
   <div class="grid">
-    <!-- Left column -->
-    <div>
+    <!-- Left column (phone: the «Главная» tab) -->
+    <div class="home-col">
       <!-- Now panel -->
       <div class="card">
         <div class="card-head">
@@ -1701,7 +1721,10 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 </div>
 
 <nav class="bottom-nav" id="bottomNav">
-  <button class="bn-item active" data-tab="routing" onclick="showTabMobile('routing')">
+  <button class="bn-item active" data-tab="home" aria-current="page" onclick="showTabMobile('home')">
+    <svg class="icon"><use href="#i-home"/></svg><span>Главная</span>
+  </button>
+  <button class="bn-item" data-tab="routing" onclick="showTabMobile('routing')">
     <svg class="icon"><use href="#i-globe"/></svg><span>Маршрут</span>
   </button>
   <button class="bn-item" data-tab="devices" onclick="showTabMobile('devices')">
@@ -1711,7 +1734,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
     <svg class="icon"><use href="#i-search"/></svg><span>Журнал</span>
   </button>
   <button class="bn-item" data-tab="diagnose" onclick="showTabMobile('diagnose')">
-    <svg class="icon"><use href="#i-shield"/></svg><span>Диагностика</span>
+    <svg class="icon"><use href="#i-shield"/></svg><span>Проверка</span>
   </button>
   <button class="bn-item" data-tab="settings" onclick="showTabMobile('settings')">
     <svg class="icon"><use href="#i-gear"/></svg><span>Настройки</span>
@@ -1746,7 +1769,8 @@ function toast(msg,opts){
   el.id=id;
   const iconCls='toast-icon'+(type==='loading'?' spin':'');
   const titleEsc=esc(typeof msg==='string'?msg:(msg.title||''));
-  const descEsc=msg&&msg.desc?esc(msg.desc):'';
+  // desc comes either as toast({title,desc}) or as updateToast(id,msg,{desc}).
+  const descEsc=esc((msg&&msg.desc)||(opts&&opts.desc)||'');
   el.innerHTML=
     '<div class="'+iconCls+'">'+TOAST_ICONS[type]+'</div>'+
     '<div class="toast-body"><div class="toast-title">'+titleEsc+'</div>'+
@@ -1858,7 +1882,7 @@ function renderSubscriptions(){
     // Only the hex id goes into the inline handlers — the (free-text) name is
     // looked up from state in subRename/subRemove, sidestepping nested-quote
     // escaping in the onclick="…('…')" attribute.
-    return '<div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--card-border,rgba(255,255,255,.07));border-radius:10px;margin-bottom:8px;'+(en?'':'opacity:.5;')+'">'
+    return '<div class="sub-card" style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--card-border,rgba(255,255,255,.07));border-radius:10px;margin-bottom:8px;'+(en?'':'opacity:.5;')+'">'
       +'<div style="flex:1;min-width:0">'
         +'<div style="font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:8px">'+esc(sub.name||'Подписка')
           +'<span style="font-size:11px;font-weight:500;color:var(--text-dim);background:var(--card-hover);padding:1px 7px;border-radius:10px;flex-shrink:0">'+cnt+' серв.</span></div>'
@@ -1879,6 +1903,20 @@ function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/<
 function pingClass(ms){return ms<0?'ping-none':ms<150?'ping-good':ms<400?'ping-mid':'ping-bad'}
 
 function showTab(name,el){
+  // «Главная» exists only in the bottom nav. It has no .section: the desktop
+  // section stays selected underneath, so widening the window still shows it.
+  document.body.classList.toggle('m-home',name==='home');
+  if(name==='home'){
+    document.querySelectorAll('.bn-item').forEach(t=>{
+      const on=t.dataset.tab==='home';
+      t.classList.toggle('active',on);
+      if(on)t.setAttribute('aria-current','page');else t.removeAttribute('aria-current');
+    });
+    stopLive();
+    window.scrollTo(0,0);
+    if(window._setCompact)window._setCompact();
+    return;
+  }
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab,.bn-item').forEach(t=>{t.classList.remove('active');t.removeAttribute('aria-current')});
   document.getElementById('sec-'+name).classList.add('active');
@@ -1892,15 +1930,9 @@ function showTab(name,el){
   if(name==='routing'){loadDomains();loadPresets();}
   if(name==='diagnose')loadQuickDiag();
   if(name==='settings'){loadSchedule();loadAutoUpdate();loadSystemInfo();resumeUpdate()}
-  // On mobile, scroll to the section (since left column is above it); on desktop stay in place
-  if(window.matchMedia('(max-width:840px)').matches){
-    const sec=document.getElementById('sec-'+name);
-    if(sec){
-      const headerH=document.getElementById('appHeader').offsetHeight||0;
-      const y=sec.getBoundingClientRect().top+window.pageYOffset-headerH-8;
-      window.scrollTo({top:Math.max(0,y),behavior:'smooth'});
-    }
-  }
+  // Phone: each tab is its own screen — start at its top. Desktop stays in place.
+  if(window.matchMedia('(max-width:840px)').matches)window.scrollTo(0,0);
+  if(window._setCompact)window._setCompact();
 }
 function showTabMobile(name){
   const desktopTab=document.querySelector('.tabs .tab[data-tab="'+name+'"]');
@@ -2204,7 +2236,7 @@ async function fetchStatus(){
     // auto_failover badge. Default TRUE, so only an explicit false lights it —
     // an older backend that doesn't send the field must not show the warning.
     const fb=document.getElementById('failoverBadge');
-    if(fb) fb.style.display = (state.auto_failover === false) ? '' : 'none';
+    if(fb) fb.style.display = (state.auto_failover === false) ? 'inline-flex' : 'none';
     const hint=document.getElementById('autoModeHint');
     if(hint){
       if(state.auto_mode){
@@ -2220,7 +2252,7 @@ async function fetchStatus(){
 
     if(on){
       document.getElementById('statusTitle').textContent='Подключено';
-      const modeText=state.mode==='all_vpn'?'Весь трафик кроме РФ':'Только по списку';
+      const modeText=state.mode!=='all_vpn'?'Только по списку':(state.full_tunnel?'Весь трафик, включая РФ':'Весь трафик кроме РФ');
       document.getElementById('statusMeta').innerHTML=
         `<span><b>${serverNameDisplay(state.server||'—')}</b></span>`+
         `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
@@ -2229,7 +2261,7 @@ async function fetchStatus(){
       const hi=document.getElementById('headerInfo');
       hi.className='header-info on';
       hi.innerHTML='<span style="width:6px;height:6px;border-radius:50%;background:var(--green)"></span> '
-        +serverNameDisplay(state.server||'')+'<span style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
+        +serverNameDisplay(state.server||'')+'<span class="hi-sep" style="color:var(--text-dim);margin:0 2px">·</span><b>'+esc(state.vpn_ip||'—')+'</b>';
       if(!_vpnPending)document.getElementById('vpnMiniToggle').checked=true;
     }else{
       document.getElementById('statusTitle').textContent='Отключено';
@@ -2290,6 +2322,19 @@ async function apiFetch(url,opts){
   }
 }
 
+// Backend errors are English; translate the lifecycle ones, pass the rest through.
+const ERR_RU={
+  'already running':'VPN уже запущен',
+  'another lifecycle op in progress':'Уже выполняется другая операция — подождите немного',
+  'no subscription configured — add one in Settings':'Нет подписки — добавьте её в Настройках',
+  'subscription failed':'Не удалось загрузить подписку',
+  'proxy engine failed to start':'Не запустился прокси-движок',
+  'VPN connection failed':'Сервер не отвечает — попробуйте другой',
+  'sing-box failed':'Не запустился sing-box',
+  'VPN start failed':'Не удалось запустить VPN'
+};
+function ruErr(e){return ERR_RU[e]||String(e||'')}
+
 let _vpnPending=false;
 async function toggleVPN(){
   const cb=document.getElementById('vpnToggle');
@@ -2299,7 +2344,7 @@ async function toggleVPN(){
   const tid=toast.loading(on?'Подключаемся…':'Отключаем…');
   try{
     const r=await apiFetch(API+'?action='+(on?'start':'stop'),{timeoutMs:65000});const d=await r.json();
-    if(d.error)updateToast(tid,'Ошибка',{type:'error',duration:4500});
+    if(d.error)updateToast(tid,on?'Не удалось подключиться':'Не удалось отключить',{type:'error',desc:ruErr(d.error),duration:8000});
     else updateToast(tid,on?'VPN подключён':'VPN отключён',{type:'success'});
   }catch(e){updateToast(tid,'Ошибка связи',{type:'error'})}
   finally{_vpnPending=false;cb.disabled=false}
@@ -2672,7 +2717,11 @@ async function doRestart(){
 async function doStop(){
   if(!confirm('Остановить VPN?\n\nВесь трафик пойдёт напрямую (включая заблокированные сайты). Заново включить можно тем же переключателем.'))return;
   const tid=toast.loading('Останавливаем…');
-  try{await apiFetch(API+'?action=stop',{timeoutMs:65000});updateToast(tid,'VPN остановлен',{type:'success'})}
+  try{
+    const d=await(await apiFetch(API+'?action=stop',{timeoutMs:65000})).json();
+    if(d.error)updateToast(tid,'Не удалось остановить',{type:'error',desc:ruErr(d.error),duration:8000});
+    else updateToast(tid,'VPN остановлен',{type:'success'});
+  }
   catch(e){updateToast(tid,'Ошибка',{type:'error'})}
   scheduleStatus(2000);
 }
@@ -2980,10 +3029,12 @@ function renderDevices(){
 let _devReloadTimer=null;
 async function toggleDeviceRoute(ip,route){
   try{
-    if(route==='vpn')await apiFetch(API+'?action=remove-device-route&ip='+ip);
-    else await apiFetch(API+'?action=set-device&ip='+ip+'&route='+route);
-    toast.success('Маршрут изменён',ip+' → '+(route==='direct'?'напрямую':'через VPN'));
-  }catch(e){toast.error('Ошибка')}
+    // The backend soft-restarts the tunnel to apply the rule, hence the long timeout.
+    const r=await apiFetch(API+(route==='vpn'?'?action=remove-device-route&ip='+ip:'?action=set-device&ip='+ip+'&route='+route),{timeoutMs:65000});
+    const d=await r.json();
+    if(d.error)toast.error('Маршрут не изменён',ruErr(d.error));
+    else toast.success('Маршрут изменён',ip+' → '+(route==='direct'?'напрямую':'через VPN'));
+  }catch(e){toast.error('Ошибка связи')}
   // Coalesce rapid toggles into a single reload — was firing N times for
   // N quick clicks on different devices.
   if(_devReloadTimer)clearTimeout(_devReloadTimer);
@@ -3678,8 +3729,12 @@ function syncMiniToggle(el){
       const r=mainToggle.getBoundingClientRect();
       // Both checks needed: rect of zeros (pre-layout) shouldn't trigger
       // compact, only an actual top-out (bottom strictly less than 0).
-      header.classList.toggle('compact',r.height>0&&r.bottom<0);
+      // The hero is deliberately hidden on non-home phone tabs: compact too.
+      const heroHidden=!document.body.classList.contains('m-home')&&window.matchMedia('(max-width:840px)').matches;
+      header.classList.toggle('compact',heroHidden||(r.height>0&&r.bottom<0));
     };
+    window._setCompact=setCompact;
+    window.addEventListener('resize',setCompact);
     setCompact();
     // Use a scroll-driven check instead of IntersectionObserver: IO's first
     // async callback can fire with isIntersecting=false on iOS Safari when
