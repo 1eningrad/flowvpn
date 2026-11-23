@@ -102,6 +102,21 @@ assert_json "uc-bad-phase"  "$(cmd_update_status)" '.phase' failed
 assert_eq   "uc-bad-untouched" "$(cat "$ECLIPVPN_ROOT/usr/bin/eclipvpn")" "OLD usr/bin/eclipvpn"
 assert_eq   "uc-bad-calls"  "$(cat "$UPD_CALLS")" ""
 
+# --- the journal entry survives a held op.in_progress ---
+_t update_journal
+: > "$UPD_CALLS"
+# Marker owned by a dead pid ⇒ logged at once (no 30s wait).
+echo 999999 > "$ECLIPVPN_TMP/op.in_progress"
+_update_journal update_rollback "x"
+assert_eq "uj-stale-marker" "$(cat "$UPD_CALLS")" "inc:update_rollback"
+# Marker owned by a live process that exits ⇒ waits, then logs.
+: > "$UPD_CALLS"
+( exec sleep 2 ) & _hold=$!
+echo "$_hold" > "$ECLIPVPN_TMP/op.in_progress"
+_update_journal update "y"
+assert_eq "uj-waited" "$(cat "$UPD_CALLS")" "inc:update"
+rm -f "$ECLIPVPN_TMP/op.in_progress"
+
 # --- update-check / self-update entry points (GitHub stubbed) ---
 _t update_check
 _router_fetch() { printf '%s' '{"tag_name":"v9999.2","published_at":"2026-12-01T00:00:00Z","body":"notes","html_url":"https://x"}' > "$2"; }

@@ -258,6 +258,21 @@ cmd_self_update() {
     jq -n -c --arg t "$tag" '{status:"started", target:$t}'
 }
 
+# Journal an update outcome. _log_incident deliberately drops entries while
+# ANOTHER process holds op.in_progress — and right after our restart the
+# service's own start still holds it, so the entry was silently lost (seen
+# live 2026-11-23). An update_rollback must never vanish: wait for the marker
+# to clear (≤30s), then log.
+_update_journal() {
+    local i=0 m="$ECLIPVPN_TMP/op.in_progress" pid
+    while [ "$i" -lt 30 ] && [ -f "$m" ]; do
+        pid=$(cat "$m" 2>/dev/null)
+        { [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; } && break
+        sleep 1; i=$((i + 1))
+    done
+    _log_incident "$1" "" "" "$2"
+}
+
 # The detached worker. $1 tag, $2 optional local tarball.
 _self_update_run() {
     local tag="${1:-}" file="${2:-}" work tgz dir err intent ver
@@ -321,7 +336,7 @@ _self_update_run() {
             _update_rollback
             _update_restart
             _update_state rolled_back "$tag" "VPN не поднялся на $tag — возвращена прежняя версия"
-            _log_incident "update_rollback" "" "" "обновление до $tag откатено: VPN не поднялся"
+            _update_journal "update_rollback" "обновление до $tag откатено: VPN не поднялся"
             rm -rf "$work" "$lock"; return 1
         fi
     else
@@ -330,7 +345,7 @@ _self_update_run() {
         _update_drop_old
     fi
     _update_state done "$tag" "обновлено до $tag"
-    _log_incident "update" "" "" "обновлено до $tag"
+    _update_journal "update" "обновлено до $tag"
     flog "Self-update: done — now on $tag"
     rm -rf "$work" "$lock"
     return 0
