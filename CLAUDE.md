@@ -68,7 +68,7 @@ set-config KEY VALUE                     write a whitelisted config.json key
 set-wifi SSID PASSWORD                   change router Wi-Fi via uci
 schedule set ON OFF | disable | get      timed auto on/off window
 auto-update enable|disable|status        nightly subscription/rules refresh
-get-log N FILTER | clear-log             tail logs (filter: all|vpn|direct|error|dns|flow) / reset tail
+get-log N FILTER | clear-log             tail logs (filter: all|conn|vpn|direct|error|dns|flow) / reset tail
 get-traffic | traffic-poll               per-outbound byte accounting / live up-down sample (Clash API)
 get-incidents | clear-incidents          failover history
 reset-traffic                            zero per-chain byte counters

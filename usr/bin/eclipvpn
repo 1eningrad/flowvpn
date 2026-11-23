@@ -892,7 +892,7 @@ Routing:
   get-devices | set-device ID vpn|direct | remove-device ID
 Diagnostics:
   diagnose | healthcheck | net-check | system-info | get-dns
-  get-log [N] [all|vpn|direct|error|dns|flow] | clear-log
+  get-log [N] [all|conn|vpn|direct|error|dns|flow] | clear-log
   get-traffic | traffic-poll | reset-traffic
   get-incidents | clear-incidents
 Settings:

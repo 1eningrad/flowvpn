@@ -255,6 +255,10 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   font-size:12.5px;color:var(--text-muted);
   line-height:1.5;margin-top:4px
 }
+.auto-row{padding:12px 0;border-top:1px solid var(--border)}
+.card-desc + .auto-row{border-top:none}
+.mode-switch + .auto-row{margin-top:14px;padding-bottom:0}
+.auto-row.off{opacity:.5}
 .toggle-sm{width:42px;height:24px;flex-shrink:0}
 .toggle-sm .toggle-track{border-radius:12px}
 .toggle-sm .toggle-knob{width:18px;height:18px;top:3px;left:3px}
@@ -652,6 +656,10 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .domains.scrollable{max-height:280px;overflow-y:auto;padding:4px 6px 4px 0;
   border-top:1px solid var(--border);margin-top:8px;align-content:flex-start;
   -webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.dom-search{margin-top:10px}
+.dom-builtin{flex-basis:100%;margin-top:6px}
+.dom-builtin summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--text-muted);padding:8px 0}
+.dom-tags{display:flex;flex-wrap:wrap;gap:6px}
 .domains-note{color:var(--text-dim);font-size:11px;margin:4px 0 6px;line-height:1.45}
 .tag{
   display:inline-flex;align-items:center;gap:5px;
@@ -683,7 +691,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 /* Devices */
 .device{
   display:flex;align-items:center;gap:12px;
-  padding:11px 14px;cursor:pointer;border-radius:6px;
+  padding:11px 14px;border-radius:6px;
   border:1px solid transparent;transition:all .15s ease;
   margin-bottom:3px
 }
@@ -697,6 +705,18 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 .device-info{flex:1;min-width:0}
 .device-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
 .device-meta{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:var(--text-dim);line-height:1.4}
+.seg{display:flex;flex-shrink:0;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.seg-btn{
+  padding:6px 10px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;
+  background:transparent;color:var(--text-muted);border:none;border-left:1px solid var(--border)
+}
+.seg-btn:first-child{border-left:none}
+.seg-btn:hover{background:var(--card-hover)}
+.seg-btn:disabled{opacity:.5;cursor:wait}
+.seg-btn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.seg-btn.on{background:var(--accent);color:#fff;cursor:default}
+.seg-btn.on[data-dev-route="direct"]{background:#047857}
+.seg-btn.on[data-dev-route="auto"]{background:var(--border-strong);color:var(--text)}
 .badge{
   padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;
   text-transform:uppercase;letter-spacing:0.04em
@@ -1155,6 +1175,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   .toggle::after,.header-mini-toggle::after{content:'';position:absolute;inset:-10px -4px}
   .server{min-height:48px}
   .server-mute{opacity:.6;min-width:44px;min-height:44px;margin:-8px -6px;justify-content:center}
+  .seg-btn{min-height:44px}
   .tag-remove{width:30px;height:30px;margin:-8px -9px -8px -4px}
   .sub-card{flex-wrap:wrap;justify-content:flex-end}
   .sub-card > :first-child{flex-basis:100%!important}
@@ -1210,6 +1231,9 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 
   .device{padding:10px 12px;gap:10px}
   .device-avatar{width:30px;height:30px;border-radius:8px}
+  .device{flex-wrap:wrap}
+  .device .seg{flex-basis:100%}
+  .device .seg-btn{flex:1}
   .device-name{font-size:12.5px}
   .device-meta{font-size:10.5px}
 
@@ -1309,7 +1333,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           <!-- auto_failover=false makes the tunnel stop self-healing: a dead server
                stays selected until the user switches by hand. That is a deliberate
                choice, but an invisible one until this badge existed. -->
-          <div class="net-badge whitelist" id="failoverBadge" style="display:none" title="Watchdog не будет автоматически менять сервер при обрыве — переключитесь вручную. Включается в CLI: eclipvpn set-config auto_failover true"><span class="nb-dot"></span><span>Автопереключение выключено</span></div>
+          <div class="net-badge whitelist" id="failoverBadge" style="display:none" title="Watchdog не будет автоматически менять сервер при обрыве — переключитесь вручную. Включается в «Настройки» → «Автоматика»"><span class="nb-dot"></span><span>Автопереключение выключено</span></div>
         </div>
       </div>
       <label class="toggle" title="Вкл/Выкл VPN">
@@ -1403,6 +1427,17 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
               <p>Только заблокированные в РФ сайты пойдут через VPN</p>
             </div>
           </div>
+          <div class="setting-row auto-row" id="ftToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Российские сайты тоже через VPN</div>
+              <div class="setting-row-desc">Нужно, если провайдер не открывает банки и госсайты напрямую. Свои исключения «минуя VPN» продолжат работать.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="ftToggle" aria-label="Российские сайты тоже через VPN" onchange="setFullTunnel(this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
         </div>
 
         <div class="card card-accent card-accent-direct card-collapsible" id="directCard">
@@ -1417,6 +1452,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <div class="stat-num" id="directCount" style="color:var(--green);font-size:13px">0</div>
           </div>
           <div class="card-collapsible-body" id="directCardBody">
+            <input class="input dom-search" id="directSearch" type="search" placeholder="Поиск по списку…" aria-label="Поиск по списку доменов" oninput="renderDomainList('direct')">
             <div class="domains" id="directDomains"></div>
             <div class="flex mt">
               <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru или 194.221.61.0/24" onkeydown="if(event.key==='Enter')addDomain('direct')">
@@ -1434,6 +1470,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <div class="stat-num" id="vpnCount" style="color:var(--accent);font-size:13px">0</div>
           </div>
           <div class="card-collapsible-body" id="vpnCardBody">
+            <input class="input dom-search" id="vpnSearch" type="search" placeholder="Поиск по списку…" aria-label="Поиск по списку доменов" oninput="renderDomainList('vpn')">
             <div class="domains" id="vpnDomains"></div>
             <div class="flex mt">
               <input class="input flex-1" id="addVpnInput" placeholder="например: sberbank.ru или chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
@@ -1474,7 +1511,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <div class="card-title">Подключённые устройства<span class="log-count-badge" id="devCount">0</span></div>
             <button class="btn btn-ghost btn-sm" onclick="loadDevices()">Обновить</button>
           </div>
-          <p class="card-desc">Клик по устройству переключает режим: через VPN или напрямую</p>
+          <p class="card-desc">«Как все» — по общим правилам. «VPN» — всегда через VPN, даже российские сайты. «Напрямую» — всегда мимо VPN.</p>
           <div class="dev-search">
             <input id="devSearch" placeholder="Поиск по имени, IP или MAC…" oninput="filterDevices()">
           </div>
@@ -1509,15 +1546,16 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
           </div>
           <p class="card-desc">Куда идёт каждое соединение. Дубликаты сгруппированы по количеству.</p>
           <div class="log-filters">
-            <button class="log-filter active" data-filter="all" onclick="setLogFilter('all',this)">Все</button>
+            <button class="log-filter active" data-filter="conn" onclick="setLogFilter('conn',this)">Главное</button>
             <button class="log-filter" data-filter="vpn" onclick="setLogFilter('vpn',this)">VPN</button>
-            <button class="log-filter" data-filter="direct" onclick="setLogFilter('direct',this)">Direct</button>
+            <button class="log-filter" data-filter="direct" onclick="setLogFilter('direct',this)">Напрямую</button>
             <button class="log-filter" data-filter="error" onclick="setLogFilter('error',this)">Ошибки</button>
             <button class="log-filter" data-filter="incidents" onclick="setLogFilter('incidents',this)">Сбои <span class="log-filter-badge" id="incidentsBadge" style="display:none">0</span></button>
             <button class="log-filter" data-filter="dns" onclick="setLogFilter('dns',this)">DNS</button>
             <button class="log-filter" data-filter="flow" onclick="setLogFilter('flow',this)">EclipVPN</button>
+            <button class="log-filter" data-filter="all" onclick="setLogFilter('all',this)">Всё</button>
           </div>
-          <div class="log-filter-hint" id="logFilterHint">Все события: соединения через VPN, напрямую, DNS-запросы и системные сообщения роутера.</div>
+          <div class="log-filter-hint" id="logFilterHint">Соединения через VPN и напрямую, ошибки и события EclipVPN — без потока DNS-запросов.</div>
           <div class="log-entries" id="logList">
             <div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Загрузка журнала…</div>
           </div>
@@ -1572,6 +1610,55 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
             <button class="btn btn-primary btn-sm" onclick="addSubscription()">Добавить</button>
           </div>
           <input class="input" id="subName" type="text" maxlength="40" placeholder="Название (пусто — возьмём из подписки)" aria-label="Название подписки" style="margin-top:8px" onkeydown="if(event.key==='Enter')addSubscription()">
+        </div>
+        <div class="card" id="automationCard">
+          <div class="card-title">Автоматика</div>
+          <p class="card-desc">Что VPN может делать сам. Ваш ручной выбор сервера работает всегда.</p>
+          <div class="setting-row auto-row" id="afToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Менять сервер автоматически</div>
+              <div class="setting-row-desc">При обрыве VPN сам перейдёт на рабочий сервер. Если выключено — сервер меняете только вы.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="afToggle" aria-label="Менять сервер автоматически" onchange="setBehaviour('auto_failover',this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-row auto-row" id="tgToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Следить за скоростью</div>
+              <div class="setting-row-desc">Если сервер сильно замедлился — переподключиться к нему, а если не помогло — перейти на более быстрый.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="tgToggle" aria-label="Следить за скоростью" onchange="setBehaviour('tput_guard',this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-row auto-row" id="ncToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Белые списки провайдера</div>
+              <div class="setting-row-desc">Если провайдер пропускает только «белые» сайты — временно перейти на сервер с пометкой WL, затем вернуться.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="ncToggle" aria-label="Белые списки провайдера" onchange="setBehaviour('net_check_switch',this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-row auto-row" id="ruExitToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Не выбирать выход в России</div>
+              <div class="setting-row-desc">Автоматика пропускает серверы, чей реальный IP российский. На ручной выбор не влияет.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="ruExitToggle" aria-label="Не выбирать выход в России" onchange="setRuExitBlock(this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-status" id="automationNote" style="margin-top:14px"></div>
         </div>
         <div class="card">
           <div class="setting-row">
@@ -1745,7 +1832,7 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
 
 <script>
 const API='/cgi-bin/eclipvpn';
-let state={},pings={},currentLogFilter='all',incidentStats={};
+let state={},pings={},currentLogFilter='conn',incidentStats={};
 
 const TOAST_ICONS={
   success:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
@@ -2237,6 +2324,7 @@ async function fetchStatus(){
     // an older backend that doesn't send the field must not show the warning.
     const fb=document.getElementById('failoverBadge');
     if(fb) fb.style.display = (state.auto_failover === false) ? 'inline-flex' : 'none';
+    renderAutomation();
     const hint=document.getElementById('autoModeHint');
     if(hint){
       if(state.auto_mode){
@@ -2252,7 +2340,7 @@ async function fetchStatus(){
 
     if(on){
       document.getElementById('statusTitle').textContent='Подключено';
-      const modeText=state.mode!=='all_vpn'?'Только по списку':(state.full_tunnel?'Весь трафик, включая РФ':'Весь трафик кроме РФ');
+      const modeText=modeLabel();
       document.getElementById('statusMeta').innerHTML=
         `<span><b>${serverNameDisplay(state.server||'—')}</b></span>`+
         `<span>IP <b>${esc(state.vpn_ip||'—')}</b></span>`+
@@ -2540,6 +2628,79 @@ async function toggleAutoStart(enabled){
   }
 }
 
+function modeLabel(){
+  return state.mode!=='all_vpn'?'Только по списку':(state.full_tunnel?'Весь трафик, включая РФ':'Весь трафик кроме РФ');
+}
+// --- Settings ▸ Автоматика -------------------------------------------------
+// _behaviourPending keeps the 5s status poll from flipping a toggle back while
+// its save is still in flight.
+let _behaviourPending=false;
+function _ruExitBlocked(){return String(state.blocked_exit_countries||'').split(',').includes('RU')}
+function renderAutomation(){
+  if(_behaviourPending)return;
+  const set=(id,v)=>{const e=document.getElementById(id);if(e)e.checked=v};
+  const af=state.auto_failover!==false;
+  set('afToggle',af);
+  set('tgToggle',state.tput_guard!==false);
+  set('ncToggle',state.net_check_switch!==false);
+  set('ruExitToggle',_ruExitBlocked());
+  set('ftToggle',!!state.full_tunnel);
+  // auto_failover gates every automatic switch, so these two have no effect
+  // without it (the RU filter still applies to a manual auto-select).
+  document.getElementById('ncToggleRow').classList.toggle('off',!af);
+  document.getElementById('ftToggleRow').style.display=state.mode==='all_vpn'?'':'none';
+  document.getElementById('automationNote').textContent=af
+    ?'«Авто» у списка серверов — отдельная функция: периодически ищет самый быстрый сервер, даже если обрыва не было.'
+    :'Смена сервера выключена: «Белые списки» и периодический подбор «Авто» не действуют, контроль скорости только переподключает.';
+}
+async function _saveBehaviour(key,value){
+  const r=await apiFetch(API+'?action=set-config&key='+key+'&value='+encodeURIComponent(value));
+  const d=await r.json();
+  if(d.error)throw new Error(d.error);
+}
+async function _behaviour(cb,fn){
+  if(_behaviourPending){cb.checked=!cb.checked;return}
+  _behaviourPending=true;cb.disabled=true;
+  try{await fn()}
+  catch(e){toast.error('Не удалось сохранить',ruErr(e.message))}
+  finally{_behaviourPending=false;cb.disabled=false;renderAutomation()}
+}
+function setBehaviour(key,cb){
+  const on=cb.checked;
+  return _behaviour(cb,async()=>{
+    await _saveBehaviour(key,on?'true':'false');
+    state[key]=on;
+    document.getElementById('failoverBadge').style.display=state.auto_failover===false?'inline-flex':'none';
+    toast.success(on?'Включено':'Выключено',document.querySelector('#'+cb.id+'Row .setting-row-title').textContent);
+  });
+}
+function setRuExitBlock(cb){
+  const on=cb.checked;
+  return _behaviour(cb,async()=>{
+    // Other countries set via CLI stay; "off" is the backend's spelling of empty.
+    const list=String(state.blocked_exit_countries||'').split(',').filter(c=>c&&c!=='RU');
+    if(on)list.unshift('RU');
+    await _saveBehaviour('blocked_exit_countries',list.join(',')||'off');
+    state.blocked_exit_countries=list.join(',');
+    toast.success(on?'Включено':'Выключено','Не выбирать выход в России');
+  });
+}
+function setFullTunnel(cb){
+  const on=cb.checked;
+  if(!confirm((on?'Пустить российские сайты через VPN?':'Вернуть российские сайты напрямую?')+(state.running?'\n\nVPN перезапустится — связь ненадолго прервётся.':''))){cb.checked=!on;return}
+  return _behaviour(cb,async()=>{
+    await _saveBehaviour('full_tunnel',on?'true':'false');
+    state.full_tunnel=on;
+    if(!state.running){toast.info('Сохранено','Применится при включении VPN');return}
+    const tid=toast.loading('Применяем…');
+    let err='';
+    try{const d=await(await apiFetch(API+'?action=restart',{timeoutMs:65000})).json();err=d.error||''}
+    catch(e){err='нет ответа роутера'}
+    if(err)updateToast(tid,'Сохранено, но не применено',{type:'warning',desc:ruErr(err)+'. Нажмите «Перезапустить» в Настройках.',duration:9000});
+    else updateToast(tid,modeLabel(),{type:'success'});
+    scheduleStatus(2000);
+  });
+}
 async function toggleAutoMode(enabled){
   _autoModePending=true;
   const t=document.getElementById('autoModeToggle');
@@ -2552,7 +2713,7 @@ async function toggleAutoMode(enabled){
       // toggle, so a quick second flick doesn't fire a parallel run.
       await doAutoSelect();
     }else{
-      toast.info('Ручной режим','Сервер сменится только при сбое (watchdog)');
+      toast.info('Ручной режим',state.auto_failover===false?'Сервер меняете только вы':'Сервер сменится только при сбое');
     }
   }catch(e){
     if(t)t.checked=!enabled;
@@ -2748,6 +2909,29 @@ function restoreCollapsibles(){
   });
 }
 
+const _domData={direct:{custom:[],builtin:[]},vpn:{custom:[],builtin:[]}};
+const DOM_NOTE={
+  direct:'Кроме этого списка напрямую идут ещё ~5000 российских доменов (geosite-ru).',
+  vpn:'Встроенный список: нейросети, YouTube и другие недоступные из РФ сервисы.'
+};
+function renderDomainList(list){
+  const el=document.getElementById(list+'Domains');
+  const {custom,builtin}=_domData[list];
+  const raw=document.getElementById(list+'Search').value.trim().toLowerCase();
+  const q=toPunycode(raw);
+  const hit=d=>!raw||d.toLowerCase().includes(raw)||(q&&d.toLowerCase().includes(q));
+  const mine=custom.filter(hit),base=builtin.filter(hit);
+  const wasOpen=!!el.querySelector('details[open]');
+  // data-* attributes + the delegated click: a domain never crosses an
+  // HTML-attribute → JS-string boundary.
+  const customTag=d=>{const e=esc(d);return `<span class="tag">${e}<span class="tag-remove" role="button" tabindex="0" aria-label="Удалить ${e}" data-domain="${e}" data-list="${list}">×</span></span>`};
+  el.classList.add('scrollable');
+  el.innerHTML=(raw&&!mine.length&&!base.length)
+    ?`<div class="domains-note" style="flex-basis:100%">В списке нет «${esc(raw)}»</div>`
+    :`<div class="domains-note" style="flex-basis:100%">Ваши: ${mine.length}</div>`
+      +(mine.map(customTag).join('')||(raw?'':'<div class="domains-note" style="flex-basis:100%">Пока ничего не добавлено</div>'))
+      +(base.length?`<details class="dom-builtin"${raw||wasOpen?' open':''}><summary>Встроенные: ${base.length}</summary><div class="domains-note">${DOM_NOTE[list]} Удалить их нельзя.</div><div class="dom-tags">${base.map(d=>`<span class="tag tag-readonly">${esc(d)}</span>`).join('')}</div></details>`:'');
+}
 async function loadDomains(){
   try{const r=await apiFetch(API+'?action=get-domains');const d=await r.json();
     const dirBuiltin=d.ru_domains_builtin||[], dirCustom=d.custom_direct||[];
@@ -2759,20 +2943,9 @@ async function loadDomains(){
     // the JS parser, so a single quote in a domain name escaped the string.
     // Now: data-* attributes + delegated click on the container, value
     // never crosses an HTML→JS boundary.
-    const customTag=(domain,list)=>{const e=esc(domain);return `<span class="tag">${e}<span class="tag-remove" role="button" tabindex="0" aria-label="Удалить ${e}" data-domain="${e}" data-list="${list}">×</span></span>`};
-    const roTag=domain=>{const e=esc(domain);return `<span class="tag tag-readonly">${e}</span>`};
-    const renderDomains = (el, builtin, custom, list, hint) => {
-      el.classList.add('scrollable');
-      el.innerHTML =
-        `<div class="domains-note" style="flex-basis:100%">${hint}</div>`+
-        custom.map(d=>customTag(d,list)).join('')+
-        builtin.map(roTag).join('');
-    };
-    renderDomains(document.getElementById('directDomains'), dirBuiltin, dirCustom, 'direct',
-      `Встроенный список (${dirBuiltin.length}) — нельзя удалить · ваши добавления (${dirCustom.length}) — с ×.<br>`+
-      `Сверху действует geosite-ru (~5000 RU доменов) — там всё что не в этом списке.`);
-    renderDomains(document.getElementById('vpnDomains'), vpnBuiltin, vpnCustom, 'vpn',
-      `Встроенный список нейросетей и заблокированных от RU сервисов (${vpnBuiltin.length}) — нельзя удалить · ваши добавления (${vpnCustom.length}) — с ×.`);
+    _domData.direct={custom:dirCustom,builtin:dirBuiltin};
+    _domData.vpn={custom:vpnCustom,builtin:vpnBuiltin};
+    renderDomainList('direct');renderDomainList('vpn');
   }catch(e){}
 }
 
@@ -2837,19 +3010,11 @@ document.addEventListener('click', e => {
   if (btn) removeDomain(btn.dataset.domain, btn.dataset.list);
 });
 
-// Delegated handler for device rows (data-dev-id + data-dev-route). data-*
-// keeps the mac/ip out of an HTML-attr→JS-string boundary (defense-in-depth,
-// parity with the domain tags). Click + keyboard (Enter/Space) activation —
-// the row is role="button" tabindex="0", which the old inline onclick never
-// wired for the keyboard.
+// Delegated handler for the per-device route switch. data-* keeps the mac/ip
+// out of an HTML-attr→JS-string boundary. Real <button>s, so keyboard works.
 document.addEventListener('click', e => {
-  const d = e.target.closest('.device[data-dev-id]');
-  if (d) toggleDeviceRoute(d.dataset.devId, d.dataset.devRoute);
-});
-document.addEventListener('keydown', e => {
-  if (e.key !== 'Enter' && e.key !== ' ') return;
-  const d = e.target.closest('.device[data-dev-id]');
-  if (d) { e.preventDefault(); toggleDeviceRoute(d.dataset.devId, d.dataset.devRoute); }
+  const b = e.target.closest('.seg-btn[data-dev-id]');
+  if (b && !b.classList.contains('on')) setDeviceRoute(b.dataset.devId, b.dataset.devIp, b.dataset.devRoute);
 });
 // Keyboard activation comes from the global role=button keydown handler
 // (it synthesizes a click, which lands in the delegate above). A dedicated
@@ -2987,58 +3152,70 @@ function renderDevices(){
   // the uppercase form.
   const ruleFor=(dev)=>{
     const macUp=(dev.mac||'').toUpperCase();
-    return rules[macUp]||rules[dev.ip]||'vpn';
+    const v=rules[macUp]||rules[dev.ip];
+    return v==='vpn'||v==='direct'?v:'auto';
   };
-  const groups={direct:[],vpn:[]};
-  for(const dev of filtered){
-    (ruleFor(dev)==='direct'?groups.direct:groups.vpn).push(dev);
-  }
+  const groups={direct:[],vpn:[],auto:[]};
+  for(const dev of filtered)groups[ruleFor(dev)].push(dev);
+  const OPTS=[['auto','Как все'],['vpn','VPN'],['direct','Напрямую']];
   const renderOne=(dev)=>{
-    const isVpn=ruleFor(dev)!=='direct';
+    const rule=ruleFor(dev);
     const t=detectDeviceType(dev.name);
-    const badge=isVpn
-      ?'<span class="badge badge-vpn">VPN</span>'
-      :'<span class="badge badge-direct">Direct</span>';
     const isUnknown=!dev.name||dev.name==='*';
-    const avatarCls=isUnknown?'unknown':(isVpn?'vpn':'direct');
+    const avatarCls=isUnknown?'unknown':(rule==='direct'?'direct':'vpn');
     const title=isUnknown?'Неизвестное устройство':esc(dev.name);
     const typeHint=t.label?` <span style="color:var(--text-dim);font-weight:500">· ${t.label}</span>`:'';
     // Prefer MAC for the rule key — IP can change across DHCP renewals,
     // MAC is fixed to the device.
     const id=esc(dev.mac||dev.ip);
-    return `<div class="device" data-dev-id="${id}" data-dev-route="${isVpn?'direct':'vpn'}" tabindex="0" role="button" aria-label="${title.replace(/<[^>]+>/g,'')} — ${isVpn?'через VPN':'напрямую'}, нажмите чтобы переключить">
+    const seg=OPTS.map(([v,l])=>`<button class="seg-btn${v===rule?' on':''}" data-dev-id="${id}" data-dev-ip="${esc(dev.ip)}" data-dev-route="${v}" aria-pressed="${v===rule}"${_devPending?' disabled':''}>${l}</button>`).join('');
+    return `<div class="device">
       <div class="device-avatar ${avatarCls}"><svg class="icon icon-lg"><use href="${t.icon}"/></svg></div>
       <div class="device-info">
         <div class="device-name">${title}${typeHint}</div>
         <div class="device-meta">${esc(dev.ip)} · ${esc(dev.mac)}</div>
       </div>
-      ${badge}
+      <div class="seg" role="group" aria-label="Маршрут: ${title}">${seg}</div>
     </div>`;
   };
-  let html='';
-  if(groups.vpn.length){
-    html+=`<div class="dev-group-header">Через VPN<span class="dev-group-count">${groups.vpn.length}</span></div>`;
-    html+=groups.vpn.map(renderOne).join('');
-  }
-  if(groups.direct.length){
-    html+=`<div class="dev-group-header">Напрямую<span class="dev-group-count">${groups.direct.length}</span></div>`;
-    html+=groups.direct.map(renderOne).join('');
-  }
-  list.innerHTML=html;
+  list.innerHTML=[['direct','Всегда напрямую'],['vpn','Всегда через VPN'],['auto','Как все']]
+    .filter(([g])=>groups[g].length)
+    .map(([g,l])=>`<div class="dev-group-header">${l}<span class="dev-group-count">${groups[g].length}</span></div>`+groups[g].map(renderOne).join(''))
+    .join('');
 }
-let _devReloadTimer=null;
-async function toggleDeviceRoute(ip,route){
+let _devPending=false;
+async function setDeviceRoute(id,ip,route){
+  if(_devPending)return;
+  const rules=(state&&state.device_rules)||{};
+  const mac=id.toUpperCase();
+  _devPending=true;renderDevices();
+  const tid=toast.loading('Применяем маршрут…');
   try{
+    // A rule may be keyed by MAC or (older/CLI) by IP. Clear the IP one too,
+    // otherwise «Как все» would leave it in force.
+    if(ip&&ip!==id&&rules[ip]){
+      const d=await(await apiFetch(API+'?action=remove-device-route&ip='+ip,{timeoutMs:65000})).json();
+      if(d.error)throw new Error(d.error);
+      delete rules[ip];
+    }
     // The backend soft-restarts the tunnel to apply the rule, hence the long timeout.
-    const r=await apiFetch(API+(route==='vpn'?'?action=remove-device-route&ip='+ip:'?action=set-device&ip='+ip+'&route='+route),{timeoutMs:65000});
-    const d=await r.json();
-    if(d.error)toast.error('Маршрут не изменён',ruErr(d.error));
-    else toast.success('Маршрут изменён',ip+' → '+(route==='direct'?'напрямую':'через VPN'));
-  }catch(e){toast.error('Ошибка связи')}
-  // Coalesce rapid toggles into a single reload — was firing N times for
-  // N quick clicks on different devices.
-  if(_devReloadTimer)clearTimeout(_devReloadTimer);
-  _devReloadTimer=setTimeout(()=>{_devReloadTimer=null;loadDevices()},1000);
+    if(route!=='auto'||rules[mac]||rules[id]){
+      const r=await apiFetch(API+(route==='auto'?'?action=remove-device-route&ip='+id:'?action=set-device&ip='+id+'&route='+route),{timeoutMs:65000});
+      const d=await r.json();
+      if(d.error)throw new Error(d.error);
+    }
+    // Reflect it now; the next /status poll brings the stored rules.
+    // A poll may have replaced state (and its rules object) meanwhile.
+    const cur=state.device_rules=state.device_rules||{};
+    delete cur[ip];delete cur[mac];delete cur[id];
+    if(route!=='auto')cur[id.includes(':')?mac:id]=route;
+    updateToast(tid,'Маршрут изменён',{type:'success',desc:ip+' → '+({auto:'как все',vpn:'всегда через VPN',direct:'напрямую'}[route])});
+  }catch(e){
+    updateToast(tid,'Маршрут не изменён',{type:'error',desc:ruErr(e.message)});
+  }
+  _devPending=false;renderDevices();
+  try{await fetchStatus()}catch(_){}
+  renderDevices();
 }
 function fmtSinceShort(ts){
   if(!ts||ts<=0)return '—';
@@ -3163,6 +3340,7 @@ setInterval(()=>{if(!document.hidden)loadTraffic()},5000);
 
 // Logs
 const LOG_FILTER_HINTS={
+  conn:'Соединения через VPN и напрямую, ошибки и события EclipVPN — без потока DNS-запросов.',
   all:'Все события: соединения через VPN, напрямую, DNS-запросы и системные сообщения роутера.',
   vpn:'Соединения через VPN-туннель — эти запросы видны сайтам как иностранный IP.',
   direct:'Соединения напрямую, минуя VPN. Сюда идут российские сайты и исключения — это ускоряет их загрузку и сохраняет домашний IP для них.',
@@ -3307,7 +3485,7 @@ async function loadLogs(){
     list.innerHTML=html;
     if(wasAtBottom)list.scrollTop=list.scrollHeight;
     document.getElementById('logCount').textContent=d.length;
-    document.getElementById('logStats').innerHTML=`<span>VPN <b>${vpn}</b></span><span>Direct <b>${direct}</b></span>${err?`<span style="color:var(--red)">Ошибок <b>${err}</b></span>`:''}`;
+    document.getElementById('logStats').innerHTML=`<span>VPN <b>${vpn}</b></span><span>Напрямую <b>${direct}</b></span>${err?`<span style="color:var(--red)">Ошибок <b>${err}</b></span>`:''}`;
   }catch(e){}
   finally{_logLoading=false}
 }
@@ -3342,7 +3520,7 @@ function loadQuickDiag(){
   if(!grid)return;
   const on=state.running;
   const statusMetric=on
-    ?{cls:'ok',icon:'#i-shield',label:'Статус',value:'Подключено',sub:state.mode==='all_vpn'?'Весь трафик кроме РФ':'По списку блокировок'}
+    ?{cls:'ok',icon:'#i-shield',label:'Статус',value:'Подключено',sub:modeLabel()}
     :{cls:'err',icon:'#i-shield',label:'Статус',value:'Отключено',sub:'Включите VPN в верхнем блоке'};
   const serverName=state.server||'—';
   const cachedPing=(state.selected!==undefined&&pings[state.selected]!==undefined)?pings[state.selected]:null;

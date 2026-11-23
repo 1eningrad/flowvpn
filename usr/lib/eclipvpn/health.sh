@@ -26,6 +26,9 @@ cmd_get_log() {
         direct) grep_filter="outbound/direct" ;;
         error)  grep_filter="ERROR" ;;
         dns)    grep_filter="dns:.*exchanged" ;;
+        # Everything except the per-query DNS flood (UI default). Filtered before
+        # the tail -N, so DNS lines cannot crowd connections out of the window.
+        conn)   grep_filter="outbound/\|ERROR" ;;
         *)      grep_filter="outbound/\|ERROR\|dns:.*exchanged" ;;
     esac
 
@@ -57,7 +60,7 @@ cmd_get_log() {
     fi
 
     # Source 2: xray log — only errors
-    if [ "$filter" = "all" ] || [ "$filter" = "error" ]; then
+    if [ "$filter" = "all" ] || [ "$filter" = "conn" ] || [ "$filter" = "error" ]; then
         grep -iE "error|fail|warning" "$ECLIPVPN_TMP/xray.log" 2>/dev/null | \
             grep -v "accepted\|started\|Reading config\|feature Shadowsocks" | \
             tail -50 | awk '{print "XRAY|"$0}' >> "$tmplog"
@@ -67,7 +70,7 @@ cmd_get_log() {
     # router-wide and can't be truncated, so filter by the "log cleared"
     # marker that cmd_clear_log writes — events older than that timestamp
     # were dismissed by the user and shouldn't reappear in the UI.
-    if [ "$filter" = "all" ] || [ "$filter" = "flow" ] || [ "$filter" = "error" ]; then
+    if [ "$filter" = "all" ] || [ "$filter" = "conn" ] || [ "$filter" = "flow" ] || [ "$filter" = "error" ]; then
         local cleared_since=0
         [ -f "$ECLIPVPN_TMP/log_cleared_ts" ] && cleared_since=$(cat "$ECLIPVPN_TMP/log_cleared_ts" 2>/dev/null)
         # logread on this busybox formats lines like
