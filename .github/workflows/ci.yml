@@ -24,7 +24,7 @@ jobs:
           # added and silently went un-syntax-checked for weeks because this list
           # was not updated with it. A new suite must be covered on the commit
           # that adds it, with no CI edit.
-          for f in $files deploy.sh install.sh install-from-mac.sh tests/*.sh; do
+          for f in $files deploy.sh install.sh install-from-mac.sh packaging/*.sh ui/*.sh tests/*.sh; do
             sh -n "$f"          || { echo "sh -n FAIL:  $f"; fail=1; }
             busybox ash -n "$f" || { echo "ash -n FAIL: $f"; fail=1; }
           done
@@ -81,3 +81,17 @@ jobs:
           mkdir -p "$bb"
           busybox --install -s "$bb"
           PATH="$bb:$PATH" busybox ash tests/run.sh
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shipped index.html matches ui/
+        run: sh ui/build.sh --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install playwright + chromium
+        run: pip install playwright && playwright install --with-deps chromium
+      - name: browser tests against a fake router
+        run: python3 tests/ui/test_ui.py

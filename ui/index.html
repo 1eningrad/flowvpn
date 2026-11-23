@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#08090a" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fcfcfd" media="(prefers-color-scheme: light)">
+<title>EclipVPN</title>
+<style>
+@@include style.css
+</style>
+</head>
+<body class="m-home">
+<svg style="display:none">
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="11" rx="2.5"/><path d="M7.5 11V7a4.5 4.5 0 019 0v4"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 014 9 13 13 0 01-4 9 13 13 0 01-4-9 13 13 0 014-9z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6l-12 12"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7.5"/><path d="M21 21l-5.5-5.5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.5 12c0 .6 0 1.2-.1 1.7l2.1 1.7-2 3.5-2.5-1c-.9.7-2 1.2-3 1.5L13.5 22h-3l-.5-2.6c-1-.3-2.1-.8-3-1.5l-2.5 1-2-3.5 2.1-1.7c-.1-.5-.1-1.1-.1-1.7s0-1.2.1-1.7L2.5 8.6l2-3.5 2.5 1c.9-.7 2-1.2 3-1.5L10.5 2h3l.5 2.6c1 .3 2.1.8 3 1.5l2.5-1 2 3.5-2.1 1.7c.1.5.1 1.1.1 1.7z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.5 1.5M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7L12 19"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.5 4.5l1.5 1.5M18 18l1.5 1.5M2 12h2M20 12h2M4.5 19.5L6 18M18 6l1.5-1.5"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5A9 9 0 1111.5 3a7 7 0 009.5 9.5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2.2 2.2 0 002 3.3h16.4a2.2 2.2 0 002-3.3L13.7 3.9a2.2 2.2 0 00-3.4 0z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M18 14l-6 6-6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4M6 10l6-6 6 6"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="i-device" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><circle cx="12" cy="18" r="0.5" fill="currentColor"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 20h20"/></symbol>
+  <symbol id="i-watch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 6V3h6v3M9 18v3h6v-3M12 9v3l2 1.5"/></symbol>
+  <symbol id="i-printer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><rect x="6" y="15" width="12" height="6"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="13" rx="1.5"/><path d="M8 22h8"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="14" r="3.5"/><circle cx="12" cy="6" r="0.5" fill="currentColor"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21h6M10 17h4M8 14a6 6 0 118 0c-1 1-1 2-1 3H9c0-1 0-2-1-3z"/></symbol>
+  <symbol id="i-vacuum" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3"/></symbol>
+  <symbol id="i-router" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="14" width="18" height="7" rx="1.5"/><circle cx="7" cy="17.5" r="0.5" fill="currentColor"/><path d="M12 14V9M9 6a4.2 4.2 0 016 0M7 3a8 8 0 0110 0"/></symbol>
+  <symbol id="i-doorbell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V10a6 6 0 0112 0v6"/><path d="M4 16h16v3H4zM10 21h4"/></symbol>
+  <symbol id="i-tablet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 010 18z" fill="currentColor" stroke="none"/></symbol>
+  <!-- Server auto-eligibility (the mute toggle). Deliberately NOT a speaker
+       glyph: what is toggled is automatic switching, not sound.
+       ONE symbol for both states — colour carries the state, the glyph carries
+       the meaning: dim on hover over a normal row = the ACTION ("exclude"),
+       solid yellow and always visible on a muted row = the STATE ("excluded").
+       A struck-through bolt was tried first and rejected: at the 12px this
+       renders at, the slash collides with the bolt's interior and turns into an
+       unreadable blob (verified by rendering it). The plain ban circle stays
+       legible down to 12px. -->
+  <symbol id="i-no-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></symbol>
+</svg>
+
+<div class="app">
+  <div class="header" id="appHeader">
+    <div class="brand">
+      <div class="logo">EclipVPN</div>
+    </div>
+    <div class="header-info" id="headerInfo">Загрузка…</div>
+    <div class="header-actions">
+      <label class="header-mini-toggle" title="Вкл/Выкл VPN">
+        <input type="checkbox" id="vpnMiniToggle" aria-label="Включить или выключить VPN" onchange="syncMiniToggle(this)">
+        <div class="mt-track"></div>
+        <div class="mt-knob"></div>
+      </label>
+      <button class="btn btn-ghost btn-icon" onclick="toggleTheme()" id="themeBtn" title="Тема"><svg class="icon"><use href="#i-moon"/></svg></button>
+    </div>
+  </div>
+
+  <!-- Hero status -->
+  <div class="hero">
+    <div class="hero-inner">
+      <div class="hero-status">
+        <div class="status-orb off" id="statusOrb">
+          <div class="pulse"></div>
+          <div class="dot"></div>
+        </div>
+        <div class="status-text">
+          <h1 id="statusTitle">Отключено</h1>
+          <div class="meta" id="statusMeta">
+            <span>Нажмите, чтобы подключиться</span>
+          </div>
+          <div class="net-badge" id="netBadge"><span class="nb-dot"></span><span id="netBadgeText"></span></div>
+          <!-- auto_failover=false makes the tunnel stop self-healing: a dead server
+               stays selected until the user switches by hand. That is a deliberate
+               choice, but an invisible one until this badge existed. -->
+          <div class="net-badge whitelist" id="failoverBadge" style="display:none" title="Watchdog не будет автоматически менять сервер при обрыве — переключитесь вручную. Включается в «Настройки» → «Автоматика» → «Выбор сервера»"><span class="nb-dot"></span><span>Автопереключение выключено</span></div>
+        </div>
+      </div>
+      <label class="toggle" title="Вкл/Выкл VPN">
+        <input type="checkbox" id="vpnToggle" aria-label="Включить или выключить VPN" onchange="toggleVPN()">
+        <div class="toggle-track"></div>
+        <div class="toggle-knob"></div>
+      </label>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Left column (phone: the «Главная» tab) -->
+    <div class="home-col">
+      <!-- Now panel -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Сейчас</div>
+          <span class="live-dot" title="Обновляется в реальном времени"></span>
+        </div>
+        <canvas id="speedSpark" class="spark" width="600" height="60"></canvas>
+        <div class="speed-row">
+          <div class="speed-item speed-down">
+            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-down"/></svg> Входящий</div>
+            <div class="speed-value" id="speedDown">—</div>
+          </div>
+          <div class="speed-item speed-up">
+            <div class="speed-label"><svg class="icon icon-sm"><use href="#i-up"/></svg> Исходящий</div>
+            <div class="speed-value" id="speedUp">—</div>
+          </div>
+        </div>
+        <div class="mini-stats" id="trafficStats">
+          <div class="mini-stat" id="statVpn" title="Через VPN">
+            <div class="mini-stat-label">Через VPN</div>
+            <div class="mini-stat-val" id="sessionVpn" style="color:var(--accent-text)">—</div>
+          </div>
+          <div class="mini-stat" id="statDirect" title="Напрямую">
+            <div class="mini-stat-label">Напрямую</div>
+            <div class="mini-stat-val" id="sessionDirect" style="color:var(--green,#34d399)">—</div>
+          </div>
+        </div>
+        <div class="traffic-meta">
+          <span id="trafficSince" class="traffic-since" title="Счётчик не обнуляется при перезапуске VPN, только вручную.">—</span>
+          <button class="btn-link" onclick="resetTraffic()" title="Обнулить счётчики «Через VPN» и «Напрямую»">Сбросить</button>
+        </div>
+      </div>
+
+      <!-- Servers -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Серверы</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary btn-sm" onclick="doPing()" id="pingBtn" title="Насколько быстро отвечают серверы. Меньше — быстрее.">Проверить пинг</button>
+            <label class="toggle toggle-sm" title="Авто-режим: выбирает сервер с минимальным пингом (платные операторские пропускаются). Клик по серверу вручную выключает авто.">
+              <input type="checkbox" id="autoModeToggle" onchange="toggleAutoMode(this.checked)" aria-label="Авто-выбор лучшего сервера">
+              <span class="toggle-track"></span>
+              <span class="toggle-knob"></span>
+            </label>
+            <span style="font-size:13px;color:var(--text-muted)">Авто</span>
+          </div>
+        </div>
+        <p id="autoModeHint" class="card-desc" style="margin:0 0 6px 0;font-size:11.5px"></p>
+        <div id="serverList" class="server-list">
+          <div style="color:var(--text-dim);font-size:12px;padding:16px;text-align:center">Загрузка…</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right column -->
+    <div>
+      <div class="tabs">
+        <button class="tab active" data-tab="routing" onclick="showTab('routing',this)">Маршрутизация</button>
+        <button class="tab" data-tab="devices" onclick="showTab('devices',this)">Устройства</button>
+        <button class="tab" data-tab="logs" onclick="showTab('logs',this)">Журнал</button>
+        <button class="tab" data-tab="diagnose" onclick="showTab('diagnose',this)">Диагностика</button>
+        <button class="tab" data-tab="settings" onclick="showTab('settings',this)">Настройки</button>
+      </div>
+
+      <!-- Routing -->
+      <div class="section active" id="sec-routing">
+        <div class="card">
+          <div class="card-title">Как направлять трафик</div>
+          <p class="card-desc">Выберите что будет идти через VPN, а что напрямую</p>
+          <div class="mode-switch">
+            <div class="mode-option" id="mode-all" onclick="setMode('all_vpn')" tabindex="0" role="button" aria-label="Режим: всё через VPN кроме РФ">
+              <h3>Всё через VPN</h3>
+              <p>Российские сайты — напрямую, всё остальное через VPN</p>
+            </div>
+            <div class="mode-option" id="mode-block" onclick="setMode('blocklist')" tabindex="0" role="button" aria-label="Режим: только заблокированные через VPN">
+              <h3>По списку</h3>
+              <p>Только заблокированные в РФ сайты пойдут через VPN</p>
+            </div>
+          </div>
+          <div class="setting-row auto-row" id="ftToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Российские сайты тоже через VPN</div>
+              <div class="setting-row-desc">Нужно, если провайдер не открывает банки и госсайты напрямую. Свои исключения «минуя VPN» продолжат работать.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="ftToggle" aria-label="Российские сайты тоже через VPN" onchange="setFullTunnel(this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+        </div>
+
+        <div class="card card-accent card-accent-direct card-collapsible" id="directCard">
+          <!-- No inline onkeydown: the global role=button keydown handler already
+               synthesizes a click — an inline handler made Enter/Space toggle twice
+               (open+close in one keypress, card looked dead to keyboard users). -->
+          <div class="card-head" onclick="toggleCollapsible('directCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="directCardBody">
+            <div>
+              <div class="card-title">Исключения — минуя VPN</div>
+              <p class="card-desc" style="margin:3px 0 0">Эти сайты откроются напрямую, без VPN</p>
+            </div>
+            <div class="stat-num" id="directCount" style="color:var(--green);font-size:13px">0</div>
+          </div>
+          <div class="card-collapsible-body" id="directCardBody">
+            <input class="input dom-search" id="directSearch" type="search" placeholder="Поиск по списку…" aria-label="Поиск по списку доменов" oninput="renderDomainList('direct')">
+            <div class="domains" id="directDomains"></div>
+            <div class="flex mt">
+              <input class="input flex-1" id="addDirectInput" placeholder="например: rutube.ru или 194.221.61.0/24" onkeydown="if(event.key==='Enter')addDomain('direct')">
+              <button class="btn btn-ghost btn-sm" onclick="addDomain('direct')">Добавить</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card-accent card-accent-vpn card-collapsible" id="vpnCard">
+          <div class="card-head" onclick="toggleCollapsible('vpnCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="vpnCardBody">
+            <div>
+              <div class="card-title">Принудительно через VPN</div>
+              <p class="card-desc" style="margin:3px 0 0">Всегда через VPN, даже если сайт в списке РФ. Сюда же добавьте РФ-сайты, которые не открываются напрямую (банк, оплата)</p>
+            </div>
+            <div class="stat-num" id="vpnCount" style="color:var(--accent-text);font-size:13px">0</div>
+          </div>
+          <div class="card-collapsible-body" id="vpnCardBody">
+            <input class="input dom-search" id="vpnSearch" type="search" placeholder="Поиск по списку…" aria-label="Поиск по списку доменов" oninput="renderDomainList('vpn')">
+            <div class="domains" id="vpnDomains"></div>
+            <div class="flex mt">
+              <input class="input flex-1" id="addVpnInput" placeholder="например: sberbank.ru или chatgpt.com" onkeydown="if(event.key==='Enter')addDomain('vpn')">
+              <button class="btn btn-ghost btn-sm" onclick="addDomain('vpn')">Добавить</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card-accent card-accent-vpn card-collapsible" id="presetsCard">
+          <div class="card-head" onclick="toggleCollapsible('presetsCard')" tabindex="0" role="button" aria-expanded="false" aria-controls="presetsCardBody">
+            <div>
+              <div class="card-title">Сервисы</div>
+              <p class="card-desc" style="margin:3px 0 0">Включить — все домены сервиса пойдут через VPN</p>
+            </div>
+            <div class="stat-num" id="presetsCount" style="color:var(--accent-text);font-size:13px">0</div>
+          </div>
+          <div class="card-collapsible-body" id="presetsCardBody">
+            <div id="presetsList"></div>
+          </div>
+        </div>
+
+        <div class="card card-accent card-accent-dns">
+          <div class="card-title">DNS защита</div>
+          <p class="card-desc">DNS-запросы защищены от подмены провайдером</p>
+          <!-- Must match singbox.sh: VPN DNS is DoH 1.1.1.1, direct DNS is
+               Yandex 77.88.8.8 (deliberately not Cloudflare — RU bank NS
+               refuse foreign resolvers, see CLAUDE.md). -->
+          <div class="row"><span class="row-label">Через VPN</span><span class="row-val">DoH 1.1.1.1</span></div>
+          <div class="row"><span class="row-label">Напрямую</span><span class="row-val">77.88.8.8 (Яндекс)</span></div>
+          <div class="row"><span class="row-label">DoT заблокирован</span><span class="row-val" style="color:var(--green)">да</span></div>
+        </div>
+      </div>
+
+      <!-- Devices -->
+      <div class="section" id="sec-devices">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Подключённые устройства<span class="log-count-badge" id="devCount">0</span></div>
+            <button class="btn btn-ghost btn-sm" onclick="loadDevices()">Обновить</button>
+          </div>
+          <p class="card-desc">«Как все» — по общим правилам. «VPN» — всегда через VPN, даже российские сайты. «Напрямую» — всегда мимо VPN.</p>
+          <div class="dev-search">
+            <input id="devSearch" placeholder="Поиск по имени, IP или MAC…" oninput="filterDevices()">
+          </div>
+          <div id="deviceList">
+            <div class="dev-empty">Загрузка…</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Статистика трафика</div>
+          <div class="card-desc" style="margin-bottom:8px">С момента последнего перезапуска VPN</div>
+          <div class="stats">
+            <div class="stat" title="Трафик через VPN — сумма исходящего и входящего">
+              <div class="stat-label">Через VPN</div>
+              <div class="stat-num" id="trafficVpn" style="color:var(--accent-text)">—</div>
+            </div>
+            <div class="stat" title="Трафик напрямую (RU-сайты, кастомный список исключений)">
+              <div class="stat-label">Напрямую</div>
+              <div class="stat-num" id="trafficDirect" style="color:var(--green)">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Logs -->
+      <div class="section" id="sec-logs">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Журнал<span class="log-count-badge" id="logCount">0</span></div>
+            <div class="flex" style="gap:6px">
+              <button class="log-live" id="liveBtn" onclick="toggleLive()" title="Обновление в реальном времени">Live</button>
+            </div>
+          </div>
+          <p class="card-desc">Куда идёт каждое соединение. Дубликаты сгруппированы по количеству.</p>
+          <div class="log-filters">
+            <button class="log-filter active" data-filter="conn" onclick="setLogFilter('conn',this)">Главное</button>
+            <button class="log-filter" data-filter="vpn" onclick="setLogFilter('vpn',this)">VPN</button>
+            <button class="log-filter" data-filter="direct" onclick="setLogFilter('direct',this)">Напрямую</button>
+            <button class="log-filter" data-filter="error" onclick="setLogFilter('error',this)">Ошибки</button>
+            <button class="log-filter" data-filter="incidents" onclick="setLogFilter('incidents',this)">Сбои <span class="log-filter-badge" id="incidentsBadge" style="display:none">0</span></button>
+            <button class="log-filter" data-filter="dns" onclick="setLogFilter('dns',this)">DNS</button>
+            <button class="log-filter" data-filter="flow" onclick="setLogFilter('flow',this)">EclipVPN</button>
+            <button class="log-filter" data-filter="all" onclick="setLogFilter('all',this)">Всё</button>
+          </div>
+          <div class="log-filter-hint" id="logFilterHint">Соединения через VPN и напрямую, ошибки и события EclipVPN — без потока DNS-запросов.</div>
+          <div class="log-entries" id="logList">
+            <div class="log-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Загрузка журнала…</div>
+          </div>
+          <div class="log-stats">
+            <div class="log-stats-inline" id="logStats"></div>
+            <div class="flex">
+              <button class="btn btn-ghost btn-sm" onclick="exportLog()">Скачать</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearLog()">Очистить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Diagnose -->
+      <div class="section" id="sec-diagnose">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Полная проверка</div>
+            <button class="btn btn-primary btn-sm" onclick="runHealthcheck()" id="hcBtn">Запустить</button>
+          </div>
+          <p class="card-desc">Процессы, сеть, VPN-туннель, доступность сайтов, утечка IP. Занимает несколько секунд.</p>
+          <div id="hcResults">
+            <div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center">Нажмите «Запустить» для проверки</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings -->
+      <div class="section" id="sec-settings">
+        <h2 class="group-head">Подписки</h2>
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Провайдеры</div>
+            <button class="btn btn-ghost btn-sm" id="updateBtn" onclick="doUpdate()">Обновить</button>
+          </div>
+          <p class="card-desc">Можно добавить несколько провайдеров — серверы со всех включённых подписок объединяются в один список.</p>
+          <div id="subList"></div>
+          <div class="flex" style="margin-top:10px">
+            <input class="input flex-1" id="subUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://… подписка или vless:// сервер" aria-label="URL подписки или ссылка на сервер" onkeydown="if(event.key==='Enter')addSubscription()">
+            <button class="btn btn-primary btn-sm" onclick="addSubscription()">Добавить</button>
+          </div>
+          <input class="input" id="subName" type="text" maxlength="40" placeholder="Название (пусто — возьмём из подписки)" aria-label="Название подписки" style="margin-top:8px" onkeydown="if(event.key==='Enter')addSubscription()">
+        </div>
+        <div class="card">
+          <div class="setting-row">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Обновлять подписки ночью</div>
+              <div class="setting-row-desc">Каждый день в 3:00 обновлять серверы и списки доменов</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="autoUpdateToggle" aria-label="Автоматическое обновление списка серверов" onchange="setAutoUpdate(this.checked?'enable':'disable')">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-status" id="autoUpdateStatus" style="margin-top:14px">Выключено</div>
+        </div>
+        <h2 class="group-head">Автоматика</h2>
+        <div class="card" id="automationCard">
+          <div class="card-title">Выбор сервера</div>
+          <p class="card-desc">Что VPN может делать сам. Ваш ручной выбор работает всегда.</p>
+          <div class="setting-row auto-row" id="afToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Менять сервер автоматически</div>
+              <div class="setting-row-desc">При обрыве VPN сам перейдёт на рабочий сервер. Если выключено — сервер меняете только вы.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="afToggle" aria-label="Менять сервер автоматически" onchange="setBehaviour('auto_failover',this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-row auto-row" id="tgToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Следить за скоростью</div>
+              <div class="setting-row-desc">Если сервер сильно замедлился — переподключиться к нему, а если не помогло — перейти на более быстрый.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="tgToggle" aria-label="Следить за скоростью" onchange="setBehaviour('tput_guard',this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-row auto-row" id="ncToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Белые списки провайдера</div>
+              <div class="setting-row-desc">Если провайдер пропускает только «белые» сайты — временно перейти на сервер с пометкой WL, затем вернуться.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="ncToggle" aria-label="Белые списки провайдера" onchange="setBehaviour('net_check_switch',this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-row auto-row" id="ruExitToggleRow">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Не выбирать выход в России</div>
+              <div class="setting-row-desc">Автоматика пропускает серверы, чей реальный IP российский. На ручной выбор не влияет.</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="ruExitToggle" aria-label="Не выбирать выход в России" onchange="setRuExitBlock(this)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-status" id="automationNote" style="margin-top:14px"></div>
+        </div>
+        <div class="card">
+          <div class="setting-row">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Автозапуск при включении роутера</div>
+              <div class="setting-row-desc">Запускать VPN автоматически после загрузки роутера или перезагрузки</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="autoStartToggle" aria-label="Автозапуск VPN при включении роутера" onchange="toggleAutoStart(this.checked)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-status" id="autoStartStatus" style="margin-top:14px">Выключено</div>
+        </div>
+        <div class="card">
+          <div class="setting-row">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Расписание</div>
+              <div class="setting-row-desc">VPN автоматически включится и отключится в указанное время</div>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="schedToggle" aria-label="Расписание включения и выключения VPN" onchange="toggleSchedule(this.checked)">
+              <div class="toggle-track"></div>
+              <div class="toggle-knob"></div>
+            </label>
+          </div>
+          <div class="setting-body disabled" id="schedBody">
+            <div class="flex">
+              <input class="input" id="schedOn" type="time" value="07:00" style="flex:1" onchange="saveSchedule()">
+              <span style="color:var(--text-dim);align-self:center;padding:0 4px">—</span>
+              <input class="input" id="schedOff" type="time" value="23:00" style="flex:1" onchange="saveSchedule()">
+            </div>
+            <div class="setting-status" id="schedStatus">Выключено</div>
+          </div>
+        </div>
+        <h2 class="group-head">Система</h2>
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Обновление EclipVPN</div>
+            <button class="btn btn-ghost btn-sm" id="updCheckBtn" onclick="checkUpdate()">Проверить</button>
+          </div>
+          <p class="card-desc" id="updInfo" style="font-size:12px">Новые версии публикуются как релизы на GitHub. Обновление скачивается роутером, проверяется и ставится; если после него VPN не поднимется — вернётся прежняя версия.</p>
+          <div id="updResult" style="display:none;margin-top:10px"></div>
+        </div>
+        <div class="card">
+          <div class="setting-row">
+            <div class="setting-row-info">
+              <div class="setting-row-title">Перезапуск VPN</div>
+              <div class="setting-row-desc">Помогает, если что-то зависло. Связь прервётся на несколько секунд.</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="doRestart()">Перезапустить</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Резервная копия</div>
+          <p class="card-desc">Сохранить настройки в файл или перенести их на другой роутер</p>
+          <div class="flex">
+            <button class="btn btn-ghost flex-1" onclick="downloadBackup()">Скачать</button>
+            <label class="btn btn-ghost flex-1" style="cursor:pointer;justify-content:center">
+              Восстановить<input type="file" accept=".json" onchange="restoreBackup(event)" style="display:none">
+            </label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">О системе</div>
+            <button class="btn btn-ghost btn-sm" onclick="loadSystemInfo()">Обновить</button>
+          </div>
+          <div id="sysInfo" class="sys-info">
+            <div style="color:var(--text-dim);font-size:12px;padding:12px 0">Загрузка…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <div class="footer-left">
+      <span class="footer-brand">EclipVPN</span>
+      <span class="footer-dim">для OpenWrt</span>
+    </div>
+    <div class="footer-right">
+      <a href="https://github.com/1eningrad/flowvpn" target="_blank" rel="noopener" class="footer-link">GitHub</a>
+      <span class="footer-dim">·</span>
+      <a href="https://github.com/1eningrad/flowvpn#readme" target="_blank" rel="noopener" class="footer-link">Документация</a>
+      <span class="footer-dim">·</span>
+      <a href="https://github.com/1eningrad/flowvpn/issues/new" target="_blank" rel="noopener" class="footer-link">Сообщить об ошибке</a>
+    </div>
+  </footer>
+</div>
+
+<div class="onboard" id="onboardOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
+  <div class="onboard-backdrop" onclick="skipOnboard()"></div>
+  <div class="onboard-card">
+    <div class="onboard-head">
+      <div class="onboard-steps">
+        <div class="step active" data-step="1"><span class="step-num">1</span><span class="step-name">Подписка</span></div>
+        <div class="step" data-step="2"><span class="step-num">2</span><span class="step-name">Серверы</span></div>
+        <div class="step" data-step="3"><span class="step-num">3</span><span class="step-name">Готово</span></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="skipOnboard()">Пропустить</button>
+    </div>
+
+    <div class="onboard-body">
+      <div class="onboard-pane active" id="onboardStep1">
+        <h2 id="onboardTitle">Добро пожаловать в EclipVPN</h2>
+        <p>Вставьте ссылку на подписку от вашего VPN-провайдера — или ссылку на отдельный сервер (<code>vless://…</code>, <code>ss://…</code> и т.п.).</p>
+        <input class="input" id="onboardSubUrl" type="url" autocomplete="url" inputmode="url" placeholder="https://example.com/api/sub/…" aria-label="URL подписки">
+        <div class="onboard-hint">Где взять ссылку? В панели вашего VPN-провайдера (Remnawave, Marzban, x-ui) — раздел «Подписка» / «Subscription».</div>
+        <div class="onboard-actions">
+          <button class="btn btn-primary" onclick="onboardNext1()">Далее</button>
+        </div>
+      </div>
+
+      <div class="onboard-pane" id="onboardStep2">
+        <h2>Загружаем серверы…</h2>
+        <p id="onboardStep2Desc">Проверяем подписку и скачиваем список серверов.</p>
+        <div class="onboard-loader"><div class="spinner" style="width:24px;height:24px;border-width:3px"></div></div>
+        <div class="onboard-hint" id="onboardServersList" style="display:none"></div>
+      </div>
+
+      <div class="onboard-pane" id="onboardStep3">
+        <div style="font-size:48px;line-height:1;color:var(--green);margin-bottom:14px"><svg style="width:56px;height:56px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></div>
+        <h2>Всё готово!</h2>
+        <p>EclipVPN настроен. Нажмите «Включить VPN», выберите сервер и открывайте заблокированные сайты.</p>
+        <div class="onboard-actions">
+          <button class="btn btn-primary" onclick="finishOnboard()">Начать пользоваться</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<nav class="bottom-nav" id="bottomNav">
+  <button class="bn-item active" data-tab="home" aria-current="page" onclick="showTabMobile('home')">
+    <svg class="icon"><use href="#i-home"/></svg><span>Главная</span>
+  </button>
+  <button class="bn-item" data-tab="routing" onclick="showTabMobile('routing')">
+    <svg class="icon"><use href="#i-globe"/></svg><span>Маршрут</span>
+  </button>
+  <button class="bn-item" data-tab="devices" onclick="showTabMobile('devices')">
+    <svg class="icon"><use href="#i-phone"/></svg><span>Устройства</span>
+  </button>
+  <button class="bn-item" data-tab="logs" onclick="showTabMobile('logs')">
+    <svg class="icon"><use href="#i-search"/></svg><span>Журнал</span>
+  </button>
+  <button class="bn-item" data-tab="diagnose" onclick="showTabMobile('diagnose')">
+    <svg class="icon"><use href="#i-shield"/></svg><span>Проверка</span>
+  </button>
+  <button class="bn-item" data-tab="settings" onclick="showTabMobile('settings')">
+    <svg class="icon"><use href="#i-gear"/></svg><span>Настройки</span>
+  </button>
+</nav>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script>
+@@include app.js
+</script>
+</body>
+</html>

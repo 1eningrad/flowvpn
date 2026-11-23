@@ -22,6 +22,7 @@ combined.tmp
 
 # Stale Playwright test-runner artifacts (unrelated to the ash unit suite in tests/)
 test-results/
+__pycache__/
 
 # Windows installer — generated artifacts + bundled binaries (regenerable via build-*.ps1)
 windows-installer/EclipVPN-Installer.exe

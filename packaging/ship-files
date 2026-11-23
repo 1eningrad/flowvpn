@@ -5,6 +5,8 @@
 # The UI (www/eclipvpn/index.html) ships SEPARATELY (special dest, not
 # ash-checkable) and is intentionally NOT listed here.
 # This file is dev-only - it is NOT shipped to the router.
+# Before the dispatcher that sources it: self-update installs in this order.
+usr/lib/eclipvpn/domain_lists.sh
 usr/bin/eclipvpn
 usr/lib/eclipvpn/parse.sh
 usr/lib/eclipvpn/subscriptions.sh

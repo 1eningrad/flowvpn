@@ -32,6 +32,7 @@ ssh "$ROUTER" 'mkdir -p /usr/lib/eclipvpn /www/eclipvpn /www/flowvpn /www/cgi-bi
 # `git archive` reads the immutable object store. Clean tree ships HEAD;
 # ALLOW_DIRTY=1 ships the working tree (racy, opt-in). Scoped to TRACKED changes
 # under the shipped trees (untracked files never enter git archive HEAD).
+sh ui/build.sh --check
 DIRTY=$(git status --porcelain --untracked-files=no -- usr www etc)
 SHIP=git
 if [ -n "$DIRTY" ]; then
@@ -76,49 +77,10 @@ ssh "$ROUTER" 'cat > /www/eclipvpn/index.html' < "$UITMP"
 rm -f "$TARBALL" "$UITMP"
 
 echo "→ install dependencies + xray + Tailscale on router"
-ssh "$ROUTER" "WITH_REMOTE=$WITH_REMOTE sh -s" <<'REMOTE_EOF'
+[ -s packaging/migrate-flowvpn.sh ] || { echo "ERROR: packaging/migrate-flowvpn.sh missing" >&2; exit 1; }
+# The migration runs first, on the same remote shell, then the install steps.
+{ echo 'set -eu'; cat packaging/migrate-flowvpn.sh; cat <<'REMOTE_EOF'
 set -eu
-
-# Migrate an old "flowvpn"-named install (pre-2026.06) to the new eclipvpn
-# paths before installing. Idempotent.
-if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
-    echo "[0/5] Migrating old flowvpn install -> eclipvpn..."
-    /etc/init.d/flowvpn stop >/dev/null 2>&1 || true
-    /etc/init.d/flowvpn disable >/dev/null 2>&1 || true
-    for p in /proc/[0-9]*; do
-        [ -r "$p/cmdline" ] || continue
-        case $(tr "\0" " " < "$p/cmdline") in
-            "/bin/ash /usr/bin/flowvpn watchdog"*) kill -9 "${p##*/}" 2>/dev/null || true ;;
-        esac
-    done
-    nft delete table ip flowvpn 2>/dev/null || true
-    nft delete table inet flowvpn 2>/dev/null || true
-    nft delete table ip flowvpn_dns 2>/dev/null || true
-    # Old cron entries point at the binary deleted below; new ones are
-    # re-created from config by _ensure_cron_state on first start.
-    crontab -l 2>/dev/null | grep -v '/usr/bin/flowvpn ' | crontab - 2>/dev/null || true
-    if [ -f /tmp/dnsmasq.d/flowvpn.conf ]; then
-        # dnsmasq only rereads conf-dir on restart — without it a redirect
-        # to the dead old sing-box keeps LAN DNS broken until first start.
-        rm -f /tmp/dnsmasq.d/flowvpn.conf
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    fi
-    if [ -d /etc/flowvpn ]; then
-        if [ ! -e /etc/eclipvpn ]; then
-            mv /etc/flowvpn /etc/eclipvpn
-        elif [ -f /etc/flowvpn/config.json ] \
-             && ! grep -q '"subscription_url": *"http' /etc/eclipvpn/config.json 2>/dev/null; then
-            # /etc/eclipvpn already exists (pre-created dir, or an untouched
-            # default config minted by a stray CGI hit between ship and
-            # migrate) — adopt the old install's files instead of nuking them.
-            cp -a /etc/flowvpn/. /etc/eclipvpn/
-            rm -rf /etc/flowvpn
-        else
-            rm -rf /etc/flowvpn
-        fi
-    fi
-    rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
-fi
 
 echo "[1/5] package deps (apk or opkg)"
 # OpenWrt 25.x uses apk, older uses opkg. curl + ca-bundle are hard runtime
@@ -214,6 +176,7 @@ echo "  1) on first router: ssh root@192.168.1.1 'eclipvpn backup' > ~/eclip-con
 echo "  2) restore here:    cat ~/eclip-config.json | ssh root@$(uci -q get network.lan.ipaddr || echo 192.168.2.1) 'eclipvpn restore'"
 echo "     (cat|ssh, not scp — OpenWrt dropbear has no sftp-server)"
 REMOTE_EOF
+} | ssh "$ROUTER" "WITH_REMOTE=$WITH_REMOTE sh -s"
 
 # Stamp the build identity (committed SHA + date) into /etc/eclipvpn/build so
 # `eclipvpn system-info` / the UI can identify the running build — ECLIPVPN_VERSION

@@ -21,6 +21,7 @@ ulimit -n 8192 2>/dev/null
 . "$ECLIPVPN_LIB/subscriptions.sh"
 . "$ECLIPVPN_LIB/xray.sh"
 . "$ECLIPVPN_LIB/singbox.sh"
+. "$ECLIPVPN_LIB/domain_lists.sh"
 . "$ECLIPVPN_LIB/rules.sh"
 . "$ECLIPVPN_LIB/network.sh"
 . "$ECLIPVPN_LIB/watchdog.sh"

@@ -10,13 +10,13 @@ Two things deliberately **stay `flowvpn`** — do not rename them:
 - The **GitHub repo** `1eningrad/flowvpn` (the `install.sh` raw-URL and the UI footer links point at it; renaming the URL 404s the installer). Rename the repo on GitHub first if you want these to change.
 - The **legacy `/www/flowvpn/` → `/eclipvpn/` redirect** stub (created by the installers) for old bookmarks.
 
-`install.sh` / `install-from-mac.sh` / `deploy.sh` carry a one-time, idempotent **migration**: on a router with an old `flowvpn` install they stop+disable the old service, kill its watchdog (matched by the start-anchored cmdline `"/bin/ash /usr/bin/flowvpn watchdog"*`), clean its nft tables + dnsmasq drop-in, `mv /etc/flowvpn /etc/eclipvpn` (preserving subscription/settings), and remove the old files.
+`install.sh` / `install-from-mac.sh` / `deploy.sh` share a one-time, idempotent **migration** (`packaging/migrate-flowvpn.sh`): on a router with an old `flowvpn` install they stop+disable the old service, kill its watchdog (matched by the start-anchored cmdline `"/bin/ash /usr/bin/flowvpn watchdog"*`), clean its nft tables + dnsmasq drop-in, `mv /etc/flowvpn /etc/eclipvpn` (preserving subscription/settings), and remove the old files.
 
 ## What this is
 
 A VPN manager for OpenWrt routers. Written almost entirely in **busybox ash** (`#!/bin/ash`, not bash) with a single-file HTML/JS web UI. Two binaries do the actual work: **xray** (SOCKS outbound, VLESS+XHTTP over either **Reality** *or* plain **TLS**) and **sing-box** (tproxy inbound, DNS, routing). Everything else is glue. The TLS variant is what powers **CDN fronting** — `xray.sh` switches on the subscription entry's `security` field (`reality` → `realitySettings`, `tls` → `tlsSettings`), so a server can front through a CDN (`sni=*.selcdn.net`) to dodge the per-flow policer (see "CDN fronting" below).
 
-There is no build step and no package manager for the router code — it is shipped to a live router as-is via `deploy.sh` (CI does exist: syntax + manifest + unit checks, see "Testing"). (The Windows installer under `windows-installer/` is the one piece with a build step — see its section below.) There **is** a unit-test suite (`tests/`, added 2026-06-16) covering the pure parsers, input validators, and the lock / config-write primitives — see "Testing" below and `docs/invariants.md`.
+Apart from `sh ui/build.sh` (concatenates `ui/` into the committed `www/eclipvpn/index.html`; CI and `deploy.sh` fail if stale) there is no build step and no package manager for the router code — it is shipped to a live router as-is via `deploy.sh` (CI does exist: syntax + manifest + unit checks, see "Testing"). (The Windows installer under `windows-installer/` is the one piece with a build step — see its section below.) There **is** a unit-test suite (`tests/`, added 2026-06-16) covering the pure parsers, input validators, and the lock / config-write primitives — see "Testing" below and `docs/invariants.md`.
 
 ## Common commands
 
@@ -30,6 +30,7 @@ There is no build step and no package manager for the router code — it is ship
 | `sh install-from-mac.sh` | Bootstrap a *fresh* router from the local tree over SSH (default `root@192.168.2.1`), bypassing the GitHub repo — pushes the same files as `install.sh` but from the working tree. Use for first-time provisioning / after a factory reset; `deploy.sh` is for updating an already-installed router. `WITH_REMOTE=0` skips the Tailscale step. |
 | `ash -n <file>` | Syntax-check a script before deploy. `deploy.sh` already runs this on every shell file. |
 | `sh tests/run.sh [suite...]` | Run the unit suite (needs `jq`). No args = all; `parse`/`validators`/`locks`/`config` = one suite. Exit non-zero on any failure. See "Testing". |
+| `python3 tests/ui/test_ui.py` | Browser tests of the UI against a fake router (needs `pip install playwright`). |
 | `cd docs && tectonic eclipvpn_manual.tex` | Rebuild the user manual PDF. |
 | `cd windows-installer && powershell -ExecutionPolicy Bypass -File build-exe.ps1` | Rebuild `EclipVPN-Installer.exe` (offline Windows installer). Stages the live `usr/`/`www/`/`etc/` tree — rebuild after any router-code change. See its own section below. |
 
@@ -99,6 +100,7 @@ usr/lib/eclipvpn/singbox.sh   sing-box config gen (generate_singbox_config + rul
 usr/lib/eclipvpn/rules.sh     routing-rule + domain-list SOURCING (split out of singbox.sh
                               2026-06-16): .srs fetch/compile, RU-direct/force-VPN/blocklist
                               domain lists, service presets. Shares singbox.sh's globals.
+usr/lib/eclipvpn/domain_lists.sh  built-in RU-direct / force-VPN domain lists (data only)
 usr/lib/eclipvpn/network.sh   nftables + dnsmasq redirect setup/teardown
 usr/lib/eclipvpn/watchdog.sh  connectivity probing, auto-failover, throughput guard
 usr/lib/eclipvpn/lifecycle.sh cmd_start / stop / restart / status
@@ -108,7 +110,8 @@ usr/lib/eclipvpn/traffic.sh   Clash-API traffic accounting (get-traffic/poll/rea
 usr/lib/eclipvpn/health.sh    devices / logs / dns / diagnose / incidents / healthcheck / system-info
 usr/lib/eclipvpn/config.sh    set-config / schedule / auto-update / backup-restore / device-routing / wifi
 www/cgi-bin/eclipvpn          CGI shim: query-string → CLI dispatch (+ anti-CSRF/rebinding gate)
-www/eclipvpn/index.html       Single-file SPA UI (installs to /www/eclipvpn/index.html)
+ui/{index.html,style.css,app.js}  UI SOURCES — edit these, then `sh ui/build.sh`
+www/eclipvpn/index.html       BUILT single-file SPA (committed; never edit by hand)
 etc/init.d/eclipvpn           OpenWrt service stub (autostart-on-boot)
 deploy.sh / install.sh       Rollout scripts
 ```
@@ -129,12 +132,12 @@ LAN client → nftables tproxy:2154 → sing-box → xray SOCKS:1080 → VLESS+R
 
 ## Two routing modes
 
-- `all_vpn` — everything → VPN, *except* domains/IPs in `geosite-ru`, `geoip-ru`, and the manual RU list in `rules.sh::_fetch_ru_domains()` (Yandex/VK/Sber/etc).
+- `all_vpn` — everything → VPN, *except* domains/IPs in `geosite-ru`, `geoip-ru`, and the manual RU list in `domain_lists.sh::_builtin_ru_domains` (Yandex/VK/Sber/etc).
 - `blocklist` — only blocked domains → VPN; everything else direct. Source is `itdoginfo/allow-domains` (curated, ~1.2k) or `1andrevich/Re-filter-lists` (~80k) when `blocklist_source=full`.
 
 **`full_tunnel` (set-config bool, default false)** — in `all_vpn` mode, drops the RU→direct rules entirely (`_build_allvpn_rules` skips the `geosite-ru`/`geoip-ru`/manual-RU → `direct` route rules AND the `geosite-ru`/RU → `dns-direct` DNS rules; `route.final`/`dns.final` are already `default`/`dns-proxy`), so **everything — incl. RU banks — rides the VPN**. This is for networks where the *direct* path can't actually reach RU services: e.g. the router sits behind an upstream that doesn't route major RU subnets (observed 2026-06-20 — Sberbank's `84.252.x` / Yandex-Cloud range was unreachable on the direct path, traceroute dying one hop past the upstream gateway, yet `rc=200` through the VPN exit). With RU-direct on, banks get stranded on the dead direct path; `full_tunnel=true` fixes them. Trade-off: all RU traffic takes the VPN exit (more latency/bandwidth) — only enable it when direct is broken. The force-VPN DNS rule's trailing comma is stripped (`${dns_rules%,}]`) so the DNS array stays valid when the RU rules are skipped. NB: under `full_tunnel` the user's `direct_domains.txt` (→ `ru_rule`) is inert (the whole RU-direct block is skipped).
 
-A **force-VPN list** (`vpn_domains.list`, built-in AI services **+ YouTube** + user's `custom_vpn`) overrides the RU rules in `all_vpn` mode — gemini.google.com / youtube.com etc. would otherwise hit `geosite-ru` (which contains `google.com`). YouTube is in the built-in heredoc (`rules.sh::_fetch_vpn_domains`) so every fresh install routes it through the VPN by default (it's throttled on RU networks); there is also a toggleable `youtube` service preset, but the built-in entry is the always-on baseline.
+A **force-VPN list** (`vpn_domains.list`, built-in AI services **+ YouTube** + user's `custom_vpn`) overrides the RU rules in `all_vpn` mode — gemini.google.com / youtube.com etc. would otherwise hit `geosite-ru` (which contains `google.com`). YouTube is in the built-in heredoc (`domain_lists.sh::_builtin_vpn_domains`) so every fresh install routes it through the VPN by default (it's throttled on RU networks); there is also a toggleable `youtube` service preset, but the built-in entry is the always-on baseline.
 
 The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`: it force-routes specific RU services (YooKassa/YooMoney + Sber/VTB/T-Bank/Alfa websites) through the VPN for uplinks where the direct path can't reach them (the MTS blackhole case), without dragging all RU traffic onto the tunnel. Caveats baked into the preset comment: bank *apps* may still geo-block the foreign exit at login (app-layer, routing can't fix it), and Gazprombank is deliberately absent (403s even via VPN).
 
@@ -206,7 +209,7 @@ The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`:
 1. Add `cmd_foo()` in the matching domain lib under `usr/lib/eclipvpn/` (lifecycle/servers/domains/traffic/health/config/watchdog) — or in `usr/bin/eclipvpn` itself only if it's core/shared infra. If you create a NEW lib file, add it to the `. "$ECLIPVPN_LIB/*.sh"` block in `usr/bin/eclipvpn` **and** add ONE line to `packaging/ship-files` — the single ship manifest read by `deploy.sh`, `install.sh`, `install-from-mac.sh`, and `windows-installer/eclip-core.ps1`. No installer's file list needs editing anymore (they all read the manifest). The CI `manifest-guard` job fails the build if a `usr/lib/eclipvpn/*.sh` is missing from the manifest. `packaging/ship-files` is dev-only — it is NOT shipped to the router (like `tests/`).
 2. Wire the dispatch case at the bottom of `usr/bin/eclipvpn` (`foo) cmd_foo "$2" ;;`).
 3. Wire `www/cgi-bin/eclipvpn` to forward the action (and validate any new parameters in the boundary block).
-4. Add fetch + render in `www/eclipvpn/index.html` (`API='/cgi-bin/eclipvpn'`, polled actions in `loadStatus`/`loadDomains`/etc).
+4. Add fetch + render in `ui/app.js` / `ui/index.html`, run `sh ui/build.sh` (`API='/cgi-bin/eclipvpn'`, polled actions in `loadStatus`/`loadDomains`/etc).
 5. Run `./deploy.sh` to ship.
 
 ## Windows installer (`windows-installer/`)

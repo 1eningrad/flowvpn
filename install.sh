@@ -40,55 +40,6 @@ if [ ! -f /etc/openwrt_release ]; then
     exit 1
 fi
 
-# Migrate an old "flowvpn"-named install (pre-2026.06) to the new eclipvpn
-# paths: stop+disable the old service, kill its watchdog, clean its nft/dnsmasq
-# state, move config (preserving subscription/settings), remove old files.
-# Idempotent — safe if no old install exists.
-OLD_ENABLED=0
-if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
-    echo "[0/6] Migrating old flowvpn install -> eclipvpn..."
-    # Remember whether the old service auto-started so we can re-enable the
-    # new one at the end — `disable` below would otherwise silently turn a
-    # boot-surviving install into a manual-start one.
-    ls /etc/rc.d/S*flowvpn >/dev/null 2>&1 && OLD_ENABLED=1
-    /etc/init.d/flowvpn stop >/dev/null 2>&1 || true
-    /etc/init.d/flowvpn disable >/dev/null 2>&1 || true
-    for p in /proc/[0-9]*; do
-        [ -r "$p/cmdline" ] || continue
-        case $(tr "\0" " " < "$p/cmdline") in
-            "/bin/ash /usr/bin/flowvpn watchdog"*) kill -9 "${p##*/}" 2>/dev/null || true ;;
-        esac
-    done
-    nft delete table ip flowvpn 2>/dev/null || true
-    nft delete table inet flowvpn 2>/dev/null || true
-    nft delete table ip flowvpn_dns 2>/dev/null || true
-    # Old cron entries point at the binary we're about to delete. The new
-    # ones are re-created from config by _ensure_cron_state on first start.
-    crontab -l 2>/dev/null | grep -v '/usr/bin/flowvpn ' | crontab - 2>/dev/null || true
-    if [ -f /tmp/dnsmasq.d/flowvpn.conf ]; then
-        # Drop-in removal has no effect until dnsmasq rereads its conf-dir —
-        # restart it so a redirect to the (now dead) old sing-box doesn't
-        # keep LAN DNS broken until the user starts the new service.
-        rm -f /tmp/dnsmasq.d/flowvpn.conf
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    fi
-    if [ -d /etc/flowvpn ]; then
-        if [ ! -e /etc/eclipvpn ]; then
-            mv /etc/flowvpn /etc/eclipvpn
-        elif [ -f /etc/flowvpn/config.json ] \
-             && ! grep -q '"subscription_url": *"http' /etc/eclipvpn/config.json 2>/dev/null; then
-            # /etc/eclipvpn already exists (pre-created dir, or an untouched
-            # default config) — adopt the old install's files instead of
-            # discarding the user's subscription/settings.
-            cp -a /etc/flowvpn/. /etc/eclipvpn/
-            rm -rf /etc/flowvpn
-        else
-            rm -rf /etc/flowvpn
-        fi
-    fi
-    rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
-fi
-
 echo "[1/6] Installing dependencies..."
 # OpenWrt 24.10+/25.x replaced opkg with apk (apk-tools 3). Detect either so
 # the installer works on both. opkg-only broke silently on modern firmware.
@@ -171,6 +122,16 @@ chmod +x /usr/bin/xray.new
 mv /usr/bin/xray.new /usr/bin/xray
 rm -f /tmp/xray.zip /tmp/xray
 echo "  xray $(/usr/bin/xray version 2>&1 | head -1)"
+
+# Migrate an old "flowvpn"-named install before /etc/eclipvpn is created below
+# (the migration moves the old config there). Only fetched when there is one.
+OLD_ENABLED=0
+if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
+    fetch "$REPO/packaging/migrate-flowvpn.sh" /tmp/eclip-migrate.sh && [ -s /tmp/eclip-migrate.sh ] \
+        || { echo "ERROR: Failed to download migration script"; exit 1; }
+    . /tmp/eclip-migrate.sh
+    rm -f /tmp/eclip-migrate.sh
+fi
 
 echo "[3/6] Downloading EclipVPN..."
 # /www/eclipvpn/ is the canonical UI path (rebrand April 2026).

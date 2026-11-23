@@ -43,6 +43,7 @@ fi
 # (Yandex.Disk conflict-copies, editor temps) never enter `git archive HEAD`, so
 # they must not block a clean committed-bytes deploy; a genuinely-missing committed
 # file is caught loudly by the archive rc-check below instead.
+sh ui/build.sh --check
 DIRTY=$(git status --porcelain --untracked-files=no -- usr www etc)
 SHIP=git
 if [ -n "$DIRTY" ]; then
@@ -114,65 +115,14 @@ rm -f "$UITMP"
 # Prefix each manifest path with / to match where the tar unpacked it (root).
 SYNTAX_CHECK_LIST=$(printf '/%s ' $SHIP_FILES)
 
+MIGRATE=$(cat packaging/migrate-flowvpn.sh)
+[ -n "$MIGRATE" ] || { echo "ERROR: packaging/migrate-flowvpn.sh is empty" >&2; exit 1; }
+
 echo "→ apply on router"
 ssh "$ROUTER" 'set -eu
 
-# One-time migration from the old "flowvpn" internal naming (pre-2026.06).
-# Stop+disable the old service, kill its watchdog, clean its nft tables +
-# dnsmasq drop-in, move config to the new path (preserving config.json /
-# clash_secret / domain lists / rules), and remove old files so they cannot
-# run alongside the new ones. Idempotent — safe to re-run.
-OLD_ENABLED=0
-if [ -e /usr/bin/flowvpn ] || [ -d /etc/flowvpn ] || [ -e /etc/init.d/flowvpn ]; then
-    echo "→ migrating old flowvpn install → eclipvpn"
-    ls /etc/rc.d/S*flowvpn >/dev/null 2>&1 && OLD_ENABLED=1
-    /etc/init.d/flowvpn stop >/dev/null 2>&1 || true
-    /etc/init.d/flowvpn disable >/dev/null 2>&1 || true
-    for p in /proc/[0-9]*; do
-        [ -r "$p/cmdline" ] || continue
-        case $(tr "\0" " " < "$p/cmdline") in
-            "/bin/ash /usr/bin/flowvpn watchdog"*) kill -9 "${p##*/}" 2>/dev/null || true ;;
-        esac
-    done
-    nft delete table ip flowvpn 2>/dev/null || true
-    nft delete table inet flowvpn 2>/dev/null || true
-    nft delete table ip flowvpn_dns 2>/dev/null || true
-    # Old cron entries point at the binary deleted below; new ones are
-    # re-created from config by _ensure_cron_state on first start.
-    crontab -l 2>/dev/null | grep -v "/usr/bin/flowvpn " | crontab - 2>/dev/null || true
-    if [ -f /tmp/dnsmasq.d/flowvpn.conf ]; then
-        # dnsmasq only rereads conf-dir on restart — without it a redirect
-        # to the dead old sing-box keeps LAN DNS broken until first start.
-        rm -f /tmp/dnsmasq.d/flowvpn.conf
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    fi
-    if [ -d /etc/flowvpn ]; then
-        if [ ! -e /etc/eclipvpn ]; then
-            mv /etc/flowvpn /etc/eclipvpn
-        elif [ -f /etc/flowvpn/config.json ] \
-             && ! grep -q "\"subscription_url\": *\"http" /etc/eclipvpn/config.json 2>/dev/null; then
-            # /etc/eclipvpn already exists (pre-created dir, or an untouched
-            # default config minted by a stray CGI hit between ship and
-            # migrate) — adopt the old install instead of discarding it.
-            cp -a /etc/flowvpn/. /etc/eclipvpn/
-            rm -rf /etc/flowvpn
-        else
-            rm -rf /etc/flowvpn
-        fi
-    fi
-    rm -rf /usr/bin/flowvpn /usr/lib/flowvpn /etc/init.d/flowvpn /www/cgi-bin/flowvpn /tmp/flowvpn
-    # The old full SPA at /www/flowvpn/index.html would keep calling the
-    # just-deleted /cgi-bin/flowvpn — replace it with the same redirect
-    # stub the installers write.
-    mkdir -p /www/flowvpn
-    cat > /www/flowvpn/index.html <<REDIR
-<!DOCTYPE html>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="0;url=/eclipvpn/">
-<title>EclipVPN</title>
-<p>Адрес изменился. Открываю <a href="/eclipvpn/">/eclipvpn/</a>…</p>
-REDIR
-fi
+# Old flowvpn naming -> eclipvpn (packaging/migrate-flowvpn.sh, spliced in locally).
+'"$MIGRATE"'
 
 chmod +x /usr/bin/eclipvpn /etc/init.d/eclipvpn /www/cgi-bin/eclipvpn
 
