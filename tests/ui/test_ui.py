@@ -214,6 +214,21 @@ class UI(unittest.TestCase):
         p.evaluate("fetchStatus()")
         expect(p.locator(".server-proto")).to_have_count(4)
 
+    def test_release_notes_render_markdown_safely(self):
+        body = (Path(__file__).parents[2] / "docs/releases/v2026.11.1.md").read_text(encoding="utf-8")
+        self.router.notes = body + "\n- <img src=x onerror=window.pwned=1> **<script>window.pwned=1</script>**"
+        p = self.open(PHONE)
+        self.tab("settings")
+        p.click("#updCheckBtn")
+        n = p.locator(".upd-notes")
+        expect(n).to_contain_text("Windows-установщик в этом релизе не пересобирался")
+        text = n.inner_text()
+        self.assertNotIn("**", text)
+        self.assertNotIn("##", text)
+        self.assertEqual(n.locator("img,script").count(), 0)
+        self.assertIsNone(p.evaluate("window.pwned||null"))
+        self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), 375)
+
     def test_plurals(self):
         p = self.open()
         for t in ("1 домен", "3 домена", "11 доменов"):

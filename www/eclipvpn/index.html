@@ -257,6 +257,15 @@ html.theme-switching *,html.theme-switching *::before,html.theme-switching *::af
   font-size:12.5px;color:var(--text-muted);
   line-height:1.5;margin-top:4px
 }
+.upd-notes{
+  font-size:12.5px;line-height:1.5;color:var(--text-muted);max-height:320px;overflow:auto;
+  margin:8px 0;padding:10px 12px;background:var(--card-hover);border-radius:8px;overflow-wrap:anywhere
+}
+.upd-notes p{margin:8px 0 4px}
+.upd-notes p:first-child{margin-top:0}
+.upd-notes ul{margin:0 0 8px;padding-left:18px}
+.upd-notes li{margin-bottom:4px}
+.upd-notes b{color:var(--text)}
 .group-head{font-size:13px;font-weight:600;color:var(--text-muted);margin:22px 2px 10px}
 .section > .group-head:first-child{margin-top:4px}
 .auto-row{padding:12px 0;border-top:1px solid var(--border)}
@@ -3622,6 +3631,23 @@ async function loadSchedule(){
 // kills a CGI at 60s), restarts the VPN onto the new code and rolls back by
 // itself if the tunnel does not come up.
 let _updPoll=null;
+// Release notes: the small Markdown subset we write (headings, bullets, bold,
+// code, links as text). Escaped FIRST, so the text can only yield these tags.
+function renderNotes(md){
+  const inline=t=>t
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+    .replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1');
+  let out='',list=false;
+  for(const raw of esc(md).split(/\r?\n/)){
+    const line=raw.trim(),li=line.match(/^[-*]\s+(.*)/),h=line.match(/^#{1,6}\s+(.*)/);
+    if(!!li!==list){out+=li?'<ul>':'</ul>';list=!!li}
+    if(li)out+='<li>'+inline(li[1])+'</li>';
+    else if(h)out+='<p><b>'+inline(h[1])+'</b></p>';
+    else if(line)out+='<p>'+inline(line)+'</p>';
+  }
+  return out+(list?'</ul>':'');
+}
 function _updBox(html){const el=document.getElementById('updResult');if(!el)return;el.style.display=html?'block':'none';el.innerHTML=html||''}
 async function checkUpdate(){
   const b=document.getElementById('updCheckBtn');
@@ -3633,7 +3659,8 @@ async function checkUpdate(){
       _updBox('<div style="font-size:12px;color:var(--text-dim)">Установлена последняя версия: <b>v'+esc(d.current)+'</b>'+(d.latest?' (на GitHub: '+esc(d.latest)+')':'')+'</div>');
       return;
     }
-    const notes=d.notes?'<div style="font-size:11.5px;color:var(--text-dim);white-space:pre-line;max-height:160px;overflow:auto;margin:8px 0;padding:8px;background:var(--card-hover);border-radius:8px">'+esc(d.notes)+'</div>':'';
+    const link=/^https:\/\/github\.com\//.test(d.url||'')?'<a href="'+esc(d.url)+'" target="_blank" rel="noopener" class="footer-link">Открыть на GitHub</a>':'';
+    const notes=(d.notes?'<div class="upd-notes">'+renderNotes(d.notes)+'</div>':'')+(link?'<div style="font-size:12px;margin-bottom:6px">'+link+'</div>':'');
     _updBox('<div style="font-size:12.5px">Доступна версия <b>'+esc(d.latest)+'</b> (сейчас v'+esc(d.current)+')</div>'+notes
       +'<button class="btn btn-primary btn-sm" style="margin-top:6px" data-tag="'+esc(d.latest)+'" onclick="startUpdate(this.dataset.tag)">Обновить до '+esc(d.latest)+'</button>');
   }catch(e){_updBox('<div style="color:var(--red);font-size:12px">Ошибка проверки</div>')}

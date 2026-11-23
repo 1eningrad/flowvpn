@@ -195,7 +195,7 @@ _update_latest() {
     _router_fetch "https://api.github.com/repos/$(_update_repo)/releases/latest" "$f" \
         -H "Accept: application/vnd.github+json" -A "EclipVPN/$ECLIPVPN_VERSION" || { rm -f "$f"; return 1; }
     jq -c 'select(.tag_name != null) | {tag:.tag_name, published:(.published_at // ""),
-            notes:((.body // "") | .[0:1500]), url:(.html_url // "")}' "$f" 2>/dev/null
+            notes:((.body // "") | if length > 6000 then .[0:6000] + "…" else . end), url:(.html_url // "")}' "$f" 2>/dev/null
     rm -f "$f"
 }
 
