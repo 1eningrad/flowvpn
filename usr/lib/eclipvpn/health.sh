@@ -363,11 +363,14 @@ cmd_get_incidents() {
     local now=$(date +%s)
     local h24=$((now - 86400))
     local h7d=$((now - 604800))
-    jq --argjson h24 "$h24" --argjson h7d "$h7d" '
+    # Folded: one entry per outage. Per-server counters count what was the
+    # SERVER's fault — not provider outages, and not a switch TO that server.
+    _incidents_fold < "$f" | jq --argjson h24 "$h24" --argjson h7d "$h7d" '
       . as $all |
       ($all | sort_by(-.ts) | .[0:200]) as $incidents |
       ($all
         | map(select(.host != null and .host != ""))
+        | map(select(.type as $t | ["outage","switch_failed","slow_redial","slow_noalt","slow_noswitch"] | index($t)))
         | group_by(.host)
         | map({
             host:      .[0].host,
@@ -381,10 +384,11 @@ cmd_get_incidents() {
         | sort_by(-.count_24h, -.count_7d)
       ) as $stats |
       {incidents: $incidents, stats: $stats}
-    ' "$f" 2>/dev/null || echo '{"incidents":[],"stats":[]}'
+    ' 2>/dev/null || echo '{"incidents":[],"stats":[]}'
 }
 cmd_clear_incidents() {
     echo '[]' > "$ECLIPVPN_TMP/incidents.json"
+    _mirror_state incidents.json   # or a reboot brings the cleared history back
     echo '{"status":"cleared"}'
 }
 cmd_system_info() {

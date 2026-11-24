@@ -5,6 +5,7 @@
     UI_BROWSER=chrome python3 tests/ui/test_ui.py # installed Google Chrome
 """
 import os
+import time
 import sys
 import unittest
 from pathlib import Path
@@ -336,6 +337,41 @@ class UI(unittest.TestCase):
         self.router.incidents.append(dict(ts=1795457000, type="update_rollback", host="", server="", detail="x"))
         expect(p.locator("#incidentsBadge")).to_have_text("1")
         expect(p.locator(".incident:not(.ok)")).to_have_count(1)
+
+    def test_outage_card_tells_whether_it_is_over(self):
+        now = int(time.time())
+        o = dict(type="outage", host="h", server="🇺🇿 Узбекистан · тест", detail="таймаут",
+                 diag=dict(tcp="отвечает, 175 мс", probes="Cloudflare: <b>x</b>", xray=["dial … timeout"]))
+        self.router.incidents = [
+            dict(o, ts=now - 180, state="ongoing", noalt=2),
+            dict(o, ts=now - 3600, end=now - 3600 + 240, state="recovered"),
+            dict(o, ts=now - 7200, end=now - 6900, state="switched", to="🇳🇱 Нидерланды", auto=True),
+            dict(o, ts=now - 9000, end=now - 8900, state="stopped"),
+            dict(o, ts=now - 9900, state="unknown", legacy=True, diag=None, detail="таймаут (3/5)"),
+            dict(o, ts=now - 10000, type="wan_down", end=now - 9940, state="recovered", diag=None),
+        ]
+        p = self.open(PHONE)
+        self.tab("logs")
+        p.locator('.log-filter[data-filter="incidents"]').click()
+        c = p.locator(".incident")
+        expect(c).to_have_count(6)
+        expect(c.nth(0)).to_contain_text("Нет связи с сервером")
+        expect(c.nth(0)).to_contain_text("идёт 3 мин")
+        expect(c.nth(1)).to_contain_text("Связь восстановлена")
+        expect(c.nth(1)).to_contain_text("длилось 4 мин")
+        expect(c.nth(2)).to_contain_text("переключено автоматически на Нидерланды")
+        expect(c.nth(3)).to_contain_text("VPN выключен во время сбоя")
+        expect(c.nth(4)).to_contain_text("неизвестно")
+        expect(c.nth(4)).not_to_contain_text("восстановлена")
+        expect(c.nth(5)).to_contain_text("Интернет у провайдера восстановлен")
+        d = c.nth(1).locator("details")
+        d.locator("summary").click()
+        expect(d).to_contain_text("Сервер напрямую: отвечает, 175 мс")
+        self.assertEqual(d.locator("b").count(), 0)
+        p.evaluate("loadIncidents()")  # a poll must not fold it back
+        p.wait_for_timeout(300)
+        expect(c.nth(1).locator("details")).to_have_attribute("open", "")
+        self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), 375)
 
     def test_escape_dismisses_dialog(self):
         p = self.open()

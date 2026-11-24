@@ -7,19 +7,19 @@
 # resolved at call time, so source order among the libs does not matter.
 
 # Multi-endpoint probe via SOCKS:$1. Returns 0 on success (≥1 endpoint OK),
-# 1 on fail (all down). Sets WD_PROBE_WHY for incident logging on failure.
+# 1 on fail (all down). Sets WD_PROBE_WHY (the FIRST endpoint's reason, for the
+# log) and WD_PROBE_ALL (every endpoint's, for the outage snapshot) on failure.
 # Endpoint order: cheapest/most-reliable first. cp.cloudflare.com & gstatic
 # are captive-portal probes — both return HTTP 204 with empty body, ~200B
 # wire size. ipify is heavier (returns IP as text) but useful as third
 # opinion if both CF and Google are simultaneously routing-flaky.
 _watchdog_probe_via_socks() {
-    local socks_port="${1:-1080}"
-    WD_PROBE_WHY=""
-    local first_rc="" first_code="" first_time=""
+    local socks_port="${1:-1080}" url
+    WD_PROBE_WHY=""; WD_PROBE_ALL=""
     for url in https://cp.cloudflare.com/generate_204 \
                http://www.gstatic.com/generate_204 \
                https://api.ipify.org; do
-        local out rc code total_time
+        local out rc code total_time why
         out=$(curl -s --socks5-hostname "127.0.0.1:$socks_port" --max-time 6 \
               -o /dev/null -w "%{http_code} %{time_total}" "$url" 2>/dev/null)
         rc=$?
@@ -27,22 +27,26 @@ _watchdog_probe_via_socks() {
         if [ "$code" = "204" ] || [ "$code" = "200" ]; then
             return 0
         fi
-        # Save reason from FIRST endpoint that failed — most informative
-        # because subsequent ones may legitimately differ (e.g. CF blocked
-        # but gstatic ok = not really "VPN broken").
-        [ -z "$first_rc" ] && { first_rc=$rc; first_code=$code; first_time=$total_time; }
+        why=$(_wd_probe_why "$rc" "$code" "$total_time" "$socks_port")
+        [ -z "$WD_PROBE_WHY" ] && WD_PROBE_WHY="$why"
+        case "$url" in *cloudflare*) url=Cloudflare ;; *gstatic*) url=Google ;; *) url=ipify ;; esac
+        WD_PROBE_ALL="${WD_PROBE_ALL:+$WD_PROBE_ALL; }$url: $why"
     done
-    case "$first_rc" in
-        0)  WD_PROBE_WHY="HTTP $first_code за ${first_time}с" ;;
-        6)  WD_PROBE_WHY="DNS не разрешился" ;;
-        7)  WD_PROBE_WHY="прокси не отвечает (xray:$socks_port)" ;;
-        28) WD_PROBE_WHY="таймаут >6с (HTTP $first_code)" ;;
-        35) WD_PROBE_WHY="ошибка TLS handshake" ;;
-        52) WD_PROBE_WHY="пустой ответ от сервера" ;;
-        56) WD_PROBE_WHY="разрыв соединения" ;;
-        *)  WD_PROBE_WHY="curl rc=$first_rc, HTTP $first_code" ;;
-    esac
     return 1
+}
+
+# curl rc $1, http code $2, seconds $3, port $4 → a short reason.
+_wd_probe_why() {
+    case "$1" in
+        0)  echo "HTTP $2 за ${3}с" ;;
+        6)  echo "DNS не разрешился" ;;
+        7)  echo "прокси не отвечает (xray:$4)" ;;
+        28) echo "таймаут >6с (HTTP $2)" ;;
+        35) echo "ошибка TLS handshake" ;;
+        52) echo "пустой ответ от сервера" ;;
+        56) echo "разрыв соединения" ;;
+        *)  echo "curl rc=$1, HTTP $2" ;;
+    esac
 }
 
 # Direct (non-SOCKS) WAN reachability test. Detects "ISP outage" so we don't
@@ -504,22 +508,22 @@ _wd_net_check_guard() {
 }
 
 # The tunnel answered: close out a tracked WAN outage and reset the fail
-# counters. State: fail_count, silent_fails.
+# counters. State: fail_count, silent_fails, journal_fails.
 _wd_on_probe_ok() {
-    # If we were tracking a WAN outage, close it out with a single
-    # "recovered" incident and clear the streak markers. Without
-    # this, an outage that started at 08:24 and ended at 08:28
-    # would just leave the journal stuck on its last wan_down line
-    # with no indication things came back.
-    local wan_marker="$ECLIPVPN_TMP/wan_down_since"
-    if [ -f "$wan_marker" ]; then
-        local since=$(cat "$wan_marker" 2>/dev/null)
-        local ticks=$(cat "$ECLIPVPN_TMP/wan_down_ticks" 2>/dev/null || echo 0)
-        local duration_s=$(( $(date +%s) - ${since:-$(date +%s)} ))
-        logger -t eclipvpn "Watchdog: WAN recovered after ${duration_s}s ($ticks ticks)"
-        _log_incident "wan_recovered" "" "" "восстановлен через ${duration_s}с (было ${ticks} проверок без связи)"
-        rm -f "$wan_marker" "$ECLIPVPN_TMP/wan_down_ticks"
+    # Close whatever was open in the journal, so it never shows an old outage
+    # as if it were still going on.
+    local since
+    if [ -f "$ECLIPVPN_TMP/wan_down_since" ]; then
+        since=$(cat "$ECLIPVPN_TMP/wan_down_since" 2>/dev/null)
+        logger -t eclipvpn "Watchdog: WAN recovered after $(( $(date +%s) - ${since:-$(date +%s)} ))s"
+        _wan_close recovered
     fi
+    if [ -f "$ECLIPVPN_TMP/outage" ]; then
+        read -r since _ < "$ECLIPVPN_TMP/outage"
+        logger -t eclipvpn "Watchdog: server answers again after $(( $(date +%s) - ${since:-$(date +%s)} ))s"
+        _outage_close recovered
+    fi
+    journal_fails=0
     [ "$silent_fails" -gt 0 ] && logger -t eclipvpn "Watchdog: connectivity restored (was failing $silent_fails ticks)"
     fail_count=0
     silent_fails=0
@@ -682,7 +686,7 @@ _wd_tput_guard() {
 
 # The tunnel did NOT answer ($1 = WD_PROBE_WHY): separate a dead WAN from a
 # dead server, count failures, and run the failover scan when due.
-# State: fail_count, silent_fails; reads max_fails, interval, probe_port.
+# State: fail_count, silent_fails, journal_*; reads max_fails, interval, probe_port.
 _wd_on_probe_fail() {
     local why="$1"
 
@@ -720,22 +724,27 @@ _wd_on_probe_fail() {
     echo "$fail_count $(date +%s)" > "$ECLIPVPN_TMP/probe_fails"
     # Throttle "check failed" logs after the failover loop already ran —
     # otherwise a permanent outage spams syslog every 20s forever.
-    # Persist incident only at >=3/5 — single isolated failures (1/5,
-    # 2/5) are typically transient TLS jitter that resolves on the
-    # next tick and used to clutter the journal with false positives.
-    # The 5/5 final fail still drives the switch path unchanged.
     if [ "$fail_count" -le "$max_fails" ]; then
         logger -t eclipvpn "Watchdog: server check failed ($fail_count/$max_fails): $why"
-        if [ "$fail_count" -ge 3 ]; then
-            local _cur_idx=$(get_config_val selected_server 0)
-            local _cur_name=$(jq -r ".[$_cur_idx].name // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-            local _cur_host=$(jq -r ".[$_cur_idx].host // \"\"" "$ECLIPVPN_TMP/servers.json" 2>/dev/null)
-            _log_incident "check_fail" "$_cur_host" "$_cur_name" "$why ($fail_count/$max_fails)"
-        fi
     else
         silent_fails=$((silent_fails + 1))
         # One reminder every ~5 min while still down
         [ $((silent_fails % 15)) -eq 0 ] && logger -t eclipvpn "Watchdog: still no connectivity ($silent_fails ticks since last switch): $why"
+    fi
+
+    # The journal gets ONE outage record, from the 3rd miss in a row: single
+    # misses are typically transient TLS jitter. Counted apart from fail_count,
+    # which survives a restart / server switch — the new tunnel must not inherit
+    # the old one's misses and be declared dead after one of its own.
+    local started
+    started=$(cat "$ECLIPVPN_TMP/start_time" 2>/dev/null)
+    [ "$started" = "$journal_started" ] || { journal_started="$started"; journal_fails=0; }
+    journal_fails=$((journal_fails + 1))
+    [ "$journal_fails" -eq 1 ] && journal_first=$(date +%s)
+    if [ "$journal_fails" -ge 3 ]; then
+        # The provider answers but the server does not: its outage is over.
+        _wan_close recovered
+        _outage_open "$journal_first" "$why"
     fi
 
     # Fire the failover scan at max_fails, then re-fire every 15 ticks
@@ -805,6 +814,7 @@ _wd_on_probe_fail() {
 
 cmd_watchdog() {
     local interval="${1:-20}" max_fails=5 fail_count=0 tick=0 silent_fails=0
+    local journal_fails=0 journal_first=0 journal_started=""
     # Throughput-guard state (see the guard block on the connectivity-OK path).
     # tput_switch_helped: 1 = at least one good reading since the last
     # throughput switch/benchmark — the cooldown only gates while it's 0.

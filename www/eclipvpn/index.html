@@ -281,7 +281,10 @@ button.net-badge .nb-dot{background:var(--text-dim)}
   background:rgba(255,255,255,0.025);
   border-left:3px solid var(--border-strong)
 }
-.incident.t-check_fail{border-left-color:#fbbf24}
+.incident.st-ongoing{border-left-color:var(--red)}.incident.st-ongoing .incident-type,.incident.st-ongoing .incident-time{color:var(--red)}
+.incident.st-recovered,.incident.st-switched{border-left-color:var(--green)}
+.incident-more{font-size:13.5px;color:var(--text-muted);line-height:1.45;overflow-wrap:anywhere}
+.incident-more summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600;color:var(--accent-text);width:max-content}
 .incident.t-auto_switch{border-left-color:var(--accent)}
 .incident.t-switch_failed{border-left-color:#ef4444}
 .incident.t-emergency_muted{border-left-color:#fbbf24}
@@ -1858,7 +1861,6 @@ function renderServers(servers,sel,switchingIdx){
 }
 
 const INCIDENT_LABEL={
-  check_fail:'Сбой проверки',
   auto_switch:'Авто-переключение',
   switch_failed:'Не удалось переключиться',
   slow_degraded:'Низкая скорость — переключение',
@@ -1893,16 +1895,58 @@ function renderIncidentsInLog(items){
     return;
   }
   el.innerHTML=items.map(it=>{
-    const label=INCIDENT_LABEL[it.type]||it.type;
-    return `<div class="incident t-${esc(it.type)}${INCIDENT_OK.has(it.type)?' ok':''}">
+    const o=it.type==='outage'||it.type==='wan_down'?outageView(it):null;
+    const label=o?o.title:INCIDENT_LABEL[it.type]||it.type;
+    const when=o&&o.ongoing?'идёт '+fmtSpan(Date.now()/1000-it.ts):fmtIncidentTime(it.ts);
+    return `<div class="incident t-${esc(it.type)}${o?' st-'+o.state:''}${INCIDENT_OK.has(it.type)?' ok':''}">
       <div class="incident-row">
         <span class="incident-type">${esc(label)}</span>
-        <span class="incident-time" title="${esc(new Date(it.ts*1000).toLocaleString('ru-RU'))}">${esc(fmtIncidentTime(it.ts))}</span>
+        <span class="incident-time" title="${esc(new Date(it.ts*1000).toLocaleString('ru-RU'))}">${esc(when)}</span>
       </div>
-      ${it.server?`<div class="incident-server">${serverNameDisplay(it.server)}</div>`:''}
-      ${it.detail?`<div class="incident-detail">${esc(it.detail)}</div>`:''}
+      ${it.server&&it.type!=='wan_down'?`<div class="incident-server">${serverNameDisplay(it.server)}</div>`:''}
+      ${o?`<div class="incident-detail">${esc(o.text)}</div>${o.more.length?`<details class="incident-more" data-k="${+it.ts}"${_incOpen.has(+it.ts)?' open':''} ontoggle="incToggle(this)"><summary>Подробности</summary>${o.more.map(m=>'<div>'+esc(m)+'</div>').join('')}</details>`:''}`
+        :it.detail?`<div class="incident-detail">${esc(it.detail)}</div>`:''}
     </div>`;
   }).join('');
+}
+// The list is re-rendered on every poll: remember which details are open.
+const _incOpen=new Set();
+function incToggle(d){_incOpen[d.open?'add':'delete'](+d.dataset.k)}
+function fmtSpan(s){
+  s=Math.max(0,Math.round(s));
+  if(s<60)return 'меньше минуты';
+  const m=Math.round(s/60);
+  if(m<60)return m+' мин';
+  const h=Math.floor(m/60);
+  return h<24?h+' ч'+(m%60?' '+m%60+' мин':''):Math.floor(h/24)+' дн '+h%24+' ч';
+}
+// One outage = one card. `state` comes from the router, which knows whether the
+// outage is still open; anything it did not see end is "unknown", not "fine".
+function outageView(it){
+  const wan=it.type==='wan_down',state=['ongoing','recovered','switched','stopped'].includes(it.state)?it.state:'unknown';
+  const hm=ts=>{const d=new Date(ts*1000);return d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})};
+  const why=wan?'у провайдера не было интернета':'сервер не отвечал';
+  const span=it.end?hm(it.ts)+'–'+hm(it.end)+', длилось '+fmtSpan(it.end-it.ts):'';
+  const to=it.to?splitName(it.to)[0]:'';
+  const title={
+    ongoing:wan?'Нет интернета у провайдера':'Нет связи с сервером',
+    recovered:wan?'Интернет у провайдера восстановлен':'Связь восстановлена',
+    switched:'Связь восстановлена: переключено'+(it.auto?' автоматически':'')+(to?' на '+to:''),
+    stopped:'VPN выключен во время сбоя',
+    unknown:wan?'Был сбой у провайдера':'Был сбой связи'
+  }[state];
+  const text=state==='ongoing'?'с '+hm(it.ts)+', '+(wan?'VPN вернётся вместе с интернетом':'сервер не отвечает')
+    :state==='unknown'?hm(it.ts)+', '+why+'. Когда восстановилось, неизвестно'
+    :span+', '+why;
+  const d=it.diag||{},more=[];
+  if(d.tcp)more.push('Сервер напрямую: '+d.tcp);
+  if(!wan&&!it.legacy)more.push('Интернет без VPN: работал');
+  if(d.probes)more.push('Проверки через VPN: '+d.probes);
+  else if(it.detail)more.push(it.detail);
+  (d.xray||[]).forEach(x=>more.push('xray: '+x));
+  if(it.noalt)more.push('Других рабочих серверов не нашлось, попыток: '+it.noalt);
+  if(it.note)more.push(it.note);
+  return {state,ongoing:state==='ongoing',title,text,more};
 }
 // The journal holds good news too (an update, a recovered uplink): those are
 // shown in green and must not light the red failure badge.

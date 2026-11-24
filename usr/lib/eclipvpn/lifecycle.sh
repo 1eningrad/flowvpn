@@ -193,6 +193,7 @@ cmd_start() {
 
     local server_name=$(jq -r ".[$selected].name" "$ECLIPVPN_TMP/servers.json")
     flog "EclipVPN started: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
+    _outage_on_up "$selected"
     jq -n --arg s "started" --arg srv "$server_name" --arg ip "$vpn_ip" --arg m "$mode" \
         '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }
@@ -211,6 +212,7 @@ cmd_stop() {
     stop_singbox
     stop_xray
     rm -f "$ECLIPVPN_TMP/start_time" "$ECLIPVPN_TMP/vpn_ip"
+    _outage_on_stop
     flog "EclipVPN stopped"
     echo '{"status":"stopped"}'
 }
@@ -299,6 +301,7 @@ _restart_fallback() {
     update_config '.running_intent = true'
     local sn=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
     flog "EclipVPN restarted (cold fallback): server=$sn, vpn_ip=$vpn_ip, mode=$mode"
+    _outage_on_up "$selected"
     jq -n --arg s "restarted" --arg srv "$sn" --arg ip "$vpn_ip" --arg m "$mode" \
         '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
     return 0
@@ -464,6 +467,7 @@ cmd_restart() {
 
     local server_name=$(jq -r --argjson i "$selected" '.[$i].name // ""' "$ECLIPVPN_TMP/servers.json")
     flog "EclipVPN restarted: server=$server_name, vpn_ip=$vpn_ip, mode=$mode"
+    _outage_on_up "$selected"
     jq -n --arg s "restarted" --arg srv "$server_name" --arg ip "$vpn_ip" --arg m "$mode" \
         '{status:$s,server:$srv,vpn_ip:$ip,mode:$m}'
 }

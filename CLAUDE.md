@@ -104,6 +104,7 @@ usr/lib/eclipvpn/rules.sh     routing-rule + domain-list SOURCING (split out of 
 usr/lib/eclipvpn/domain_lists.sh  built-in RU-direct / force-VPN domain lists (data only)
 usr/lib/eclipvpn/network.sh   nftables + dnsmasq redirect setup/teardown
 usr/lib/eclipvpn/watchdog.sh  connectivity probing, auto-failover, throughput guard
+usr/lib/eclipvpn/outage.sh    journal outages: one record opened/closed in place, snapshot, folding
 usr/lib/eclipvpn/lifecycle.sh cmd_start / stop / restart / status
 usr/lib/eclipvpn/servers.sh   set-server / probe / update / ping / auto-select + auto-eval
 usr/lib/eclipvpn/domains.sh   routing mode, custom domain lists, service presets
@@ -179,6 +180,7 @@ The **`ru_vpn` preset** (rules.sh) is the surgical alternative to `full_tunnel`:
 - `blocked_exit_countries` (default `RU`) vetoes auto-picked candidates by MEASURED exit country (CF trace `loc=`); unknown ⇒ not blocked; never applied to the user's own current/previous/manual server.
 - Net-check guard switches to/from `WL` servers on a whitelist uplink, verifying candidates with real requests; prev server stored by identity, cleared on deliberate re-picks.
 - Throughput guard: re-dial same server first, then switch only if >2× faster; adaptive cooldown — don't make it unconditional.
+- The journal holds ONE `outage` record per outage, closed in place (`outage.sh`); an end nobody saw stays `unknown`, never "recovered". Every path that verifies or stops the tunnel must call `_outage_on_up` / `_outage_on_stop`.
 - Failover re-arms every 15 ticks; 2 probe attempts per candidate; probe ports 1182+ (watchdog) vs 1082+ (`cmd_probe_server`); scan aborts when the WAN itself is down.
 - "Already on the best server" needs confirmed liveness; filter changes that drop the current server restart it.
 

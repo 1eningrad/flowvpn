@@ -15,6 +15,7 @@ usr/lib/eclipvpn/singbox.sh
 usr/lib/eclipvpn/rules.sh
 usr/lib/eclipvpn/network.sh
 usr/lib/eclipvpn/watchdog.sh
+usr/lib/eclipvpn/outage.sh
 usr/lib/eclipvpn/lifecycle.sh
 usr/lib/eclipvpn/servers.sh
 usr/lib/eclipvpn/domains.sh

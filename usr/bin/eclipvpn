@@ -25,6 +25,7 @@ ulimit -n 8192 2>/dev/null
 . "$ECLIPVPN_LIB/rules.sh"
 . "$ECLIPVPN_LIB/network.sh"
 . "$ECLIPVPN_LIB/watchdog.sh"
+. "$ECLIPVPN_LIB/outage.sh"
 . "$ECLIPVPN_LIB/lifecycle.sh"
 . "$ECLIPVPN_LIB/servers.sh"
 . "$ECLIPVPN_LIB/domains.sh"
@@ -738,15 +739,9 @@ _log_incident() {
         fi
     fi
 
-    local f="$ECLIPVPN_TMP/incidents.json"
-    mkdir -p "$ECLIPVPN_TMP"
-    [ -f "$f" ] || echo '[]' > "$f"
-    local tmp="$f.tmp.$$"
-    jq --arg type "$type" --arg host "$host" --arg name "$name" --arg detail "$detail" \
-       --argjson ts "$(date +%s)" \
-       '. + [{ts:$ts, type:$type, host:$host, server:$name, detail:$detail}] | .[-200:]' \
-       "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" || rm -f "$tmp"
-    _mirror_state incidents.json
+    _incidents_edit '. + [{ts:$ts, type:$type, host:$host, server:$name, detail:$detail}] | .[-200:]' \
+        --arg type "$type" --arg host "$host" --arg name "$name" --arg detail "$detail" \
+        --argjson ts "$(date +%s)"
 }
 
 

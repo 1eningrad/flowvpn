@@ -9,7 +9,7 @@
 # cmd_restart / cmd_start inside ( subshells ), which can't update our vars.
 WD_CALLS="$ECLIPVPN_TMP/wd_calls"
 _calls()   { cat "$WD_CALLS" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
-_reset()   { : > "$WD_CALLS"; rm -f "$ECLIPVPN_TMP"/wan_down_* "$ECLIPVPN_TMP"/last_revive \
+_reset()   { : > "$WD_CALLS"; rm -f "$ECLIPVPN_TMP"/wan_down_* "$ECLIPVPN_TMP"/outage "$ECLIPVPN_TMP"/start_time "$ECLIPVPN_TMP"/last_revive \
                  "$ECLIPVPN_TMP"/net_check_prev.json "$ECLIPVPN_TMP"/op.in_progress \
                  "$ECLIPVPN_TMP"/dns_direct_active; }
 logger()          { :; }
@@ -17,6 +17,9 @@ sleep()           { :; }
 cmd_restart()     { echo "restart${1:+:$1}" >> "$WD_CALLS"; }
 cmd_start()       { echo "start" >> "$WD_CALLS"; }
 _log_incident()   { echo "inc:$1" >> "$WD_CALLS"; }
+_outage_open()    { [ -f "$ECLIPVPN_TMP/outage" ] || { echo "out:open" >> "$WD_CALLS"; echo "1 1 h n" > "$ECLIPVPN_TMP/outage"; }; }
+_outage_close()   { [ ! -f "$ECLIPVPN_TMP/outage" ] || { echo "out:$1" >> "$WD_CALLS"; rm -f "$ECLIPVPN_TMP/outage"; }; }
+_wan_close()      { [ ! -f "$ECLIPVPN_TMP/wan_down_since" ] || { echo "wan:$1" >> "$WD_CALLS"; rm -f "$ECLIPVPN_TMP"/wan_down_*; }; }
 _record_switch()  { echo "switch:$1>$2:$3" >> "$WD_CALLS"; }
 
 servers='[{"name":"A","host":"a"},{"name":"B","host":"b"},{"name":"C WL","host":"c"},{"name":"D","host":"d"},{"name":"Обход","host":"e"}]'
@@ -82,16 +85,16 @@ tick=6
 
 # --- probe failure: WAN-down vs server-down, failover scan ----------------------
 _t probe_fail
-fresh_config '{"selected_server":0}'; _reset; fail_count=0; silent_fails=0
+fresh_config '{"selected_server":0}'; _reset; fail_count=0; silent_fails=0; journal_fails=0; journal_started=""
 _watchdog_check_wan() { return 1; }
 _wd_on_probe_fail "timeout"; _wd_on_probe_fail "timeout"
 assert_eq "pf-wan-once"       "$(_calls)" "inc:wan_down"
 assert_eq "pf-wan-ticks"      "$(cat "$ECLIPVPN_TMP/wan_down_ticks")" 2
 assert_eq "pf-wan-no-count"   "$fail_count" 0
-# Recovery closes it out with one wan_recovered.
+# Recovery closes it.
 _reset_keep_wan() { : > "$WD_CALLS"; }; _reset_keep_wan
 _wd_on_probe_ok
-assert_eq "pf-wan-recovered"  "$(_calls)" "inc:wan_recovered"
+assert_eq "pf-wan-recovered"  "$(_calls)" "wan:recovered"
 
 _reset; fail_count=0
 _watchdog_check_wan() { return 0; }
@@ -99,32 +102,47 @@ _watchdog_pick_best() { [ "${5:-normal}" = normal ] && echo "3 120"; }
 _wd_on_probe_fail x; _wd_on_probe_fail x
 assert_eq "pf-quiet-1-2"      "$(_calls)" ""
 _wd_on_probe_fail x; _wd_on_probe_fail x
-assert_eq "pf-incident-3-4"   "$(_calls)" "inc:check_fail inc:check_fail"
+assert_eq "pf-one-outage"     "$(_calls)" "out:open"
 : > "$WD_CALLS"; _wd_on_probe_fail x
-assert_eq "pf-switch-at-5"    "$(_calls)" "inc:check_fail inc:auto_switch switch:0>3:failover restart"
+assert_eq "pf-switch-at-5"    "$(_calls)" "inc:auto_switch switch:0>3:failover restart"
 assert_eq "pf-reset"          "$fail_count/$(get_config_val selected_server x)" "0/3"
 
 # Nothing un-muted answers ⇒ emergency pass over muted ones.
-fresh_config '{"selected_server":0,"muted_servers":"Обход"}'; _reset; fail_count=4
+fresh_config '{"selected_server":0,"muted_servers":"Обход"}'; _reset; fail_count=4; journal_fails=2
 _watchdog_pick_best() { [ "${5:-normal}" = muted_only ] && echo "4 200"; }
 _wd_on_probe_fail x
-assert_eq "pf-emergency"      "$(_calls)" "inc:check_fail inc:emergency_muted switch:0>4:failover restart"
+assert_eq "pf-emergency"      "$(_calls)" "out:open inc:emergency_muted switch:0>4:failover restart"
 
 # auto_failover=false ⇒ counts, never switches.
-fresh_config '{"selected_server":0,"auto_failover":false}'; _reset; fail_count=4
+fresh_config '{"selected_server":0,"auto_failover":false}'; _reset; fail_count=4; journal_fails=2
 _wd_on_probe_fail x
-assert_eq "pf-af-off"         "$(_calls)" "inc:check_fail"
+assert_eq "pf-af-off"         "$(_calls)" "out:open"
 assert_eq "pf-af-off-stays"   "$(get_config_val selected_server x)" 0
 
 # No candidate ⇒ switch_failed; scan re-arms every 15 ticks, silent in between.
-fresh_config '{"selected_server":0}'; _reset; fail_count=4; silent_fails=0
+fresh_config '{"selected_server":0}'; _reset; fail_count=4; silent_fails=0; journal_fails=2
 _watchdog_pick_best() { :; }
 _wd_on_probe_fail x
-assert_eq "pf-no-cand"        "$(_calls)" "inc:check_fail inc:switch_failed"
+assert_eq "pf-no-cand"        "$(_calls)" "out:open inc:switch_failed"
 : > "$WD_CALLS"; i=0; while [ "$i" -lt 14 ]; do _wd_on_probe_fail x; i=$((i+1)); done
 assert_eq "pf-silent-between" "$(_calls)" ""
 _wd_on_probe_fail x
 assert_eq "pf-rearm-at-20"    "$fail_count/$(_calls)" "20/inc:switch_failed"
+
+# The server answers again ⇒ closed. A restart in between starts a new count:
+# the new tunnel is not declared dead by the old one's misses.
+: > "$WD_CALLS"; _wd_on_probe_ok
+assert_eq "pf-recovered"      "$(_calls)/$journal_fails" "out:recovered/0"
+fresh_config '{"selected_server":0,"auto_failover":false}'; _reset; fail_count=8; journal_fails=8; journal_started=""
+echo 12345 > "$ECLIPVPN_TMP/start_time"
+_wd_on_probe_fail x; _wd_on_probe_fail x
+assert_eq "pf-new-tunnel-clean" "$(_calls)" ""
+_wd_on_probe_fail x
+assert_eq "pf-new-tunnel-3rd" "$(_calls)" "out:open"
+# Provider back, server still dead ⇒ the provider's outage is closed first.
+_reset; fail_count=0; journal_fails=2; journal_started=""; echo 5 > "$ECLIPVPN_TMP/wan_down_since"
+_wd_on_probe_fail x
+assert_eq "pf-wan-then-server" "$(_calls)" "wan:recovered out:open"
 
 # --- revival ------------------------------------------------------------------
 _t revive

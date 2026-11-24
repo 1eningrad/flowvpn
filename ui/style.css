@@ -270,7 +270,10 @@ button.net-badge .nb-dot{background:var(--text-dim)}
   background:rgba(255,255,255,0.025);
   border-left:3px solid var(--border-strong)
 }
-.incident.t-check_fail{border-left-color:#fbbf24}
+.incident.st-ongoing{border-left-color:var(--red)}.incident.st-ongoing .incident-type,.incident.st-ongoing .incident-time{color:var(--red)}
+.incident.st-recovered,.incident.st-switched{border-left-color:var(--green)}
+.incident-more{font-size:13.5px;color:var(--text-muted);line-height:1.45;overflow-wrap:anywhere}
+.incident-more summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600;color:var(--accent-text);width:max-content}
 .incident.t-auto_switch{border-left-color:var(--accent)}
 .incident.t-switch_failed{border-left-color:#ef4444}
 .incident.t-emergency_muted{border-left-color:#fbbf24}
