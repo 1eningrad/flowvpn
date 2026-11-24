@@ -1,8 +1,8 @@
 #!/bin/ash
-# EclipVPN 2026.11.2 — xray (SOCKS/XHTTP) + sing-box (tproxy/routing)
+# EclipVPN 2026.11.3 — xray (SOCKS/XHTTP) + sing-box (tproxy/routing)
 # Modes: all_vpn (everything VPN, RU direct) | blocklist (only blocked through VPN)
 
-ECLIPVPN_VERSION="2026.11.2"
+ECLIPVPN_VERSION="2026.11.3"
 # Paths are overridable so the test harness (tests/) can source this file
 # against the working tree + a scratch dir instead of the installed locations.
 # Production passes none of these, so the defaults are unchanged.
