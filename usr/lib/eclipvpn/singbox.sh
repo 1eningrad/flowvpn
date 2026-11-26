@@ -370,6 +370,13 @@ _build_allvpn_rules() {
     # RU traffic → direct (geosite + geoip + manual list) — skipped in full_tunnel
     # so RU falls through to the default VPN outbound.
     if [ "$full_tunnel" != "true" ]; then
+        # RustDesk (ID/rendezvous/relay, TCP+UDP 21114-21119) → direct. It dials
+        # its servers by IP, so no domain rule can catch it, and a remote-desktop
+        # stream through the VPN exit pays the exit's latency on both ends —
+        # observed 2026-11-26: >1000 ms in RustDesk's own stats through a slow
+        # exit vs 42-62 ms direct to the same servers. Peer-to-peer RustDesk
+        # traffic uses random ports and still follows the rules below.
+        rules="$rules,{\"port_range\":[\"21114:21119\"],\"outbound\":\"direct\"}"
         rules="$rules,{\"rule_set\":[\"geosite-ru\",\"geoip-ru\"],\"outbound\":\"direct\"}"
         if [ -n "$ru_rule" ]; then
             rules="$rules,$(echo "$ru_rule" | jq '. + {outbound:"direct"}')"
