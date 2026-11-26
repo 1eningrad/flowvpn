@@ -243,6 +243,17 @@ DOMAIN-SUFFIX,steam-chat.com
 DOMAIN-SUFFIX,steamgames.com
 DOMAIN-SUFFIX,s.team
 DOMAIN-SUFFIX,valvesoftware.com
+# Roblox — direct, as the owner's routers had it in their custom direct lists.
+# tr.rbxcdn.com is the exception: it is force-VPN in _builtin_vpn_domains, whose
+# rule sits before this list. An uplink that can't reach Roblox directly fixes
+# it by adding roblox.com to the user's VPN list (also checked before this one).
+DOMAIN-SUFFIX,roblox.com
+DOMAIN-SUFFIX,rbxcdn.com
+DOMAIN-SUFFIX,rbxcdn-cn.com
+DOMAIN-SUFFIX,rbxinfra.net
+# Parcel forwarding / telecom
+DOMAIN-SUFFIX,qwintry.com
+DOMAIN-SUFFIX,contell.ru
 RUEOF
 }
 
@@ -298,5 +309,7 @@ youtube-nocookie.com
 ytimg.com
 googlevideo.com
 youtubei.googleapis.com
+# Roblox's tr.rbxcdn.com — the rest of Roblox goes direct (_builtin_ru_domains).
+tr.rbxcdn.com
 VPNEOF
 }
